@@ -198,6 +198,7 @@ class MCPManager:
             Tool execution result
         """
         logger_internal.info(f"Executing tool: {server.alias}__{tool_name}")
+        logger_internal.info(f"Tool arguments: {arguments}")
         
         # Ensure server is initialized
         if server.server_id not in self.initialized_servers:
@@ -234,8 +235,17 @@ class MCPManager:
             # Check for JSON-RPC error
             if "error" in result:
                 error_info = result["error"]
+                error_msg = error_info.get('message', 'Unknown error')
+                error_code = error_info.get('code', 'N/A')
+                error_data = error_info.get('data', {})
+                
+                logger_internal.error(f"MCP server error for {tool_name}:")
+                logger_internal.error(f"  Code: {error_code}")
+                logger_internal.error(f"  Message: {error_msg}")
+                logger_internal.error(f"  Data: {error_data}")
+                
                 raise Exception(
-                    f"Tool execution error: {error_info.get('message', 'Unknown error')}"
+                    f"Tool execution error: {error_msg}"
                 )
             
             execution_result = result.get("result", {})

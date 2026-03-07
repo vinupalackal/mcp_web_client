@@ -98,6 +98,16 @@ async function sendMessage() {
 
     console.log(`💬 Chat: Sending message: ${content.substring(0, 50)}...`);
 
+    // Sync servers and LLM config from localStorage before sending
+    // (in case backend was restarted and lost in-memory data)
+    console.log('💬 Chat: Syncing servers and LLM config...');
+    if (window.syncServersToBackend) {
+        await window.syncServersToBackend();
+    }
+    if (window.syncLLMConfigToBackend) {
+        await window.syncLLMConfigToBackend();
+    }
+
     // Create session if needed
     if (!currentSessionId) {
         await createNewSession();
@@ -153,7 +163,10 @@ function addMessage(role, content, toolExecutions = []) {
 
     const messageContent = document.createElement('div');
     messageContent.classList.add('message-content');
-    messageContent.textContent = content;
+    
+    // Format content with line breaks and preserve formatting
+    const formattedContent = formatMessageContent(content);
+    messageContent.innerHTML = formattedContent;
 
     messageWrapper.appendChild(messageContent);
 
@@ -169,6 +182,40 @@ function addMessage(role, content, toolExecutions = []) {
 
     chatMessages.appendChild(messageWrapper);
     scrollToBottom();
+}
+
+function formatMessageContent(content) {
+    if (!content) return '';
+    
+    // Escape HTML to prevent XSS
+    const escapeHtml = (text) => {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    };
+    
+    let formatted = escapeHtml(content);
+    
+    // Convert newlines to <br> tags
+    formatted = formatted.replace(/\n/g, '<br>');
+    
+    // Format code blocks (```...```)
+    formatted = formatted.replace(/```(\w*)\n([\s\S]*?)```/g, (match, lang, code) => {
+        return `<pre><code class="language-${lang}">${code}</code></pre>`;
+    });
+    
+    // Format inline code (`...`)
+    formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+    
+    // Format bold (**...** or __...__)
+    formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    formatted = formatted.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+    
+    // Format italic (*...* or _..._)
+    formatted = formatted.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    formatted = formatted.replace(/_([^_]+)_/g, '<em>$1</em>');
+    
+    return formatted;
 }
 
 function addSystemMessage(content) {

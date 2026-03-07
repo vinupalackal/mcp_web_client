@@ -160,6 +160,48 @@ body {
     color: var(--text-primary);
 }
 
+/* Formatted content within messages */
+.message-content pre {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    margin: 0.75rem 0;
+    font-family: 'Courier New', monospace;
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
+.message-content code {
+    background-color: rgba(0, 0, 0, 0.1);
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.875em;
+}
+
+.message-content pre code {
+    background-color: transparent;
+    padding: 0;
+}
+
+.message-content strong {
+    font-weight: 600;
+}
+
+.message-content em {
+    font-style: italic;
+}
+
+.message-content br {
+    line-height: 1.75;
+}
+
+.message-wrapper.user .message-content code {
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
 .welcome-message .message-content {
     max-width: 100%;
     background-color: var(--bg-secondary);

@@ -583,11 +583,16 @@ async def send_message(
                     else:
                         # Execute tool
                         try:
+                            import time
+                            start_time = time.time()
+                            
                             tool_result = await mcp_manager.execute_tool(
                                 server=server,
                                 tool_name=actual_tool_name,
                                 arguments=arguments
                             )
+                            
+                            duration_ms = int((time.time() - start_time) * 1000)
                             
                             # Truncate large results
                             max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "12000"))
@@ -602,7 +607,8 @@ async def send_message(
                                 "tool": namespaced_tool_name,
                                 "arguments": arguments,
                                 "result": tool_result,
-                                "success": True
+                                "success": True,
+                                "duration_ms": duration_ms
                             })
                             
                             # Trace successful execution
@@ -615,6 +621,7 @@ async def send_message(
                             )
                             
                         except Exception as e:
+                            duration_ms = int((time.time() - start_time) * 1000) if 'start_time' in locals() else 0
                             logger_internal.error(f"Tool execution error: {e}")
                             result_content = f"Error: {str(e)}"
                             
@@ -623,7 +630,8 @@ async def send_message(
                                 "tool": namespaced_tool_name,
                                 "arguments": arguments,
                                 "result": str(e),
-                                "success": False
+                                "success": False,
+                                "duration_ms": duration_ms
                             })
                             
                             # Trace failed execution

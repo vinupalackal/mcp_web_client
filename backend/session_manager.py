@@ -135,24 +135,45 @@ class SessionManager:
         
         llm_messages = []
         for msg in messages:
+            # Ensure content is always a string (Ollama requires this)
+            content = msg.content if msg.content is not None else ""
+            
+            # For Ollama, convert tool messages to user messages with tool result prefix
+            # This avoids JSON parsing issues with tool role
+            if provider == "ollama" and msg.role == "tool":
+                llm_messages.append({
+                    "role": "user",
+                    "content": f"Tool result: {content}"
+                })
+                continue
+            
             msg_dict = {
                 "role": msg.role,
-                "content": msg.content or ""
+                "content": content
             }
             
             # Add tool calls if present (for assistant messages)
             if msg.tool_calls:
-                msg_dict["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
+                # For Ollama, skip tool_calls in history - it causes parsing errors
+                # Just keep the content if any
+                if provider == "ollama":
+                    # Skip this message entirely if it has no content
+                    if not content:
+                        continue
+                    # Otherwise just use the content without tool_calls
+                else:
+                    # OpenAI format - include tool_calls
+                    msg_dict["tool_calls"] = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments if isinstance(tc.function.arguments, str) else "{}"
+                            }
                         }
-                    }
-                    for tc in msg.tool_calls
-                ]
+                        for tc in msg.tool_calls
+                    ]
             
             # Add tool_call_id only for OpenAI (Ollama doesn't use it)
             if provider == "openai" and hasattr(msg, 'tool_call_id') and msg.tool_call_id:

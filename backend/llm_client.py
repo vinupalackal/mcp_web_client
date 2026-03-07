@@ -135,6 +135,11 @@ class OllamaClient(BaseLLMClient):
         
         try:
             logger_external.info(f"→ POST {url} (Ollama chat)")
+            logger_internal.info(f"Ollama payload: {len(messages)} messages, {len(tools)} tools")
+            
+            # Log each message for debugging
+            for i, msg in enumerate(messages):
+                logger_internal.info(f"Message {i}: role={msg.get('role')}, content_length={len(str(msg.get('content', '')))}, has_tool_calls={'tool_calls' in msg}, has_tool_call_id={'tool_call_id' in msg}")
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(url, json=payload, headers=headers)
@@ -166,6 +171,19 @@ class OllamaClient(BaseLLMClient):
             
             return normalized_result
             
+        except httpx.HTTPStatusError as e:
+            logger_internal.error(f"Ollama HTTP error: {e}")
+            logger_internal.error(f"Request payload keys: {list(payload.keys())}")
+            logger_internal.error(f"Number of messages: {len(messages)}")
+            if messages:
+                logger_internal.error(f"Last message role: {messages[-1].get('role')}")
+                logger_internal.error(f"Last message keys: {list(messages[-1].keys())}")
+                # Dump all messages for debugging
+                for i, msg in enumerate(messages):
+                    logger_internal.error(f"Message {i}: {msg}")
+            logger_internal.error(f"Response status: {e.response.status_code}")
+            logger_internal.error(f"Response body: {e.response.text}")
+            raise Exception(f"LLM HTTP error: {str(e)}")
         except httpx.TimeoutException as e:
             logger_internal.error(f"Ollama timeout: {e}")
             raise Exception("LLM request timeout")

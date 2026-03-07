@@ -454,7 +454,9 @@ function showSuccess(message) {
     setTimeout(() => successDiv.remove(), 3000);
 }
 
-// Make deleteServer available globally
+// Make functions available globally
 window.deleteServer = deleteServer;
+window.syncServersToBackend = syncServersToBackend;
+window.syncLLMConfigToBackend = syncLLMConfigToBackend;
 
 console.log('⚙️ Settings: Module loaded');
