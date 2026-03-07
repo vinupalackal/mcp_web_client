@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Client Web</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Main Container -->
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-left">
+                <h1 class="app-title">MCP Client</h1>
+            </div>
+            <div class="header-right">
+                <button id="settingsBtn" class="btn btn-secondary">⚙️ Settings</button>
+                <button id="newChatBtn" class="btn btn-primary">➕ New Chat</button>
+            </div>
+        </header>
+
+        <!-- Chat Container -->
+        <main class="chat-container">
+            <div id="chatMessages" class="chat-messages">
+                <!-- Welcome message -->
+                <div class="message-wrapper welcome-message">
+                    <div class="message-content">
+                        <h2>Welcome to MCP Client Web</h2>
+                        <p>Connect to MCP servers and interact with AI tools through a chat interface.</p>
+                        <p>👈 Click <strong>Settings</strong> to configure your MCP servers and LLM provider.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="chat-input-container">
+                <div class="chat-input-wrapper">
+                    <textarea 
+                        id="messageInput" 
+                        class="chat-input" 
+                        placeholder="Type your message..."
+                        rows="1"
+                    ></textarea>
+                    <button id="sendBtn" class="btn btn-send" disabled>
+                        <span class="send-icon">↑</span>
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button class="modal-close" id="closeSettings">&times;</button>
+            </div>
+            
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-button active" data-tab="servers">MCP Servers</button>
+                <button class="tab-button" data-tab="llm">LLM Config</button>
+                <button class="tab-button" data-tab="tools">Tools</button>
+            </div>
+
+            <!-- Tab Content -->
+            <div class="modal-body">
+                <!-- MCP Servers Tab -->
+                <div id="serversTab" class="tab-content active">
+                    <h3>Add MCP Server</h3>
+                    <form id="addServerForm">
+                        <div class="form-group">
+                            <label for="serverAlias">Server Alias *</label>
+                            <input type="text" id="serverAlias" required placeholder="e.g., weather_api">
+                        </div>
+                        <div class="form-group">
+                            <label for="serverUrl">Base URL *</label>
+                            <input type="url" id="serverUrl" required placeholder="http://192.168.1.100:3000">
+                        </div>
+                        <div class="form-group">
+                            <label for="authType">Authentication</label>
+                            <select id="authType">
+                                <option value="none">None</option>
+                                <option value="bearer">Bearer Token</option>
+                                <option value="api_key">API Key</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="bearerTokenGroup" style="display: none;">
+                            <label for="bearerToken">Bearer Token</label>
+                            <input type="password" id="bearerToken" placeholder="Enter token">
+                        </div>
+                        <div class="form-group" id="apiKeyGroup" style="display: none;">
+                            <label for="apiKey">API Key</label>
+                            <input type="password" id="apiKey" placeholder="Enter API key">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Add Server</button>
+                        <button type="button" id="refreshToolsBtn" class="btn btn-secondary">🔄 Refresh Tools</button>
+                    </form>
+
+                    <h3>Configured Servers</h3>
+                    <div id="serversList" class="servers-list">
+                        <p class="empty-state">No servers configured yet.</p>
+                    </div>
+                </div>
+
+                <!-- LLM Config Tab -->
+                <div id="llmTab" class="tab-content">
+                    <h3>LLM Provider Configuration</h3>
+                    <form id="llmConfigForm">
+                        <div class="form-group">
+                            <label for="llmProvider">Provider *</label>
+                            <select id="llmProvider" required>
+                                <option value="">Select provider...</option>
+                                <option value="ollama">Ollama</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="mock">Mock (Testing)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="llmModel">Model *</label>
+                            <input type="text" id="llmModel" required placeholder="e.g., llama3.1 or gpt-4">
+                        </div>
+                        <div class="form-group">
+                            <label for="llmBaseUrl">Base URL *</label>
+                            <input type="url" id="llmBaseUrl" required placeholder="http://192.168.1.50:11434">
+                        </div>
+                        <div class="form-group" id="llmApiKeyGroup" style="display: none;">
+                            <label for="llmApiKey">API Key</label>
+                            <input type="password" id="llmApiKey" placeholder="sk-...">
+                        </div>
+                        <div class="form-group">
+                            <label for="llmTemperature">Temperature</label>
+                            <input type="number" id="llmTemperature" min="0" max="2" step="0.1" value="0.7">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save Configuration</button>
+                    </form>
+                </div>
+
+                <!-- Tools Tab -->
+                <div id="toolsTab" class="tab-content">
+                    <h3>Discovered Tools</h3>
+                    <div id="toolsList" class="tools-list">
+                        <p class="empty-state">No tools discovered yet. Add servers and refresh tools.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+    <script src="/static/settings.js"></script>
+</body>
+</html>
