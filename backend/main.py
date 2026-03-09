@@ -5,6 +5,7 @@ LibreChat-inspired interface for MCP server communication via JSON-RPC 2.0
 
 import logging
 import os
+import json
 from pathlib import Path as PathLib
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -497,12 +498,47 @@ async def send_message(
             provider=llm_config_storage.provider
         )
         
+        # Add system message to guide LLM behavior with tool results
+        system_message = {
+            "role": "system",
+            "content": """You are a helpful AI assistant with access to MCP (Model Context Protocol) tools.
+
+**When you receive tool execution results, always:**
+1. **Explain what you found** - Describe the tool output in clear, understandable terms
+2. **Provide context** - Explain what the data means and why it matters
+3. **Highlight key information** - Point out important values, patterns, or anomalies
+4. **Be specific** - Reference actual values and details from the tool output
+
+**For errors or failures:**
+1. Explain what went wrong based on the error message
+2. Identify possible causes
+3. Suggest specific next steps or alternative tools
+
+**For successful results:**
+- Don't just repeat raw data
+- Interpret and explain what the information means
+- Help the user understand the significance of the results
+- Organize complex data in a readable format
+
+Always aim to make technical information accessible and actionable."""
+        }
+        
+        # Insert system message at the beginning if not already present
+        if not messages_for_llm or messages_for_llm[0].get("role") != "system":
+            messages_for_llm.insert(0, system_message)
+        
         # Multi-turn loop for tool calling
         max_turns = int(os.getenv("MCP_MAX_TOOL_CALLS_PER_TURN", "8"))
         tool_executions = []
         
         for turn in range(max_turns):
             logger_internal.info(f"Turn {turn + 1}/{max_turns}")
+            
+            # Log request to LLM
+            logger_external.info(f"→ LLM Request: {len(messages_for_llm)} messages, {len(tools_for_llm)} tools available")
+            logger_internal.info(f"Messages to LLM: {json.dumps(messages_for_llm, indent=2)}")
+            if tools_for_llm:
+                logger_internal.info(f"Tools sent to LLM: {json.dumps(tools_for_llm, indent=2)}")
             
             # Call LLM
             llm_response = await llm_client.chat_completion(
@@ -514,15 +550,22 @@ async def send_message(
             assistant_msg = llm_response["choices"][0]["message"]
             finish_reason = llm_response["choices"][0]["finish_reason"]
             
+            # Log response from LLM
+            logger_external.info(f"← LLM Response: finish_reason={finish_reason}, has_tool_calls={'tool_calls' in assistant_msg}")
+            logger_internal.info(f"LLM Response: {json.dumps(llm_response, indent=2)}")
             logger_internal.info(f"LLM finish_reason: {finish_reason}")
             logger_internal.info(f"LLM message has tool_calls: {'tool_calls' in assistant_msg}")
             
             # Check if LLM wants to call tools
             if finish_reason == "tool_calls" and "tool_calls" in assistant_msg:
-                logger_internal.info(f"LLM requested {len(assistant_msg['tool_calls'])} tool calls")
+                num_tool_calls = len(assistant_msg['tool_calls'])
+                logger_internal.info(f"LLM requested {num_tool_calls} tool call{'s' if num_tool_calls > 1 else ''}")
+                
+                if num_tool_calls > 1:
+                    tool_names = [tc["function"]["name"] for tc in assistant_msg["tool_calls"]]
+                    logger_internal.info(f"Multiple tools will be executed: {', '.join(tool_names)}")
                 
                 # Store assistant message with tool calls
-                import json
                 from backend.models import ToolCall, FunctionCall
                 tool_calls_models = []
                 for tc in assistant_msg["tool_calls"]:
@@ -551,11 +594,12 @@ async def send_message(
                 messages_for_llm.append(assistant_msg)
                 
                 # Execute tool calls
-                import json
-                for tool_call in assistant_msg["tool_calls"]:
+                for idx, tool_call in enumerate(assistant_msg["tool_calls"], 1):
                     tool_id = tool_call["id"]
                     namespaced_tool_name = tool_call["function"]["name"]
                     arguments_str = tool_call["function"]["arguments"]
+                    
+                    logger_internal.info(f"Executing tool {idx}/{num_tool_calls}: {namespaced_tool_name}")
                     
                     # Parse arguments
                     try:
@@ -667,6 +711,12 @@ async def send_message(
             # No more tool calls - final response
             else:
                 logger_internal.info(f"LLM gave final response (no tool calls). Response length: {len(assistant_msg.get('content', ''))}")
+                logger_internal.info(f"=== FINAL LLM MESSAGE ===\n{assistant_msg.get('content', '')}\n========================")
+                
+                if tool_executions:
+                    tools_summary = ', '.join([f"{te['tool']} ({'success' if te['success'] else 'failed'})" for te in tool_executions])
+                    logger_internal.info(f"Tools executed in this turn ({len(tool_executions)}): {tools_summary}")
+                
                 final_response = ChatMessage(
                     role="assistant",
                     content=assistant_msg.get("content", "")

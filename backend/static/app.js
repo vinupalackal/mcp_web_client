@@ -146,7 +146,12 @@ async function sendMessage() {
         // Add assistant response
         addMessage('assistant', data.message.content, data.tool_executions);
         
-        console.log('💬 Chat: Response received');
+        // Log final LLM message
+        console.log('💬 Final LLM Response:', data.message.content);
+        if (data.tool_executions && data.tool_executions.length > 0) {
+            console.log(`🔧 Tools executed (${data.tool_executions.length}):`, 
+                data.tool_executions.map(t => `${t.tool} (${t.success ? 'success' : 'failed'})`).join(', '));
+        }
     } catch (error) {
         console.error('💬 Chat: Send failed', error);
         removeMessage(loadingId);
@@ -170,14 +175,16 @@ function addMessage(role, content, toolExecutions = []) {
 
     messageWrapper.appendChild(messageContent);
 
-    // Add tool execution indicators
+    // Add compact tools used summary
     if (toolExecutions && toolExecutions.length > 0) {
-        toolExecutions.forEach(exec => {
-            const toolIndicator = document.createElement('div');
-            toolIndicator.classList.add('tool-indicator');
-            toolIndicator.textContent = `🔧 ${exec.tool} (${exec.duration_ms}ms)`;
-            messageWrapper.appendChild(toolIndicator);
-        });
+        const toolsSummary = document.createElement('div');
+        toolsSummary.classList.add('tools-used-summary');
+        const toolNames = toolExecutions.map(exec => {
+            const successIcon = exec.success ? '✓' : '✗';
+            return `<span class="tool-badge ${exec.success ? 'success' : 'error'}">${successIcon} ${exec.tool}</span>`;
+        }).join(' ');
+        toolsSummary.innerHTML = `<div class="tools-label">🔧 Tools Used:</div><div class="tools-badges">${toolNames}</div>`;
+        messageWrapper.appendChild(toolsSummary);
     }
 
     chatMessages.appendChild(messageWrapper);
@@ -267,5 +274,86 @@ function showError(message) {
 function scrollToBottom() {
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
+
+// ============================================================================
+// Tools Sidebar
+// ============================================================================
+
+// Make this function global so settings.js can call it
+window.loadToolsSidebar = async function() {
+    console.log('🔧 Loading tools for sidebar...');
+    const toolsSidebarContent = document.getElementById('toolsSidebarContent');
+    
+    if (!toolsSidebarContent) {
+        console.error('❌ toolsSidebarContent element not found!');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/tools');
+        console.log('🔧 API Response status:', response.status);
+        
+        if (!response.ok) {
+            throw new Error(`Failed to load tools: ${response.status}`);
+        }
+        
+        const tools = await response.json();
+        console.log(`🔧 Loaded ${tools.length} tools`);
+        
+        if (tools.length === 0) {
+            toolsSidebarContent.innerHTML = '<p class="empty-state">No tools discovered yet.<br>Add servers and refresh tools.</p>';
+            return;
+        }
+        
+        // Group tools by server
+        const toolsByServer = {};
+        tools.forEach(tool => {
+            if (!toolsByServer[tool.server_alias]) {
+                toolsByServer[tool.server_alias] = [];
+            }
+            toolsByServer[tool.server_alias].push(tool);
+        });
+        
+        // Render tools
+        let html = '';
+        for (const [serverAlias, serverTools] of Object.entries(toolsByServer)) {
+            serverTools.forEach(tool => {
+                const paramsCount = tool.parameters?.properties 
+                    ? Object.keys(tool.parameters.properties).length 
+                    : 0;
+                
+                html += `
+                    <div class="tool-item" title="${tool.description || ''}">
+                        <div class="tool-name">${tool.name}</div>
+                        ${tool.description ? `<div class="tool-description">${tool.description}</div>` : ''}
+                        ${paramsCount > 0 ? `<div class="tool-params">${paramsCount} parameter${paramsCount > 1 ? 's' : ''}</div>` : ''}
+                    </div>
+                `;
+            });
+        }
+        
+        toolsSidebarContent.innerHTML = html;
+        
+    } catch (error) {
+        console.error('❌ Error loading tools:', error);
+        toolsSidebarContent.innerHTML = '<p class="error-message">Failed to load tools: ' + error.message + '</p>';
+    }
+}
+
+// Initialize tools sidebar
+console.log('🔧 Setting up tools sidebar...');
+
+// Refresh tools sidebar button
+document.addEventListener('DOMContentLoaded', () => {
+    const refreshBtn = document.getElementById('refreshToolsSidebarBtn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            window.loadToolsSidebar();
+        });
+    }
+    
+    // Load tools on page load
+    window.loadToolsSidebar();
+});
 
 console.log('💬 Chat: Module loaded');

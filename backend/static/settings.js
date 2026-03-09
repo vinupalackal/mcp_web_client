@@ -33,12 +33,20 @@ function initializeSettings() {
     closeSettings.addEventListener('click', () => {
         settingsModal.classList.remove('active');
         console.log('⚙️ Settings: Modal closed');
+        // Refresh tools sidebar when closing settings
+        if (typeof window.loadToolsSidebar === 'function') {
+            window.loadToolsSidebar();
+        }
     });
 
     // Close on outside click
     settingsModal.addEventListener('click', (e) => {
         if (e.target === settingsModal) {
             settingsModal.classList.remove('active');
+            // Refresh tools sidebar when closing settings
+            if (typeof window.loadToolsSidebar === 'function') {
+                window.loadToolsSidebar();
+            }
         }
     });
 
@@ -223,6 +231,12 @@ async function handleRefreshTools() {
         // Fetch tools
         await loadTools();
         
+        // Refresh the tools sidebar on the main page
+        if (typeof window.loadToolsSidebar === 'function') {
+            await window.loadToolsSidebar();
+            console.log('🔧 Tools sidebar refreshed');
+        }
+        
         if (result.total_tools === 0) {
             showSuccess('No tools discovered. Make sure your MCP servers are running.');
         } else {
@@ -245,10 +259,7 @@ async function handleRefreshTools() {
 }
 
 async function loadTools() {
-    console.log('🔧 Tools: Loading...');
-
-    try {
-        console.log('🔌 API: GET /api/tools');
+try {
         const response = await fetch('/api/tools');
         
         if (!response.ok) {
@@ -256,7 +267,8 @@ async function loadTools() {
         }
 
         const tools = await response.json();
-        console.log(`🔌 API: ← 200 OK (${tools.length} tools)`);
+        
+        console.log(`🔧 Loaded ${tools.length} tools`);
 
         renderToolsList(tools);
 
