@@ -1,0 +1,152 @@
+{
+  "tools": [
+    {
+      "name": "get_cpu_info",
+      "description": "Read and parse CPU information from /proc/cpuinfo. Returns processor details including model, cores, frequency, and capabilities.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "Output format: 'summary' for key stats or 'detailed' for all information",
+            "enum": ["summary", "detailed"],
+            "default": "summary"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_memory_info",
+      "description": "Read and parse memory information from /proc/meminfo. Returns total, free, available memory, swap usage, and cache information.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "units": {
+            "type": "string",
+            "description": "Memory units for display",
+            "enum": ["KB", "MB", "GB"],
+            "default": "MB"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_process_info",
+      "description": "Get detailed information about a specific process from /proc/[pid]/. Returns process status, memory usage, command line, and environment.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pid": {
+            "type": "number",
+            "description": "Process ID to query"
+          },
+          "include_environ": {
+            "type": "boolean",
+            "description": "Include environment variables",
+            "default": false
+          },
+          "include_maps": {
+            "type": "boolean",
+            "description": "Include memory mappings",
+            "default": false
+          }
+        },
+        "required": ["pid"]
+      }
+    },
+    {
+      "name": "list_processes",
+      "description": "List all running processes by scanning /proc directory. Returns process IDs with basic information like name and state.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filter_by_name": {
+            "type": "string",
+            "description": "Filter processes by name (partial match)"
+          },
+          "sort_by": {
+            "type": "string",
+            "description": "Sort processes by field",
+            "enum": ["pid", "name", "memory", "cpu"],
+            "default": "pid"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_network_stats",
+      "description": "Read network statistics from /proc/net/dev. Returns bytes/packets transmitted and received per interface.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "interface": {
+            "type": "string",
+            "description": "Specific network interface (e.g., 'eth0', 'wlan0'), or omit for all interfaces"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_system_uptime",
+      "description": "Read system uptime from /proc/uptime. Returns how long the system has been running and idle time.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "Time format",
+            "enum": ["seconds", "human_readable"],
+            "default": "human_readable"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_load_average",
+      "description": "Read system load average from /proc/loadavg. Returns 1, 5, and 15 minute load averages.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_disk_stats",
+      "description": "Read disk I/O statistics from /proc/diskstats. Returns read/write operations and sectors for block devices.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string",
+            "description": "Specific device name (e.g., 'sda', 'nvme0n1'), or omit for all devices"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_filesystem_mounts",
+      "description": "Read mounted filesystems from /proc/mounts. Returns mount points, filesystem types, and mount options.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "mount_point": {
+            "type": "string",
+            "description": "Filter by specific mount point"
+          }
+        }
+      }
+    },
+    {
+      "name": "get_interrupts",
+      "description": "Read interrupt statistics from /proc/interrupts. Returns interrupt counts per CPU for each IRQ.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "irq_number": {
+            "type": "number",
+            "description": "Specific IRQ number to query"
+          }
+        }
+      }
+    }
+  ]
+}

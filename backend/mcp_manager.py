@@ -160,8 +160,9 @@ class MCPManager:
         servers_refreshed = 0
         errors = []
         
-        # Clear existing tools
+        # Clear existing tools and initialization state
         self.tools.clear()
+        self.initialized_servers.clear()
         
         for server in servers:
             try:
@@ -219,7 +220,9 @@ class MCPManager:
         headers = self._build_headers(server)
         
         try:
-            logger_external.info(f"→ POST {rpc_url} (tools/call: {tool_name})")
+            logger_external.info(f"→ MCP Server Request: POST {rpc_url} (tools/call: {tool_name})")
+            logger_internal.info(f"JSON-RPC Payload to MCP Server: {payload}")
+            logger_internal.info(f"Request headers: {headers}")
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -230,7 +233,8 @@ class MCPManager:
                 response.raise_for_status()
                 result = response.json()
             
-            logger_external.info(f"← {response.status_code} (tool execution complete)")
+            logger_external.info(f"← MCP Server Response: {response.status_code} (tool execution complete)")
+            logger_internal.info(f"JSON-RPC Response from MCP Server: {result}")
             
             # Check for JSON-RPC error
             if "error" in result:

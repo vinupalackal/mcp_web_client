@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Client Web</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
     <!-- Main Container -->
@@ -20,9 +20,11 @@
             </div>
         </header>
 
-        <!-- Chat Container -->
-        <main class="chat-container">
-            <div id="chatMessages" class="chat-messages">
+        <!-- Main Content Area -->
+        <div class="main-content">
+            <!-- Chat Container -->
+            <main class="chat-container">
+                <div id="chatMessages" class="chat-messages">
                 <!-- Welcome message -->
                 <div class="message-wrapper welcome-message">
                     <div class="message-content">
@@ -47,7 +49,19 @@
                     </button>
                 </div>
             </div>
-        </main>
+            </main>
+
+            <!-- Tools Sidebar -->
+            <aside class="tools-sidebar">
+                <div class="tools-sidebar-header">
+                    <h3>🔧 Available Tools</h3>
+                    <button id="refreshToolsSidebarBtn" class="btn-icon" title="Refresh tools">🔄</button>
+                </div>
+                <div class="tools-sidebar-content" id="toolsSidebarContent">
+                    <p class="empty-state">No tools discovered yet.</p>
+                </div>
+            </aside>
+        </div>
     </div>
 
     <!-- Settings Modal -->
@@ -149,7 +163,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
-    <script src="/static/settings.js"></script>
+    <script src="/static/app.js?v=3"></script>
+    <script src="/static/settings.js?v=3"></script>
 </body>
 </html>

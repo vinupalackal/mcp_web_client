@@ -1,0 +1,814 @@
+{
+  "server_info": {
+    "name": "proc-analyzer",
+    "version": "1.0.0",
+    "description": "MCP server for analyzing Linux /proc filesystem",
+    "author": "System Tools Team",
+    "platform": "linux"
+  },
+  "tools": [
+    {
+      "name": "get_cpu_info",
+      "description": "Read and parse CPU information from /proc/cpuinfo. Returns processor details including model, cores, frequency, and capabilities.",
+      "category": "system",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "Output format: 'summary' for key stats or 'detailed' for all information",
+            "enum": ["summary", "detailed"],
+            "default": "summary"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "CPU information object with processor details"
+      },
+      "examples": [
+        {
+          "description": "Get CPU summary",
+          "input": {
+            "format": "summary"
+          },
+          "expectedOutput": {
+            "processor_count": 8,
+            "model_name": "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz",
+            "cpu_mhz": "2600.000",
+            "cache_size": "12288 KB",
+            "cores_per_cpu": "6",
+            "vendor_id": "GenuineIntel"
+          }
+        },
+        {
+          "description": "Get detailed CPU information",
+          "input": {
+            "format": "detailed"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_memory_info",
+      "description": "Read and parse memory information from /proc/meminfo. Returns total, free, available memory, swap usage, and cache information.",
+      "category": "system",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "units": {
+            "type": "string",
+            "description": "Memory units for display",
+            "enum": ["KB", "MB", "GB"],
+            "default": "MB"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Memory information with usage statistics"
+      },
+      "examples": [
+        {
+          "description": "Get memory info in megabytes",
+          "input": {
+            "units": "MB"
+          },
+          "expectedOutput": {
+            "total_memory": "16384.00 MB",
+            "free_memory": "2048.00 MB",
+            "available_memory": "8192.00 MB",
+            "buffers": "512.00 MB",
+            "cached": "4096.00 MB",
+            "swap_total": "8192.00 MB",
+            "swap_free": "8192.00 MB",
+            "units": "MB"
+          }
+        },
+        {
+          "description": "Get memory info in gigabytes",
+          "input": {
+            "units": "GB"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_process_info",
+      "description": "Get detailed information about a specific process from /proc/[pid]/. Returns process status, memory usage, command line, and environment.",
+      "category": "process",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pid": {
+            "type": "number",
+            "description": "Process ID to query",
+            "minimum": 1
+          },
+          "include_environ": {
+            "type": "boolean",
+            "description": "Include environment variables",
+            "default": false
+          },
+          "include_maps": {
+            "type": "boolean",
+            "description": "Include memory mappings",
+            "default": false
+          }
+        },
+        "required": ["pid"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Detailed process information"
+      },
+      "examples": [
+        {
+          "description": "Get basic info for init process",
+          "input": {
+            "pid": 1,
+            "include_environ": false,
+            "include_maps": false
+          }
+        },
+        {
+          "description": "Get full process info with environment",
+          "input": {
+            "pid": 1234,
+            "include_environ": true,
+            "include_maps": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "list_processes",
+      "description": "List all running processes by scanning /proc directory. Returns process IDs with basic information like name and state.",
+      "category": "process",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "filter_by_name": {
+            "type": "string",
+            "description": "Filter processes by name (partial match, case-insensitive)"
+          },
+          "sort_by": {
+            "type": "string",
+            "description": "Sort processes by field",
+            "enum": ["pid", "name", "memory", "cpu"],
+            "default": "pid"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "array",
+        "description": "List of processes with basic information",
+        "items": {
+          "type": "object"
+        }
+      },
+      "examples": [
+        {
+          "description": "List all processes sorted by PID",
+          "input": {
+            "sort_by": "pid"
+          }
+        },
+        {
+          "description": "Find all Python processes sorted by memory",
+          "input": {
+            "filter_by_name": "python",
+            "sort_by": "memory"
+          }
+        },
+        {
+          "description": "List all processes sorted by name",
+          "input": {
+            "sort_by": "name"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_network_stats",
+      "description": "Read network statistics from /proc/net/dev. Returns bytes/packets transmitted and received per interface.",
+      "category": "network",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "interface": {
+            "type": "string",
+            "description": "Specific network interface (e.g., 'eth0', 'wlan0', 'lo'), or omit for all interfaces"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Network statistics per interface"
+      },
+      "examples": [
+        {
+          "description": "Get stats for all interfaces",
+          "input": {}
+        },
+        {
+          "description": "Get stats for specific interface",
+          "input": {
+            "interface": "eth0"
+          }
+        },
+        {
+          "description": "Get loopback interface stats",
+          "input": {
+            "interface": "lo"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_system_uptime",
+      "description": "Read system uptime from /proc/uptime. Returns how long the system has been running and idle time.",
+      "category": "system",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "Time format for display",
+            "enum": ["seconds", "human_readable"],
+            "default": "human_readable"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "System uptime information"
+      },
+      "examples": [
+        {
+          "description": "Get uptime in human-readable format",
+          "input": {
+            "format": "human_readable"
+          },
+          "expectedOutput": {
+            "uptime": "5d 12h 34m 56s",
+            "uptime_seconds": 475496.0,
+            "idle_seconds": 1234567.89,
+            "idle_time": "342.94 hours"
+          }
+        },
+        {
+          "description": "Get uptime in seconds",
+          "input": {
+            "format": "seconds"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_load_average",
+      "description": "Read system load average from /proc/loadavg. Returns 1, 5, and 15 minute load averages.",
+      "category": "system",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Load average statistics"
+      },
+      "examples": [
+        {
+          "description": "Get current load average",
+          "input": {},
+          "expectedOutput": {
+            "load_1min": 1.23,
+            "load_5min": 0.98,
+            "load_15min": 0.75,
+            "running_processes": "2",
+            "total_processes": "345",
+            "last_pid": 12345
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_disk_stats",
+      "description": "Read disk I/O statistics from /proc/diskstats. Returns read/write operations and sectors for block devices.",
+      "category": "storage",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string",
+            "description": "Specific device name (e.g., 'sda', 'nvme0n1', 'vda'), or omit for all devices"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Disk I/O statistics per device"
+      },
+      "examples": [
+        {
+          "description": "Get stats for all disk devices",
+          "input": {}
+        },
+        {
+          "description": "Get stats for primary disk",
+          "input": {
+            "device": "sda"
+          }
+        },
+        {
+          "description": "Get stats for NVMe drive",
+          "input": {
+            "device": "nvme0n1"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_filesystem_mounts",
+      "description": "Read mounted filesystems from /proc/mounts. Returns mount points, filesystem types, and mount options.",
+      "category": "storage",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "mount_point": {
+            "type": "string",
+            "description": "Filter by specific mount point (e.g., '/', '/home', '/mnt/data')"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "array",
+        "description": "List of mounted filesystems",
+        "items": {
+          "type": "object"
+        }
+      },
+      "examples": [
+        {
+          "description": "Get all mounted filesystems",
+          "input": {}
+        },
+        {
+          "description": "Get info for root filesystem",
+          "input": {
+            "mount_point": "/"
+          }
+        },
+        {
+          "description": "Get info for home directory mount",
+          "input": {
+            "mount_point": "/home"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_interrupts",
+      "description": "Read interrupt statistics from /proc/interrupts. Returns interrupt counts per CPU for each IRQ.",
+      "category": "system",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "irq_number": {
+            "type": "number",
+            "description": "Specific IRQ number to query (e.g., 0, 1, 16), or omit for all interrupts",
+            "minimum": 0
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Interrupt statistics per IRQ"
+      },
+      "examples": [
+        {
+          "description": "Get all interrupt statistics",
+          "input": {}
+        },
+        {
+          "description": "Get stats for specific IRQ",
+          "input": {
+            "irq_number": 16
+          }
+        }
+      ]    },
+    {
+      "name": "list_systemd_services",
+      "description": "List all systemd services with their current state. Returns service name, load state, active state, and sub-state.",
+      "category": "systemd",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "Filter by service state",
+            "enum": ["active", "inactive", "failed", "running", "exited", "dead", "all"],
+            "default": "all"
+          },
+          "pattern": {
+            "type": "string",
+            "description": "Filter services by name pattern (e.g., 'ssh', 'nginx')"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "array",
+        "description": "List of systemd services with status information"
+      },
+      "examples": [
+        {
+          "description": "List all services",
+          "input": {
+            "state": "all"
+          }
+        },
+        {
+          "description": "List only active services",
+          "input": {
+            "state": "active"
+          }
+        },
+        {
+          "description": "List failed services",
+          "input": {
+            "state": "failed"
+          }
+        },
+        {
+          "description": "Find SSH-related services",
+          "input": {
+            "pattern": "ssh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_service_status",
+      "description": "Get detailed status information for a specific systemd service. Returns active state, memory usage, PID, uptime, and recent logs.",
+      "category": "systemd",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "service_name": {
+            "type": "string",
+            "description": "Name of the service (with or without .service suffix)"
+          },
+          "include_logs": {
+            "type": "boolean",
+            "description": "Include recent log entries",
+            "default": false
+          },
+          "log_lines": {
+            "type": "number",
+            "description": "Number of log lines to include if include_logs is true",
+            "default": 20,
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": ["service_name"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Detailed service status information"
+      },
+      "examples": [
+        {
+          "description": "Get SSH service status",
+          "input": {
+            "service_name": "sshd"
+          }
+        },
+        {
+          "description": "Get service status with logs",
+          "input": {
+            "service_name": "nginx",
+            "include_logs": true,
+            "log_lines": 50
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_service_logs",
+      "description": "Get systemd journal logs for a specific service using journalctl.",
+      "category": "systemd",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "service_name": {
+            "type": "string",
+            "description": "Name of the service"
+          },
+          "lines": {
+            "type": "number",
+            "description": "Number of recent log lines to retrieve",
+            "default": 100,
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "since": {
+            "type": "string",
+            "description": "Show logs since this time (e.g., '1 hour ago', 'yesterday', '2024-01-01')"
+          },
+          "priority": {
+            "type": "string",
+            "description": "Filter by log priority",
+            "enum": ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"]
+          }
+        },
+        "required": ["service_name"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Service logs with metadata"
+      },
+      "examples": [
+        {
+          "description": "Get last 100 lines",
+          "input": {
+            "service_name": "nginx",
+            "lines": 100
+          }
+        },
+        {
+          "description": "Get logs from last hour",
+          "input": {
+            "service_name": "sshd",
+            "since": "1 hour ago"
+          }
+        },
+        {
+          "description": "Get error logs only",
+          "input": {
+            "service_name": "mysql",
+            "priority": "err",
+            "lines": 50
+          }
+        }
+      ]
+    },
+    {
+      "name": "list_failed_services",
+      "description": "List all failed systemd services and units. Useful for quick system health check.",
+      "category": "systemd",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "unit_type": {
+            "type": "string",
+            "description": "Filter by unit type",
+            "enum": ["service", "socket", "timer", "mount", "all"],
+            "default": "all"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "array",
+        "description": "List of failed units"
+      },
+      "examples": [
+        {
+          "description": "List all failed units",
+          "input": {}
+        },
+        {
+          "description": "List failed services only",
+          "input": {
+            "unit_type": "service"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_systemd_units",
+      "description": "List all systemd units (services, sockets, timers, mounts, etc.) with their status.",
+      "category": "systemd",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "unit_type": {
+            "type": "string",
+            "description": "Filter by unit type",
+            "enum": ["service", "socket", "timer", "mount", "target", "device", "automount", "swap", "path", "all"],
+            "default": "all"
+          },
+          "state": {
+            "type": "string",
+            "description": "Filter by state",
+            "enum": ["loaded", "active", "inactive", "failed", "all"],
+            "default": "all"
+          }
+        },
+        "required": []
+      },
+      "outputSchema": {
+        "type": "array",
+        "description": "List of systemd units"
+      },
+      "examples": [
+        {
+          "description": "List all timers",
+          "input": {
+            "unit_type": "timer"
+          }
+        },
+        {
+          "description": "List all active sockets",
+          "input": {
+            "unit_type": "socket",
+            "state": "active"
+          }
+        }
+      ]
+    },
+    {
+      "name": "get_unit_dependencies",
+      "description": "Get dependency tree for a systemd unit showing what it requires and what requires it.",
+      "category": "systemd",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "unit_name": {
+            "type": "string",
+            "description": "Name of the systemd unit"
+          },
+          "dependency_type": {
+            "type": "string",
+            "description": "Type of dependencies to show",
+            "enum": ["requires", "wants", "requisite", "binds-to", "part-of", "required-by", "wanted-by", "all"],
+            "default": "all"
+          }
+        },
+        "required": ["unit_name"]
+      },
+      "outputSchema": {
+        "type": "object",
+        "description": "Unit dependency information"
+      },
+      "examples": [
+        {
+          "description": "Get all dependencies for SSH",
+          "input": {
+            "unit_name": "sshd.service"
+          }
+        },
+        {
+          "description": "Get only 'requires' dependencies",
+          "input": {
+            "unit_name": "nginx.service",
+            "dependency_type": "requires"
+          }
+        }
+      ]    }
+  ],
+  "registration_commands": [
+    {
+      "command": "register_tool",
+      "tool_name": "get_cpu_info",
+      "handler": "proc_utils.get_cpu_info",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_memory_info",
+      "handler": "proc_utils.get_memory_info",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_process_info",
+      "handler": "proc_utils.get_process_info",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "list_processes",
+      "handler": "proc_utils.list_processes",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_network_stats",
+      "handler": "proc_utils.get_network_stats",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_system_uptime",
+      "handler": "proc_utils.get_system_uptime",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_load_average",
+      "handler": "proc_utils.get_load_average",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_disk_stats",
+      "handler": "proc_utils.get_disk_stats",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_filesystem_mounts",
+      "handler": "proc_utils.get_filesystem_mounts",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_interrupts",
+      "handler": "proc_utils.get_interrupts",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "list_systemd_services",
+      "handler": "proc_utils.list_systemd_services",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_service_status",
+      "handler": "proc_utils.get_service_status",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_service_logs",
+      "handler": "proc_utils.get_service_logs",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "list_failed_services",
+      "handler": "proc_utils.list_failed_services",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_systemd_units",
+      "handler": "proc_utils.get_systemd_units",
+      "enabled": true
+    },
+    {
+      "command": "register_tool",
+      "tool_name": "get_unit_dependencies",
+      "handler": "proc_utils.get_unit_dependencies",
+      "enabled": true
+    }
+  ],
+  "categories": {
+    "system": {
+      "name": "System Information",
+      "description": "Tools for reading system-wide information",
+      "tools": ["get_cpu_info", "get_memory_info", "get_system_uptime", "get_load_average", "get_interrupts"]
+    },
+    "process": {
+      "name": "Process Management",
+      "description": "Tools for querying process information",
+      "tools": ["get_process_info", "list_processes"]
+    },
+    "network": {
+      "name": "Network Statistics",
+      "description": "Tools for network interface monitoring",
+      "tools": ["get_network_stats"]
+    },
+    "storage": {
+      "name": "Storage & Filesystem",
+      "description": "Tools for disk and filesystem information",
+      "tools": ["get_disk_stats", "get_filesystem_mounts"]
+    },
+    "systemd": {
+      "name": "Systemd Service Management",
+      "description": "Tools for analyzing and monitoring systemd services and units",
+      "tools": ["list_systemd_services", "get_service_status", "get_service_logs", "list_failed_services", "get_systemd_units", "get_unit_dependencies"]
+    }
+  },
+  "metadata": {
+    "total_tools": 16,
+    "requires_linux": true,
+    "requires_proc_filesystem": true,
+    "minimum_kernel_version": "2.6",
+    "dependencies": ["mcp>=0.9.0"],
+    "python_version": ">=3.10"
+  }
+}
