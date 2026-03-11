@@ -52,19 +52,24 @@ function initializeChat() {
 
 async function createNewSession() {
     console.log('💬 Chat: Creating new session...');
-    
-    // Get LLM config from localStorage
-    const llmConfig = JSON.parse(localStorage.getItem('llmConfig') || 'null');
-    if (!llmConfig) {
-        showError('Please configure LLM provider in Settings first');
-        return;
-    }
-
-    // Get enabled servers from localStorage
-    const servers = JSON.parse(localStorage.getItem('mcpServers') || '[]');
-    const enabledServers = servers.map(s => s.alias);
 
     try {
+        const llmConfigResponse = await fetch('/api/llm/config');
+        if (!llmConfigResponse.ok) {
+            if (llmConfigResponse.status === 404) {
+                showError('Please configure LLM provider in Settings first');
+                return;
+            }
+            throw new Error(`HTTP ${llmConfigResponse.status}`);
+        }
+
+        const llmConfig = await llmConfigResponse.json();
+
+        const serversResponse = await fetch('/api/servers');
+        const enabledServers = serversResponse.ok
+            ? (await serversResponse.json()).map(server => server.alias)
+            : [];
+
         const response = await fetch('/api/sessions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -97,16 +102,6 @@ async function sendMessage() {
     if (!content || isProcessing) return;
 
     console.log(`💬 Chat: Sending message: ${content.substring(0, 50)}...`);
-
-    // Sync servers and LLM config from localStorage before sending
-    // (in case backend was restarted and lost in-memory data)
-    console.log('💬 Chat: Syncing servers and LLM config...');
-    if (window.syncServersToBackend) {
-        await window.syncServersToBackend();
-    }
-    if (window.syncLLMConfigToBackend) {
-        await window.syncLLMConfigToBackend();
-    }
 
     // Create session if needed
     if (!currentSessionId) {

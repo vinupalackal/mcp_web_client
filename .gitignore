@@ -17,6 +17,9 @@ build/
 .env
 .env.local
 
+# Server-side persisted application data
+data/
+
 # IDE
 .vscode/
 .idea/

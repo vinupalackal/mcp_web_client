@@ -17,8 +17,10 @@ from backend.mcp_manager import MCPManager
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def reset_backend_state():
+def reset_backend_state(tmp_path, monkeypatch):
     """Clear all module-level in-memory storage before each test."""
+    data_dir = tmp_path / "mcp-test-data"
+    monkeypatch.setattr(main_module, "MCP_DATA_DIR", data_dir)
     main_module.servers_storage.clear()
     main_module.llm_config_storage = None
     main_module.enterprise_token_cache.clear()

@@ -82,16 +82,18 @@ describe('Frontend integration — TC-FE-INT-01 to 05', () => {
   // TC-FE-INT-03: First message auto-creates a session when currentSessionId is null
   // -------------------------------------------------------------------------
   test('TC-FE-INT-03: first message auto-creates a session', async () => {
-    const config = { provider: 'mock', model: 'mock', base_url: 'http://mock', temperature: 1.0 };
-    localStorage.getItem.mockImplementation((key) => {
-      if (key === 'llmConfig') return JSON.stringify(config);
-      if (key === 'mcpServers') return '[]';
-      return null;
-    });
-
     const fetchCalls = [];
     global.fetch = jest.fn().mockImplementation((url, opts) => {
       fetchCalls.push({ url, opts });
+      if (url === '/api/llm/config') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ provider: 'mock', model: 'mock', base_url: 'http://mock', temperature: 1.0 }),
+        });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
       if (url.includes('/api/sessions') && opts?.method === 'POST' && !url.includes('/messages')) {
         return Promise.resolve({
           ok: true,
@@ -134,8 +136,18 @@ describe('Frontend integration — TC-FE-INT-01 to 05', () => {
   // TC-FE-INT-04: Missing LLM config prevents message send
   // -------------------------------------------------------------------------
   test('TC-FE-INT-04: missing llm config prevents message from being sent', async () => {
-    localStorage.getItem.mockReturnValue(null); // no llmConfig
-    global.fetch = jest.fn();
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: false, status: 404, json: async () => ({ detail: 'LLM configuration not set' }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
     window.loadToolsSidebar = jest.fn().mockResolvedValue(undefined);
 
     loadAll();
@@ -161,21 +173,22 @@ describe('Frontend integration — TC-FE-INT-01 to 05', () => {
   // -------------------------------------------------------------------------
   // TC-FE-INT-05: DOMContentLoaded triggers both server and LLM config syncs
   // -------------------------------------------------------------------------
-  test('TC-FE-INT-05: page load syncs servers and LLM config to backend', async () => {
-    const servers = [
-      { server_id: 'x', alias: 'x', base_url: 'https://x.com', auth_type: 'none' }
-    ];
-    const config = { provider: 'mock', model: 'mock', base_url: 'http://mock', temperature: 1.0 };
-
-    localStorage.getItem.mockImplementation((key) => {
-      if (key === 'mcpServers') return JSON.stringify(servers);
-      if (key === 'llmConfig') return JSON.stringify(config);
-      return null;
-    });
-
+  test('TC-FE-INT-05: page load fetches servers and LLM config from backend', async () => {
     const syncedUrls = [];
     global.fetch = jest.fn().mockImplementation((url, opts) => {
       syncedUrls.push({ url, method: opts?.method });
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({ provider: 'mock', model: 'mock', base_url: 'http://mock', temperature: 1.0 }) });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
       return Promise.resolve({ ok: true, json: async () => ({}) });
     });
 
@@ -185,14 +198,10 @@ describe('Frontend integration — TC-FE-INT-01 to 05', () => {
     // Wait for async initialization
     await new Promise(r => setTimeout(r, 30));
 
-    const serverSync = syncedUrls.filter(
-      c => c.url && c.url.includes('/api/servers') && c.method === 'POST'
-    );
-    const llmSync = syncedUrls.filter(
-      c => c.url && c.url.includes('/api/llm/config') && c.method === 'POST'
-    );
+    const serverFetch = syncedUrls.filter(c => c.url === '/api/servers');
+    const llmFetch = syncedUrls.filter(c => c.url === '/api/llm/config');
 
-    expect(serverSync.length).toBeGreaterThanOrEqual(1);
-    expect(llmSync.length).toBeGreaterThanOrEqual(1);
+    expect(serverFetch.length).toBeGreaterThanOrEqual(1);
+    expect(llmFetch.length).toBeGreaterThanOrEqual(1);
   });
 });

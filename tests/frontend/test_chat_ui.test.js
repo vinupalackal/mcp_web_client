@@ -133,12 +133,14 @@ describe('Chat UI — initialization (TC-FE-CHAT-01 to 08)', () => {
     });
     global.fetch = fetchSpy;
 
-    // Set session ID to avoid createNewSession being called
-    // by simulating a prior session creation
-    localStorage.getItem.mockImplementation((key) => {
-      if (key === 'llmConfig') return JSON.stringify({ provider: 'mock', model: 'm', base_url: 'http://x' });
-      if (key === 'mcpServers') return '[]';
-      return null;
+    fetchSpy.mockImplementation((url) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({ provider: 'mock', model: 'm', base_url: 'http://x' }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
     });
 
     input.value = 'test message';
@@ -178,8 +180,15 @@ describe('Chat UI — createNewSession (TC-FE-CHAT-09 to 14)', () => {
   });
 
   test('TC-FE-CHAT-09: no LLM config → error shown, no fetch to /api/sessions', async () => {
-    localStorage.getItem.mockReturnValue(null);
-    global.fetch = jest.fn();
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: false, status: 404, json: async () => ({ detail: 'LLM configuration not set' }) });
+      }
+      if (url === '/api/servers' || url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
 
     document.getElementById('newChatBtn').click();
     await Promise.resolve(); // flush microtasks
@@ -195,15 +204,20 @@ describe('Chat UI — createNewSession (TC-FE-CHAT-09 to 14)', () => {
   });
 
   test('TC-FE-CHAT-10/11/12: successful session creation clears chat and shows system message', async () => {
-    localStorage.getItem.mockImplementation((key) => {
-      if (key === 'llmConfig') return JSON.stringify({ provider: 'mock', model: 'm', base_url: 'http://x' });
-      if (key === 'mcpServers') return '[]';
-      return null;
-    });
-
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ session_id: 'uuid-1234', created_at: new Date().toISOString() }),
+    global.fetch = jest.fn().mockImplementation((url, opts) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({ provider: 'mock', model: 'm', base_url: 'http://x' }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url.includes('/api/sessions') && opts?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => ({ session_id: 'uuid-1234', created_at: new Date().toISOString() }) });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
     });
 
     document.getElementById('chatMessages').innerHTML = '<p>old content</p>';
@@ -305,19 +319,15 @@ describe('Chat UI — addMessage renders content (TC-FE-CHAT-27 to 29)', () => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
 
-    localStorage.getItem.mockImplementation((key) => {
-      if (key === 'llmConfig') return JSON.stringify({ provider: 'mock', model: 'm', base_url: 'http://x' });
-      if (key === 'mcpServers') return '[]';
-      return null;
-    });
-
-    // Stub sync functions so sendMessage doesn't call them via fetch
-    window.syncServersToBackend = jest.fn().mockResolvedValue(undefined);
-    window.syncLLMConfigToBackend = jest.fn().mockResolvedValue(undefined);
     window.loadToolsSidebar = jest.fn().mockResolvedValue(undefined);
 
-    // Mock fetch: session creation → message send
     global.fetch = jest.fn().mockImplementation((url, opts) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({ provider: 'mock', model: 'm', base_url: 'http://x' }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
       if (url.includes('/api/sessions') && opts?.method === 'POST' && !url.includes('/messages')) {
         return Promise.resolve({
           ok: true,

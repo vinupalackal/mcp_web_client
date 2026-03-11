@@ -5,6 +5,8 @@ Integration tests — MCP Server CRUD (TR-SRV-*)
 import os
 import pytest
 
+import backend.main as main_module
+
 
 class TestListServers:
 
@@ -99,6 +101,17 @@ class TestCreateServer:
         r = client.post("/api/servers", json=server_payload_bearer)
         assert r.json()["bearer_token"] == "my-secret-token"
 
+    def test_servers_persisted_to_server_disk(self, client, server_payload_bearer):
+        """TC-SRV-18b: Creating server writes servers.json under MCP_DATA_DIR."""
+        r = client.post("/api/servers", json=server_payload_bearer)
+        assert r.status_code == 201
+
+        servers_file = main_module.MCP_DATA_DIR / "servers.json"
+        assert servers_file.exists()
+        text = servers_file.read_text()
+        assert "bearer_server" in text
+        assert "my-secret-token" in text
+
 
 class TestUpdateServer:
 
@@ -159,3 +172,14 @@ class TestDeleteServer:
         client.delete(f"/api/servers/{sid}")
         r = client.delete(f"/api/servers/{sid}")
         assert r.status_code == 404
+
+    def test_load_servers_from_disk_helper(self, client, server_payload):
+        """TC-SRV-28: _load_servers_from_disk reconstructs saved server configs."""
+        client.post("/api/servers", json=server_payload)
+
+        main_module.servers_storage.clear()
+        loaded = main_module._load_servers_from_disk()
+
+        assert len(loaded) == 1
+        server = next(iter(loaded.values()))
+        assert server.alias == "test_server"

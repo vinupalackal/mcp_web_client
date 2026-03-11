@@ -421,23 +421,23 @@ describe('Settings modal — enterprise gateway mode', () => {
   });
 
   test('TC-FE-SET-18i: loadLLMConfig restores enterprise mode when config has provider=enterprise', async () => {
-    const store = {};
-    const enterpriseConfig = {
-      gateway_mode: 'enterprise',
-      provider: 'enterprise',
-      model: 'gpt-4o',
-      base_url: 'https://gateway.internal/v1',
-      auth_method: 'bearer',
-      client_id: 'ent-client',
-      client_secret: 'ent-secret',
-      token_endpoint_url: 'https://auth.internal/token',
-      temperature: 0.2,
-    };
-    store['llmConfig'] = JSON.stringify(enterpriseConfig);
-    localStorage.getItem.mockImplementation((key) => store[key] ?? null);
-    localStorage.setItem.mockImplementation((key, value) => { store[key] = String(value); });
-
     global.fetch = jest.fn((url) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({
+          gateway_mode: 'enterprise',
+          provider: 'enterprise',
+          model: 'gpt-4o',
+          base_url: 'https://gateway.internal/v1',
+          auth_method: 'bearer',
+          client_id: 'ent-client',
+          client_secret: 'ent-secret',
+          token_endpoint_url: 'https://auth.internal/token',
+          temperature: 0.2,
+        }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
       if (url === '/api/enterprise/token/status') {
         return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
       }
@@ -453,23 +453,23 @@ describe('Settings modal — enterprise gateway mode', () => {
   });
 
   test('TC-FE-SET-18j: loadLLMConfig populates enterprise fields from stored config', async () => {
-    const store = {};
-    const enterpriseConfig = {
-      gateway_mode: 'enterprise',
-      provider: 'enterprise',
-      model: 'gpt-4o',
-      base_url: 'https://gateway.internal/v1',
-      auth_method: 'bearer',
-      client_id: 'ent-client',
-      client_secret: 'ent-secret',
-      token_endpoint_url: 'https://auth.internal/token',
-      temperature: 0.2,
-    };
-    store['llmConfig'] = JSON.stringify(enterpriseConfig);
-    localStorage.getItem.mockImplementation((key) => store[key] ?? null);
-    localStorage.setItem.mockImplementation((key, value) => { store[key] = String(value); });
-
     global.fetch = jest.fn((url) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({
+          gateway_mode: 'enterprise',
+          provider: 'enterprise',
+          model: 'gpt-4o',
+          base_url: 'https://gateway.internal/v1',
+          auth_method: 'bearer',
+          client_id: 'ent-client',
+          client_secret: 'ent-secret',
+          token_endpoint_url: 'https://auth.internal/token',
+          temperature: 0.2,
+        }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
       if (url === '/api/enterprise/token/status') {
         return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
       }
@@ -541,17 +541,25 @@ describe('Settings modal — handleAddServer', () => {
     expect(body.bearer_token === null || body.bearer_token === '' || body.bearer_token === undefined).toBe(true);
   });
 
-  test('TC-FE-SET-21: saved server appears in localStorage', async () => {
+  test('TC-FE-SET-21: saved server triggers backend list refresh', async () => {
     const newServer = { server_id: 'new-id', alias: 'my_server', base_url: 'https://mcp.example.com', auth_type: 'none' };
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => newServer,
-    });
-
-    const stored = [];
-    localStorage.getItem.mockReturnValue('[]');
-    localStorage.setItem.mockImplementation((key, val) => {
-      if (key === 'mcpServers') stored.push(JSON.parse(val));
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/servers' && global.fetch.mock.calls.length <= 1) {
+        return Promise.resolve({ ok: true, json: async () => newServer });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [newServer] });
+      }
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
     });
 
     document.getElementById('serverAlias').value = 'my_server';
@@ -562,7 +570,7 @@ describe('Settings modal — handleAddServer', () => {
     form.dispatchEvent(new Event('submit', { bubbles: true }));
     await new Promise(r => setTimeout(r, 0));
 
-    expect(localStorage.setItem).toHaveBeenCalled();
+    expect(document.getElementById('serversList').innerHTML).toContain('my_server');
   });
 
   test('TC-FE-SET-22: server form reset after successful add', async () => {
@@ -660,26 +668,23 @@ describe('Settings modal — deleteServer', () => {
     expect(deleteCalls[0][0]).toContain('srv-1');
   });
 
-  test('TC-FE-SET-30: deleted server removed from localStorage', async () => {
-    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
-    global.confirm.mockReturnValue(true);
-
-    const servers = [
-      { server_id: 'srv-1', alias: 'srv1', base_url: 'https://a.com', auth_type: 'none' },
-      { server_id: 'srv-2', alias: 'srv2', base_url: 'https://b.com', auth_type: 'none' },
-    ];
-    localStorage.getItem.mockReturnValue(JSON.stringify(servers));
-
-    let savedValue = null;
-    localStorage.setItem.mockImplementation((key, val) => {
-      if (key === 'mcpServers') savedValue = JSON.parse(val);
+  test('TC-FE-SET-30: deleted server removed from rendered backend list', async () => {
+    global.fetch = jest.fn((url, opts) => {
+      if (opts?.method === 'DELETE') {
+        return Promise.resolve({ ok: true, json: async () => ({}) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [{ server_id: 'srv-2', alias: 'srv2', base_url: 'https://b.com', auth_type: 'none' }] });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
     });
+    global.confirm.mockReturnValue(true);
 
     await window.deleteServer('srv-1');
 
-    expect(savedValue).not.toBeNull();
-    expect(savedValue.find(s => s.server_id === 'srv-1')).toBeUndefined();
-    expect(savedValue.find(s => s.server_id === 'srv-2')).toBeTruthy();
+    const html = document.getElementById('serversList').innerHTML;
+    expect(html).not.toContain('srv1');
+    expect(html).toContain('srv2');
   });
 });
 
@@ -816,9 +821,7 @@ describe('Settings modal — handleSaveLLMConfig', () => {
     expect(body.temperature).toBeCloseTo(1.5);
   });
 
-  test('TC-FE-SET-47: config saved to localStorage after successful POST', async () => {
-    // settings.js saves the *server response* (saved = await response.json())
-    // so we return the full config from the server to assert correct persistence
+  test('TC-FE-SET-47: config save persists only non-sensitive UI prefs to localStorage', async () => {
     const serverResponse = {
       provider: 'mock', model: 'mock', base_url: 'http://mock',
       api_key: null, temperature: 1.0
@@ -838,10 +841,8 @@ describe('Settings modal — handleSaveLLMConfig', () => {
     form.dispatchEvent(new Event('submit', { bubbles: true }));
     await new Promise(r => setTimeout(r, 0));
 
-    expect(localStorage.setItem).toHaveBeenCalledWith(
-      'llmConfig',
-      expect.stringContaining('"provider":"mock"')
-    );
+    expect(localStorage.setItem).toHaveBeenCalledWith('llmGatewayMode', 'standard');
+    expect(localStorage.setItem).not.toHaveBeenCalledWith('llmConfig', expect.any(String));
   });
 
   test('TC-FE-SET-49: API error shown when config save fails', async () => {
@@ -872,20 +873,27 @@ describe('Settings modal — handleSaveLLMConfig', () => {
 // ============================================================================
 describe('Settings modal — loadLLMConfig', () => {
 
-  test('TC-FE-SET-50: form fields populated from localStorage', async () => {
+  test('TC-FE-SET-50: form fields populated from backend config', async () => {
     setupFullDOM();
-    const config = {
-      provider: 'openai', model: 'gpt-4o',
-      base_url: 'https://api.openai.com', api_key: 'sk-abc', temperature: 0.8
-    };
-    localStorage.getItem.mockImplementation((key) =>
-      key === 'llmConfig' ? JSON.stringify(config) : null
-    );
-    // Fetch for sync calls (syncServersToBackend skips because no servers,
-    // syncLLMConfigToBackend POSTs, loadTools GETs)
-    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({
+          provider: 'openai', model: 'gpt-4o',
+          base_url: 'https://api.openai.com', api_key: 'sk-abc', temperature: 0.8
+        }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
     loadSettings();
-    // Wait for async loadSettings to complete (sync → LLM config → tools)
     await new Promise(r => setTimeout(r, 30));
 
     expect(document.getElementById('llmProvider').value).toBe('openai');

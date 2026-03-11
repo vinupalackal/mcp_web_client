@@ -25,15 +25,9 @@ const ENTERPRISE_DEFAULT_MODELS = [
 ];
 
 const STORAGE_KEYS = {
-    servers: 'mcpServers',
-    llmConfig: 'llmConfig',
+// Non-sensitive UI preferences only — credentials and configs live on the server
     gatewayMode: 'llmGatewayMode',
-    enterpriseGatewayUrl: 'enterpriseGatewayUrl',
-    enterpriseTokenEndpoint: 'enterpriseTokenEndpoint',
-    enterpriseClientId: 'enterpriseClientId',
-    enterpriseClientSecret: 'enterpriseClientSecret',
     enterpriseSelectedModel: 'enterpriseSelectedModel',
-    enterpriseAuthMethod: 'enterpriseAuthMethod',
     enterpriseCustomModels: 'enterpriseCustomModels',
 };
 
@@ -195,6 +189,40 @@ function setGatewayMode(mode, persist = true) {
     }
 }
 
+// ============================================================================
+// Backend Config Loaders  (credentials never leave the server)
+// ============================================================================
+
+async function loadLLMConfigFromBackend() {
+    try {
+        const response = await fetch('/api/llm/config');
+        if (!response.ok) {
+            if (response.status !== 404) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            loadLLMConfig(null);
+            return;
+        }
+        const config = await response.json();
+        loadLLMConfig(config);
+    } catch (error) {
+        console.error('⚙️ Settings: Failed to load LLM config from backend', error);
+        loadLLMConfig(null);
+    }
+}
+
+async function loadServersFromBackend() {
+    try {
+        const response = await fetch('/api/servers');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const servers = await response.json();
+        renderServersList(servers);
+    } catch (error) {
+        console.error('⚙️ Settings: Failed to load servers from backend', error);
+        renderServersList([]);
+    }
+}
+
 function updateLlmFieldRequirements(mode) {
     const standardRequired = mode === 'standard';
     const enterpriseRequired = mode === 'enterprise';
@@ -338,11 +366,8 @@ async function handleAddServer(e) {
         }
 
         const server = await response.json();
-        const servers = JSON.parse(localStorage.getItem(STORAGE_KEYS.servers) || '[]');
-        servers.push(server);
-        localStorage.setItem(STORAGE_KEYS.servers, JSON.stringify(servers));
-
-        renderServersList();
+        await response.json();  // consume response body
+        await loadServersFromBackend();
         addServerForm.reset();
         updateServerAuthUI();
         showSuccess('Server added successfully!');
@@ -352,11 +377,10 @@ async function handleAddServer(e) {
     }
 }
 
-function renderServersList() {
-    const servers = JSON.parse(localStorage.getItem(STORAGE_KEYS.servers) || '[]');
+function renderServersList(servers) {
     const serversList = document.getElementById('serversList');
 
-    if (servers.length === 0) {
+    if (!Array.isArray(servers) || servers.length === 0) {
         serversList.innerHTML = '<p class="empty-state">No servers configured yet.</p>';
         return;
     }
@@ -382,11 +406,7 @@ async function deleteServer(serverId) {
             throw new Error(`HTTP ${response.status}`);
         }
 
-        let servers = JSON.parse(localStorage.getItem(STORAGE_KEYS.servers) || '[]');
-        servers = servers.filter(server => server.server_id !== serverId);
-        localStorage.setItem(STORAGE_KEYS.servers, JSON.stringify(servers));
-
-        renderServersList();
+        await loadServersFromBackend();
         showSuccess('Server deleted');
     } catch (error) {
         console.error('⚙️ Settings: Delete failed', error);
@@ -400,7 +420,6 @@ async function handleRefreshTools() {
     refreshToolsBtn.textContent = '🔄 Refreshing...';
 
     try {
-        await syncServersToBackend();
         const response = await fetch('/api/servers/refresh-tools', { method: 'POST' });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
@@ -523,16 +542,10 @@ async function handleSaveLLMConfig(e) {
         }
 
         const saved = await response.json();
-        localStorage.setItem(STORAGE_KEYS.llmConfig, JSON.stringify(saved));
+        // Store only non-sensitive UI preferences — credentials stay on the server
         localStorage.setItem(STORAGE_KEYS.gatewayMode, mode);
-
         if (mode === 'enterprise') {
-            localStorage.setItem(STORAGE_KEYS.enterpriseGatewayUrl, saved.base_url);
-            localStorage.setItem(STORAGE_KEYS.enterpriseTokenEndpoint, saved.token_endpoint_url);
-            localStorage.setItem(STORAGE_KEYS.enterpriseClientId, saved.client_id);
-            localStorage.setItem(STORAGE_KEYS.enterpriseClientSecret, saved.client_secret);
             localStorage.setItem(STORAGE_KEYS.enterpriseSelectedModel, saved.model);
-            localStorage.setItem(STORAGE_KEYS.enterpriseAuthMethod, saved.auth_method || 'bearer');
         }
 
         showSuccess('LLM configuration saved!');
@@ -545,8 +558,8 @@ async function handleSaveLLMConfig(e) {
     }
 }
 
-function loadLLMConfig() {
-    const config = getStoredLLMConfig();
+function loadLLMConfig(config) {
+    // config is supplied by loadLLMConfigFromBackend — never read sensitive config from localStorage
     const storedGatewayMode = localStorage.getItem(STORAGE_KEYS.gatewayMode);
     const inferredMode = config?.provider === 'enterprise' || config?.gateway_mode === 'enterprise'
         ? 'enterprise'
@@ -559,11 +572,11 @@ function loadLLMConfig() {
     document.getElementById('llmTemperature').value = config?.temperature ?? '0.7';
 
     if (config?.provider === 'enterprise') {
-        document.getElementById('enterpriseGatewayUrl').value = config.base_url || localStorage.getItem(STORAGE_KEYS.enterpriseGatewayUrl) || '';
-        document.getElementById('enterpriseAuthMethod').value = config.auth_method || localStorage.getItem(STORAGE_KEYS.enterpriseAuthMethod) || 'bearer';
-        document.getElementById('enterpriseClientId').value = config.client_id || localStorage.getItem(STORAGE_KEYS.enterpriseClientId) || '';
-        document.getElementById('enterpriseClientSecret').value = config.client_secret || localStorage.getItem(STORAGE_KEYS.enterpriseClientSecret) || '';
-        document.getElementById('enterpriseTokenEndpoint').value = config.token_endpoint_url || localStorage.getItem(STORAGE_KEYS.enterpriseTokenEndpoint) || '';
+        document.getElementById('enterpriseGatewayUrl').value = config.base_url || '';
+        document.getElementById('enterpriseAuthMethod').value = config.auth_method || 'bearer';
+        document.getElementById('enterpriseClientId').value = config.client_id || '';
+        document.getElementById('enterpriseClientSecret').value = config.client_secret || '';
+        document.getElementById('enterpriseTokenEndpoint').value = config.token_endpoint_url || '';
         enterpriseModelSelect.value = config.model || localStorage.getItem(STORAGE_KEYS.enterpriseSelectedModel) || 'gpt-4o';
     } else if (config) {
         document.getElementById('llmProvider').value = config.provider;
@@ -571,12 +584,6 @@ function loadLLMConfig() {
         document.getElementById('llmBaseUrl').value = config.base_url;
         document.getElementById('llmApiKey').value = config.api_key || '';
         llmProviderSelect?.dispatchEvent(new Event('change'));
-    } else {
-        document.getElementById('enterpriseGatewayUrl').value = localStorage.getItem(STORAGE_KEYS.enterpriseGatewayUrl) || '';
-        document.getElementById('enterpriseAuthMethod').value = localStorage.getItem(STORAGE_KEYS.enterpriseAuthMethod) || 'bearer';
-        document.getElementById('enterpriseClientId').value = localStorage.getItem(STORAGE_KEYS.enterpriseClientId) || '';
-        document.getElementById('enterpriseClientSecret').value = localStorage.getItem(STORAGE_KEYS.enterpriseClientSecret) || '';
-        document.getElementById('enterpriseTokenEndpoint').value = localStorage.getItem(STORAGE_KEYS.enterpriseTokenEndpoint) || '';
     }
 }
 
@@ -658,70 +665,16 @@ function renderEnterpriseTokenStatus(status) {
     enterpriseTokenStatus.textContent = status.error ? `Token unavailable · ${status.error}` : 'Token not fetched';
 }
 
-async function syncLLMConfigToBackend() {
-    const config = getStoredLLMConfig();
-    if (!config) {
-        console.log('⚙️ Settings: No LLM config to sync');
-        return;
-    }
-
-    console.log('⚙️ Settings: Syncing LLM config to backend...');
-    try {
-        const response = await fetch('/api/llm/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(config),
-        });
-
-        if (response.ok) {
-            console.log('✓ LLM config synced');
-        } else {
-            console.warn('⚠️ Failed to sync LLM config:', response.status);
-        }
-    } catch (error) {
-        console.error('✗ Failed to sync LLM config:', error);
-    }
-}
-
 // ============================================================================
 // Settings Loader
 // ============================================================================
 
 async function loadSettings() {
-    console.log('⚙️ Settings: Loading from localStorage...');
-    await syncServersToBackend();
-    await syncLLMConfigToBackend();
-    renderServersList();
-    loadLLMConfig();
+    console.log('⚙️ Settings: Loading from backend...');
+    await loadServersFromBackend();
+    await loadLLMConfigFromBackend();
     await loadEnterpriseTokenStatus();
     loadTools();
-}
-
-async function syncServersToBackend() {
-    const servers = JSON.parse(localStorage.getItem(STORAGE_KEYS.servers) || '[]');
-    if (servers.length === 0) {
-        console.log('⚙️ Settings: No servers to sync');
-        return;
-    }
-
-    console.log(`⚙️ Settings: Syncing ${servers.length} servers to backend...`);
-    for (const server of servers) {
-        try {
-            const response = await fetch('/api/servers', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(server),
-            });
-
-            if (response.ok) {
-                console.log(`✓ Synced: ${server.alias}`);
-            } else if (response.status === 409) {
-                console.log(`✓ Already exists: ${server.alias}`);
-            }
-        } catch (error) {
-            console.error(`✗ Failed to sync ${server.alias}:`, error);
-        }
-    }
 }
 
 // ============================================================================
@@ -754,14 +707,6 @@ function safeParseStoredJson(key, fallback) {
     }
 }
 
-function getStoredLLMConfig() {
-    const value = safeParseStoredJson(STORAGE_KEYS.llmConfig, null);
-    if (!value || Array.isArray(value) || typeof value !== 'object') {
-        return null;
-    }
-    return value;
-}
-
 function showFormError(form, message) {
     let errorDiv = form.querySelector('.error-message');
     if (!errorDiv) {
@@ -785,8 +730,6 @@ function showSuccess(message) {
 }
 
 window.deleteServer = deleteServer;
-window.syncServersToBackend = syncServersToBackend;
-window.syncLLMConfigToBackend = syncLLMConfigToBackend;
 window.removeEnterpriseCustomModel = removeEnterpriseCustomModel;
 
 console.log('⚙️ Settings: Module loaded');

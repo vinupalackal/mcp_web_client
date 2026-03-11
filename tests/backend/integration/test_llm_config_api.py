@@ -2,7 +2,11 @@
 Integration tests — LLM Configuration endpoints (TR-LLM-*)
 """
 
+from pathlib import Path
+
 import pytest
+
+import backend.main as main_module
 
 
 class TestGetLLMConfig:
@@ -103,3 +107,25 @@ class TestSaveLLMConfig:
         bad.pop("token_endpoint_url")
         r = client.post("/api/llm/config", json=bad)
         assert r.status_code == 422
+
+    def test_config_persisted_to_server_disk(self, client, llm_enterprise):
+        """TC-LLM-16: Saving config writes llm_config.json under MCP_DATA_DIR."""
+        r = client.post("/api/llm/config", json=llm_enterprise)
+        assert r.status_code == 200
+
+        config_file = main_module.MCP_DATA_DIR / "llm_config.json"
+        assert config_file.exists()
+        text = config_file.read_text()
+        assert "enterprise-client" in text
+        assert "enterprise-secret" in text
+
+    def test_load_llm_config_from_disk_helper(self, client, llm_enterprise):
+        """TC-LLM-17: _load_llm_config_from_disk reconstructs saved enterprise config."""
+        client.post("/api/llm/config", json=llm_enterprise)
+
+        main_module.llm_config_storage = None
+        loaded = main_module._load_llm_config_from_disk()
+
+        assert loaded is not None
+        assert loaded.provider == "enterprise"
+        assert loaded.client_id == "enterprise-client"

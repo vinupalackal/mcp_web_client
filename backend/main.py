@@ -61,6 +61,61 @@ llm_config_storage: LLMConfig | None = None
 enterprise_token_cache: dict[str, object] = {}
 # Tools now managed by mcp_manager
 
+# Persistent storage directory (credentials live here, not in the browser)
+MCP_DATA_DIR = PathLib(os.getenv("MCP_DATA_DIR", "./data"))
+
+
+def _save_llm_config_to_disk(config: LLMConfig) -> None:
+    """Persist LLM config (including credentials) to server-side disk."""
+    try:
+        MCP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (MCP_DATA_DIR / "llm_config.json").write_text(config.model_dump_json(indent=2))
+        logger_internal.info(f"LLM config persisted to disk (provider={config.provider})")
+    except Exception as e:
+        logger_internal.error(f"Failed to persist LLM config to disk: {e}")
+
+
+def _load_llm_config_from_disk() -> "LLMConfig | None":
+    """Load LLM config from server-side disk on startup."""
+    config_file = MCP_DATA_DIR / "llm_config.json"
+    if not config_file.exists():
+        return None
+    try:
+        config = LLMConfig.model_validate_json(config_file.read_text())
+        logger_internal.info(f"Loaded LLM config from disk (provider={config.provider})")
+        return config
+    except Exception as e:
+        logger_internal.warning(f"Failed to load LLM config from disk: {e}")
+        return None
+
+
+def _save_servers_to_disk() -> None:
+    """Persist all MCP server configs (including tokens) to server-side disk."""
+    try:
+        MCP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        servers_list = [_json.loads(s.model_dump_json()) for s in servers_storage.values()]
+        (MCP_DATA_DIR / "servers.json").write_text(_json.dumps(servers_list, indent=2))
+        logger_internal.info(f"Servers persisted to disk ({len(servers_storage)} servers)")
+    except Exception as e:
+        logger_internal.error(f"Failed to persist servers to disk: {e}")
+
+
+def _load_servers_from_disk() -> "dict[str, ServerConfig]":
+    """Load MCP server configs from server-side disk on startup."""
+    servers_file = MCP_DATA_DIR / "servers.json"
+    if not servers_file.exists():
+        return {}
+    try:
+        import json as _json
+        data = _json.loads(servers_file.read_text())
+        loaded = {s["server_id"]: ServerConfig.model_validate(s) for s in data}
+        logger_internal.info(f"Loaded {len(loaded)} servers from disk")
+        return loaded
+    except Exception as e:
+        logger_internal.warning(f"Failed to load servers from disk: {e}")
+        return {}
+
 
 def _get_enterprise_token_status() -> EnterpriseTokenStatusResponse:
     """Return current enterprise token cache status."""
@@ -95,8 +150,19 @@ def _redacted_token_request_curl(token_request: EnterpriseTokenRequest) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
+    global llm_config_storage
     logger_internal.info("🚀 MCP Client Web starting up")
     logger_internal.info(f"Environment: MCP_ALLOW_HTTP_INSECURE={os.getenv('MCP_ALLOW_HTTP_INSECURE', 'false')}")
+    logger_internal.info(f"Data directory: {MCP_DATA_DIR.resolve()}")
+
+    # Load persisted credentials and configs from server-side disk
+    loaded_config = _load_llm_config_from_disk()
+    if loaded_config:
+        llm_config_storage = loaded_config
+    loaded_servers = _load_servers_from_disk()
+    if loaded_servers:
+        servers_storage.update(loaded_servers)
+
     yield
     logger_internal.info("👋 MCP Client Web shutting down")
 
@@ -243,6 +309,7 @@ async def create_server(
     servers_storage[server.server_id] = server
     logger_internal.info(f"Server registered: {server.alias} ({server.server_id})")
     logger_external.info(f"← 201 Created")
+    _save_servers_to_disk()
     
     # TODO: Initialize MCP server connection
     # await mcp_manager.initialize_server(server)
@@ -279,6 +346,7 @@ async def update_server(
     servers_storage[server_id] = server
     logger_internal.info(f"Server updated: {server.alias} ({server_id})")
     logger_external.info(f"← 200 OK")
+    _save_servers_to_disk()
     
     return server
 
@@ -319,6 +387,7 @@ async def delete_server(
     logger_internal.info(f"Removed {len(tools_to_remove)} tools for {server.alias}")
     
     logger_external.info(f"← 200 OK")
+    _save_servers_to_disk()
     return DeleteResponse(
         success=True,
         message=f"Server '{server.alias}' deleted successfully"
@@ -449,6 +518,7 @@ async def save_llm_config(
     
     llm_config_storage = config
     logger_external.info(f"← 200 OK")
+    _save_llm_config_to_disk(config)
     
     return config
 
