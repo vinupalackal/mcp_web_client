@@ -106,6 +106,20 @@ class TestLLMConfig:
         )
         assert cfg.provider == "openai"
 
+    def test_llm_timeout_ms_default(self):
+        """TC-MODEL-07b: Default llm_timeout_ms is 180000."""
+        cfg = LLMConfig(provider="mock", model="m", base_url="https://x.com")
+        assert cfg.llm_timeout_ms == 180000
+
+    def test_llm_timeout_ms_boundaries(self):
+        """TC-MODEL-07c: llm_timeout_ms accepts 5000..600000 and rejects out of range values."""
+        LLMConfig(provider="mock", model="m", base_url="https://x.com", llm_timeout_ms=5000)
+        LLMConfig(provider="mock", model="m", base_url="https://x.com", llm_timeout_ms=600000)
+        with pytest.raises(ValidationError):
+            LLMConfig(provider="mock", model="m", base_url="https://x.com", llm_timeout_ms=4999)
+        with pytest.raises(ValidationError):
+            LLMConfig(provider="mock", model="m", base_url="https://x.com", llm_timeout_ms=600001)
+
     def test_provider_valid_values(self):
         """TC-MODEL-08a: All valid providers accepted."""
         for p in ("openai", "ollama", "mock"):

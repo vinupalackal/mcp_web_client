@@ -273,6 +273,7 @@ describe('Settings modal — enterprise gateway mode', () => {
     document.getElementById('enterpriseClientId').value = 'enterprise-client';
     document.getElementById('enterpriseClientSecret').value = 'enterprise-secret';
     document.getElementById('enterpriseTokenEndpoint').value = 'https://auth.internal/v2/oauth/token';
+    document.getElementById('enterpriseLlmTimeoutMs').value = '240000';
     document.getElementById('llmTemperature').value = '0.2';
 
     const form = document.getElementById('llmConfigForm');
@@ -284,6 +285,7 @@ describe('Settings modal — enterprise gateway mode', () => {
     expect(body.provider).toBe('enterprise');
     expect(body.gateway_mode).toBe('enterprise');
     expect(body.client_secret).toBe('enterprise-secret');
+    expect(body.llm_timeout_ms).toBe(240000);
   });
 
   test('TC-FE-SET-18c: fetch token calls enterprise token endpoint', async () => {
@@ -465,6 +467,7 @@ describe('Settings modal — enterprise gateway mode', () => {
           client_secret: 'ent-secret',
           token_endpoint_url: 'https://auth.internal/token',
           temperature: 0.2,
+          llm_timeout_ms: 240000,
         }) });
       }
       if (url === '/api/servers') {
@@ -483,6 +486,7 @@ describe('Settings modal — enterprise gateway mode', () => {
     expect(document.getElementById('enterpriseGatewayUrl').value).toBe('https://gateway.internal/v1');
     expect(document.getElementById('enterpriseClientId').value).toBe('ent-client');
     expect(document.getElementById('enterpriseTokenEndpoint').value).toBe('https://auth.internal/token');
+    expect(document.getElementById('enterpriseLlmTimeoutMs').value).toBe('240000');
   });
 });
 
@@ -786,6 +790,7 @@ describe('Settings modal — handleSaveLLMConfig', () => {
     document.getElementById('llmBaseUrl').value = 'https://api.openai.com';
     document.getElementById('llmApiKey').value = 'sk-test';
     document.getElementById('llmTemperature').value = '0.7';
+    document.getElementById('llmTimeoutMs').value = '240000';
 
     const form = document.getElementById('llmConfigForm');
     form.dispatchEvent(new Event('submit', { bubbles: true }));
@@ -797,6 +802,7 @@ describe('Settings modal — handleSaveLLMConfig', () => {
     expect(body.provider).toBe('openai');
     expect(body.model).toBe('gpt-4o');
     expect(body.temperature).toBeCloseTo(0.7);
+    expect(body.llm_timeout_ms).toBe(240000);
   });
 
   test('TC-FE-SET-46: temperature parsed as float, not string', async () => {
@@ -810,6 +816,7 @@ describe('Settings modal — handleSaveLLMConfig', () => {
     document.getElementById('llmBaseUrl').value = 'http://mock';
     document.getElementById('llmApiKey').value = '';
     document.getElementById('llmTemperature').value = '1.5';
+    document.getElementById('llmTimeoutMs').value = '210000';
 
     const form = document.getElementById('llmConfigForm');
     form.dispatchEvent(new Event('submit', { bubbles: true }));
@@ -819,12 +826,14 @@ describe('Settings modal — handleSaveLLMConfig', () => {
     const body = JSON.parse(calls[0][1].body);
     expect(typeof body.temperature).toBe('number');
     expect(body.temperature).toBeCloseTo(1.5);
+    expect(typeof body.llm_timeout_ms).toBe('number');
+    expect(body.llm_timeout_ms).toBe(210000);
   });
 
   test('TC-FE-SET-47: config save persists only non-sensitive UI prefs to localStorage', async () => {
     const serverResponse = {
       provider: 'mock', model: 'mock', base_url: 'http://mock',
-      api_key: null, temperature: 1.0
+      api_key: null, temperature: 1.0, llm_timeout_ms: 180000
     };
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
@@ -879,7 +888,7 @@ describe('Settings modal — loadLLMConfig', () => {
       if (url === '/api/llm/config') {
         return Promise.resolve({ ok: true, json: async () => ({
           provider: 'openai', model: 'gpt-4o',
-          base_url: 'https://api.openai.com', api_key: 'sk-abc', temperature: 0.8
+          base_url: 'https://api.openai.com', api_key: 'sk-abc', temperature: 0.8, llm_timeout_ms: 240000
         }) });
       }
       if (url === '/api/servers') {
@@ -899,6 +908,7 @@ describe('Settings modal — loadLLMConfig', () => {
     expect(document.getElementById('llmProvider').value).toBe('openai');
     expect(document.getElementById('llmModel').value).toBe('gpt-4o');
     expect(document.getElementById('llmTemperature').value).toBe('0.8');
+    expect(document.getElementById('llmTimeoutMs').value).toBe('240000');
   });
 
   test('TC-FE-SET-51: change event dispatched on llmProvider after load', async () => {

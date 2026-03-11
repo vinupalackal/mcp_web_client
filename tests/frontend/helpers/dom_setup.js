@@ -8,6 +8,7 @@ function setupChatDOM() {
     <div id="chatMessages"></div>
     <textarea id="messageInput"></textarea>
     <button id="sendBtn" disabled></button>
+    <button id="darkModeBtn"></button>
     <button id="newChatBtn"></button>
     <div id="toolsSidebarContent"></div>
     <button id="refreshToolsSidebarBtn"></button>
@@ -61,6 +62,7 @@ function setupSettingsDOM() {
           </select>
           <input id="llmModel" />
           <input id="llmBaseUrl" />
+          <input id="llmTimeoutMs" type="number" value="180000" />
           <div id="llmApiKeyGroup">
             <input id="llmApiKey" type="password" />
           </div>
@@ -82,6 +84,7 @@ function setupSettingsDOM() {
             <div id="enterpriseModelsList"></div>
             <input id="enterpriseGatewayUrl" />
             <select id="enterpriseAuthMethod"><option value="bearer">bearer</option></select>
+            <input id="enterpriseLlmTimeoutMs" type="number" value="180000" />
             <input id="enterpriseClientId" />
             <input id="enterpriseClientSecret" type="password" />
             <input id="enterpriseTokenEndpoint" />
@@ -98,6 +101,7 @@ function setupSettingsDOM() {
       </div>
     </div>
     <button id="settingsBtn"></button>
+    <button id="darkModeBtn"></button>
   `;
 }
 
@@ -145,6 +149,7 @@ function setupFullDOM() {
           </select>
           <input id="llmModel" />
           <input id="llmBaseUrl" />
+          <input id="llmTimeoutMs" type="number" value="180000" />
           <div id="llmApiKeyGroup"><input id="llmApiKey" type="password" /></div>
           </div>
           <div id="enterpriseLlmPanel" style="display:none">
@@ -164,6 +169,7 @@ function setupFullDOM() {
             <div id="enterpriseModelsList"></div>
             <input id="enterpriseGatewayUrl" />
             <select id="enterpriseAuthMethod"><option value="bearer">bearer</option></select>
+            <input id="enterpriseLlmTimeoutMs" type="number" value="180000" />
             <input id="enterpriseClientId" />
             <input id="enterpriseClientSecret" type="password" />
             <input id="enterpriseTokenEndpoint" />
@@ -178,6 +184,7 @@ function setupFullDOM() {
       </div>
     </div>
     <button id="settingsBtn"></button>
+    <button id="darkModeBtn"></button>
   `;
 }
 

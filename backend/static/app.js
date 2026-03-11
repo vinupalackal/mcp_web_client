@@ -14,6 +14,7 @@ const chatMessages = document.getElementById('chatMessages');
 const messageInput = document.getElementById('messageInput');
 const sendBtn = document.getElementById('sendBtn');
 const newChatBtn = document.getElementById('newChatBtn');
+const darkModeBtn = document.getElementById('darkModeBtn');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -46,6 +47,13 @@ function initializeChat() {
 
     // New chat button
     newChatBtn.addEventListener('click', createNewSession);
+
+    // Dark mode toggle
+    applyTheme(localStorage.getItem('theme') === 'dark');
+    darkModeBtn.addEventListener('click', () => {
+        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+        applyTheme(!isDark);
+    });
 
     console.log('💬 Chat: Initialized');
 }
@@ -95,6 +103,15 @@ async function createNewSession() {
         console.error('💬 Chat: Session creation failed', error);
         showError('Failed to create session: ' + error.message);
     }
+}
+
+function applyTheme(dark) {
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    if (darkModeBtn) {
+        darkModeBtn.textContent = dark ? '☀️' : '🌙';
+        darkModeBtn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+    }
+    localStorage.setItem('theme', dark ? 'dark' : 'light');
 }
 
 async function sendMessage() {
@@ -239,7 +256,9 @@ function addLoadingMessage() {
     messageWrapper.classList.add('message-wrapper', 'assistant');
     messageWrapper.innerHTML = `
         <div class="message-content">
-            <span class="loading"></span> Thinking...
+            <div class="typing-dots">
+                <span></span><span></span><span></span>
+            </div>
         </div>
     `;
     chatMessages.appendChild(messageWrapper);

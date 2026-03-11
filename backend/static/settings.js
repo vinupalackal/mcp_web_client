@@ -503,6 +503,8 @@ async function handleSaveLLMConfig(e) {
     e.preventDefault();
     const mode = getGatewayMode();
     const temperature = parseFloat(document.getElementById('llmTemperature').value || '0.7');
+    const standardTimeoutMs = parseInt(document.getElementById('llmTimeoutMs').value || '180000', 10);
+    const enterpriseTimeoutMs = parseInt(document.getElementById('enterpriseLlmTimeoutMs').value || '180000', 10);
 
     let llmConfig;
     if (mode === 'enterprise') {
@@ -516,6 +518,7 @@ async function handleSaveLLMConfig(e) {
             client_secret: document.getElementById('enterpriseClientSecret').value,
             token_endpoint_url: document.getElementById('enterpriseTokenEndpoint').value,
             temperature,
+            llm_timeout_ms: enterpriseTimeoutMs,
         };
     } else {
         llmConfig = {
@@ -525,6 +528,7 @@ async function handleSaveLLMConfig(e) {
             base_url: document.getElementById('llmBaseUrl').value,
             api_key: document.getElementById('llmApiKey').value || null,
             temperature,
+            llm_timeout_ms: standardTimeoutMs,
         };
     }
 
@@ -570,6 +574,8 @@ function loadLLMConfig(config) {
     renderEnterpriseModelsList();
 
     document.getElementById('llmTemperature').value = config?.temperature ?? '0.7';
+    document.getElementById('llmTimeoutMs').value = config?.llm_timeout_ms ?? '180000';
+    document.getElementById('enterpriseLlmTimeoutMs').value = config?.llm_timeout_ms ?? '180000';
 
     if (config?.provider === 'enterprise') {
         document.getElementById('enterpriseGatewayUrl').value = config.base_url || '';

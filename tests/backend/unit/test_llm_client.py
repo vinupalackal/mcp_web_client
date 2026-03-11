@@ -103,6 +103,14 @@ _OLLAMA_TOOL_RESPONSE = {
 
 class TestOpenAIClient:
 
+    def test_timeout_uses_configured_llm_timeout(self, openai_config):
+        """TC-LLMC-00: Base client timeout derives from llm_timeout_ms."""
+        openai_config.llm_timeout_ms = 180000
+        client = OpenAIClient(openai_config)
+        assert client.timeout.read == 180.0
+        assert client.timeout.connect == 15.0
+        assert client.timeout.write == 30.0
+
     @respx.mock
     @pytest.mark.asyncio
     async def test_successful_completion(self, openai_config):

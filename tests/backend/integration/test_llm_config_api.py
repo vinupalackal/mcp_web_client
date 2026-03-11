@@ -84,6 +84,22 @@ class TestSaveLLMConfig:
             r = client.post("/api/llm/config", json={**llm_mock, "temperature": temp})
             assert r.status_code == 200
 
+    def test_llm_timeout_round_trips_in_config_api(self, client, llm_mock):
+        """TC-LLM-11b: llm_timeout_ms saves and loads through the config API."""
+        payload = {**llm_mock, "llm_timeout_ms": 240000}
+        save = client.post("/api/llm/config", json=payload)
+        assert save.status_code == 200
+        assert save.json()["llm_timeout_ms"] == 240000
+
+        fetch = client.get("/api/llm/config")
+        assert fetch.status_code == 200
+        assert fetch.json()["llm_timeout_ms"] == 240000
+
+    def test_llm_timeout_out_of_range_returns_422(self, client, llm_mock):
+        """TC-LLM-11c: llm_timeout_ms outside bounds returns 422."""
+        r = client.post("/api/llm/config", json={**llm_mock, "llm_timeout_ms": 4000})
+        assert r.status_code == 422
+
     def test_config_overwritten_on_second_save(self, client, llm_openai, llm_ollama):
         """TC-LLM-12: Second POST replaces first config."""
         client.post("/api/llm/config", json=llm_openai)

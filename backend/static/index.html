@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Client Web</title>
-    <link rel="stylesheet" href="/static/style.css?v=5">
+    <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
     <!-- Main Container -->
@@ -15,6 +15,7 @@
                 <h1 class="app-title">MCP Client</h1>
             </div>
             <div class="header-right">
+                <button id="darkModeBtn" class="btn btn-secondary" title="Switch to dark mode">🌙</button>
                 <button id="settingsBtn" class="btn btn-secondary">⚙️ Settings</button>
                 <button id="newChatBtn" class="btn btn-primary">➕ New Chat</button>
             </div>
@@ -155,6 +156,10 @@
                             <label for="llmBaseUrl">Base URL *</label>
                             <input type="url" id="llmBaseUrl" required placeholder="http://192.168.1.50:11434">
                         </div>
+                        <div class="form-group">
+                            <label for="llmTimeoutMs">Request Timeout (ms)</label>
+                            <input type="number" id="llmTimeoutMs" min="5000" max="600000" step="1000" value="180000" placeholder="180000">
+                        </div>
                         <div class="form-group" id="llmApiKeyGroup" style="display: none;">
                             <label for="llmApiKey">API Key</label>
                             <input type="password" id="llmApiKey" placeholder="sk-...">
@@ -210,6 +215,11 @@
                                 <select id="enterpriseAuthMethod">
                                     <option value="bearer">Bearer Token (OAuth)</option>
                                 </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="enterpriseLlmTimeoutMs">Request Timeout (ms)</label>
+                                <input type="number" id="enterpriseLlmTimeoutMs" min="5000" max="600000" step="1000" value="180000" placeholder="180000">
                             </div>
 
                             <div class="form-group">

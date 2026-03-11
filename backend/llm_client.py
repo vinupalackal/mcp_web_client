@@ -20,7 +20,13 @@ class BaseLLMClient(ABC):
     
     def __init__(self, config: LLMConfig):
         self.config = config
-        self.timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=5.0)
+        timeout_seconds = max(float(config.llm_timeout_ms) / 1000.0, 5.0)
+        self.timeout = httpx.Timeout(
+            connect=min(15.0, timeout_seconds),
+            read=timeout_seconds,
+            write=min(30.0, timeout_seconds),
+            pool=5.0,
+        )
     
     @abstractmethod
     async def chat_completion(

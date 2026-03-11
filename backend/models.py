@@ -122,6 +122,12 @@ class LLMConfig(BaseModel):
         le=2.0,
         description="Sampling temperature for response generation"
     )
+    llm_timeout_ms: int = Field(
+        default=180000,
+        ge=5000,
+        le=600000,
+        description="LLM request timeout in milliseconds"
+    )
     max_tokens: Optional[int] = Field(
         None,
         ge=1,
@@ -164,13 +170,15 @@ class LLMConfig(BaseModel):
                     "client_secret": "super-secret",
                     "token_endpoint_url": "https://auth.internal/v2/oauth/token",
                     "temperature": 0.2,
+                    "llm_timeout_ms": 180000,
                     "max_tokens": 2000
                 },
                 {
                     "provider": "ollama",
                     "model": "llama3.1",
                     "base_url": "http://192.168.1.50:11434",
-                    "temperature": 0.7
+                    "temperature": 0.7,
+                    "llm_timeout_ms": 180000
                 },
                 {
                     "provider": "openai",
@@ -178,6 +186,7 @@ class LLMConfig(BaseModel):
                     "base_url": "https://api.openai.com",
                     "api_key": "sk-...",
                     "temperature": 0.7,
+                    "llm_timeout_ms": 180000,
                     "max_tokens": 2000
                 }
             ]
