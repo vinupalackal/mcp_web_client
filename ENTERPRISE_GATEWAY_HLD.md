@@ -5,7 +5,7 @@
 **Feature**: Enterprise LLM Gateway Support  
 **Version**: 0.3.0-enterprise-gateway  
 **Date**: March 10, 2026  
-**Status**: Design Phase  
+**Status**: Implemented (Initial v0.3.0 scope)  
 **Parent HLD**: HLD.md (v0.2.0-jsonrpc)  
 **Requirements**: ENTERPRISE_GATEWAY_REQUIREMENTS.md (v0.3.0)
 
@@ -20,6 +20,12 @@ The key design principles are:
 - **Secure by design**: Bearer tokens and credentials never leave the backend memory or appear in logs
 - **OpenAI-compatible gateway**: Enterprise gateway speaks the same `/chat/completions` protocol, minimising adapter complexity
 - **UI-driven model selection**: Model identity flows from UI → localStorage → LLMConfig → backend request; never hardcoded
+
+### 1.1 As-Built Notes
+
+- The implementation reuses the existing `LLMConfig` API surface at `POST /api/llm/config` and extends the model for enterprise fields instead of introducing a separate enterprise config contract.
+- Enterprise model catalog management is frontend-owned in `localStorage`; the backend does not expose a dedicated `/api/enterprise/models` endpoint in the current release.
+- `backend/static/app.js` does not require changes for this feature because the backend already stores and resolves active LLM configuration globally.
 
 ---
 
@@ -91,7 +97,7 @@ The key design principles are:
 | `backend/models.py` | Extended | New Pydantic models; extended `LLMConfig` |
 | `backend/llm_client.py` | Extended | New `EnterpriseLLMClient` class; updated factory |
 | `backend/static/settings.js` | Extended | Gateway mode toggle; enterprise config panel |
-| `backend/static/app.js` | Minor | Pass `gateway_mode` in session create payload |
+| `backend/static/app.js` | Unchanged | Existing chat flow uses backend-global active LLM configuration |
 | `backend/static/style.css` | Extended | Enterprise panel styles, token badge, security notice |
 | `backend/static/index.html` | Minor | DOM hooks for enterprise panel (if not fully dynamic) |
 | `backend/mcp_manager.py` | **Unchanged** | MCP communication unaffected |

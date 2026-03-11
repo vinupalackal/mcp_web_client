@@ -3,7 +3,7 @@ Pydantic models for MCP Client Web API.
 These models serve as the source of truth for OpenAPI specification.
 """
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Literal, Optional, List, Dict, Any
 from datetime import datetime
 import uuid
@@ -80,7 +80,11 @@ class ServerConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLM provider configuration"""
     
-    provider: Literal["openai", "ollama", "mock"] = Field(
+    gateway_mode: Literal["standard", "enterprise"] = Field(
+        default="standard",
+        description="Gateway routing mode"
+    )
+    provider: Literal["openai", "ollama", "mock", "enterprise"] = Field(
         ...,
         description="LLM provider type"
     )
@@ -96,6 +100,22 @@ class LLMConfig(BaseModel):
         None,
         description="API key for authentication (if required)"
     )
+    auth_method: Optional[Literal["bearer"]] = Field(
+        None,
+        description="Enterprise authentication method"
+    )
+    client_id: Optional[str] = Field(
+        None,
+        description="Enterprise client identifier"
+    )
+    client_secret: Optional[str] = Field(
+        None,
+        description="Enterprise client secret"
+    )
+    token_endpoint_url: Optional[str] = Field(
+        None,
+        description="Enterprise OAuth token endpoint URL"
+    )
     temperature: float = Field(
         default=0.7,
         ge=0.0,
@@ -107,10 +127,45 @@ class LLMConfig(BaseModel):
         ge=1,
         description="Maximum tokens in response"
     )
+
+    @model_validator(mode="after")
+    def validate_gateway_mode(self):
+        """Validate gateway-specific configuration requirements."""
+        if self.provider == "enterprise":
+            if self.gateway_mode != "enterprise":
+                raise ValueError("Enterprise provider requires gateway_mode='enterprise'")
+            if not self.base_url.startswith("https://"):
+                raise ValueError("Enterprise gateway base_url must use HTTPS")
+            if self.auth_method != "bearer":
+                raise ValueError("Enterprise provider requires auth_method='bearer'")
+            if not self.client_id:
+                raise ValueError("Enterprise provider requires client_id")
+            if not self.client_secret:
+                raise ValueError("Enterprise provider requires client_secret")
+            if not self.token_endpoint_url:
+                raise ValueError("Enterprise provider requires token_endpoint_url")
+            if not self.token_endpoint_url.startswith("https://"):
+                raise ValueError("Enterprise token_endpoint_url must use HTTPS")
+        elif self.gateway_mode == "enterprise":
+            raise ValueError("gateway_mode='enterprise' requires provider='enterprise'")
+
+        return self
     
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
+                {
+                    "gateway_mode": "enterprise",
+                    "provider": "enterprise",
+                    "model": "gpt-4o",
+                    "base_url": "https://llm-gateway.internal/modelgw/models/openai/v1",
+                    "auth_method": "bearer",
+                    "client_id": "enterprise-client-id",
+                    "client_secret": "super-secret",
+                    "token_endpoint_url": "https://auth.internal/v2/oauth/token",
+                    "temperature": 0.2,
+                    "max_tokens": 2000
+                },
                 {
                     "provider": "ollama",
                     "model": "llama3.1",
@@ -124,6 +179,105 @@ class LLMConfig(BaseModel):
                     "api_key": "sk-...",
                     "temperature": 0.7,
                     "max_tokens": 2000
+                }
+            ]
+        }
+    )
+
+
+class EnterpriseTokenRequest(BaseModel):
+    """Enterprise OAuth token acquisition request"""
+
+    token_endpoint_url: str = Field(
+        ...,
+        description="OAuth token endpoint URL",
+        pattern=r"^https://.+"
+    )
+    client_id: str = Field(
+        ...,
+        min_length=1,
+        description="Enterprise client identifier"
+    )
+    client_secret: str = Field(
+        ...,
+        min_length=1,
+        description="Enterprise client secret"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "token_endpoint_url": "https://auth.internal/v2/oauth/token",
+                    "client_id": "enterprise-client-id",
+                    "client_secret": "super-secret"
+                }
+            ]
+        }
+    )
+
+
+class EnterpriseTokenResponse(BaseModel):
+    """Enterprise token acquisition response metadata"""
+
+    token_acquired: bool = Field(
+        ...,
+        description="Whether a token is currently cached"
+    )
+    expires_in: Optional[int] = Field(
+        None,
+        description="Token lifetime in seconds, if provided by upstream"
+    )
+    cached_at: Optional[datetime] = Field(
+        None,
+        description="Timestamp when the token was cached"
+    )
+    error: Optional[str] = Field(
+        None,
+        description="Failure reason when token acquisition fails"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "token_acquired": True,
+                    "expires_in": 3600,
+                    "cached_at": "2026-03-10T12:00:00Z"
+                }
+            ]
+        }
+    )
+
+
+class EnterpriseTokenStatusResponse(BaseModel):
+    """Enterprise token cache status"""
+
+    token_cached: bool = Field(
+        ...,
+        description="Whether a token is currently cached in memory"
+    )
+    cached_at: Optional[datetime] = Field(
+        None,
+        description="Timestamp when the token was cached"
+    )
+    expires_in: Optional[int] = Field(
+        None,
+        description="Token lifetime in seconds, if available"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "token_cached": True,
+                    "cached_at": "2026-03-10T12:00:00Z",
+                    "expires_in": 3600
+                },
+                {
+                    "token_cached": False,
+                    "cached_at": None,
+                    "expires_in": None
                 }
             ]
         }

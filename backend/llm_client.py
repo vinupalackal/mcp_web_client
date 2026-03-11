@@ -107,6 +107,76 @@ class OpenAIClient(BaseLLMClient):
         }
 
 
+class EnterpriseLLMClient(BaseLLMClient):
+    """Enterprise gateway client using OpenAI-compatible chat completions."""
+
+    def __init__(self, config: LLMConfig, access_token: str):
+        super().__init__(config)
+        self.access_token = access_token
+
+    async def chat_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Call enterprise gateway chat completions API."""
+
+        url = f"{self.config.base_url.rstrip('/')}/chat/completions"
+
+        payload = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+        }
+
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+
+        if self.config.max_tokens:
+            payload["max_tokens"] = self.config.max_tokens
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.access_token}",
+        }
+
+        try:
+            logger_external.info(f"→ POST {url} (Enterprise chat)")
+
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                result = response.json()
+
+            logger_external.info(f"← {response.status_code} (Enterprise response)")
+            logger_internal.info(f"Enterprise tokens: {result.get('usage', {})}")
+
+            return result
+
+        except httpx.TimeoutException as e:
+            logger_internal.error(f"Enterprise gateway timeout: {e}")
+            raise Exception("LLM request timeout")
+        except httpx.HTTPError as e:
+            logger_internal.error(f"Enterprise gateway HTTP error: {e}")
+            raise Exception(f"LLM HTTP error: {str(e)}")
+        except Exception as e:
+            logger_internal.error(f"Enterprise gateway error: {e}")
+            raise
+
+    def format_tool_result(
+        self,
+        tool_call_id: Optional[str],
+        content: str
+    ) -> Dict[str, Any]:
+        """Format tool result using OpenAI-compatible tool_call_id field."""
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": content
+        }
+
+
 class OllamaClient(BaseLLMClient):
     """Ollama API client"""
     
@@ -251,7 +321,7 @@ class LLMClientFactory:
     """Factory to create appropriate LLM client"""
     
     @staticmethod
-    def create(config: LLMConfig) -> BaseLLMClient:
+    def create(config: LLMConfig, enterprise_access_token: Optional[str] = None) -> BaseLLMClient:
         """Create LLM client based on provider"""
         
         if config.provider == "openai":
@@ -263,5 +333,10 @@ class LLMClientFactory:
         elif config.provider == "mock":
             logger_internal.info("Creating Mock LLM client")
             return MockLLMClient(config)
+        elif config.provider == "enterprise":
+            if not enterprise_access_token:
+                raise ValueError("Enterprise provider requires a cached access token")
+            logger_internal.info(f"Creating Enterprise gateway client: {config.model}")
+            return EnterpriseLLMClient(config, enterprise_access_token)
         else:
             raise ValueError(f"Unknown LLM provider: {config.provider}")

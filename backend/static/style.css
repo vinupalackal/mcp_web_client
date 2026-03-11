@@ -369,6 +369,106 @@ body {
     color: #92400e;
 }
 
+/* Enterprise gateway settings */
+.gateway-mode-group {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.radio-option {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-primary);
+}
+
+.enterprise-panel {
+    border: 1px solid var(--border-color);
+    border-radius: 0.75rem;
+    padding: 1rem;
+    background-color: #f8fbff;
+    margin-bottom: 1rem;
+}
+
+.enterprise-badge-row,
+.enterprise-token-row,
+.enterprise-model-form-actions,
+.enterprise-model-actions,
+.enterprise-model-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.enterprise-badge-row {
+    margin-bottom: 1rem;
+}
+
+.enterprise-badge-label,
+.enterprise-model-meta {
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+.enterprise-provider-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.35rem 0.75rem;
+    border-radius: 999px;
+    background-color: #dbeafe;
+    color: #1d4ed8;
+    font-weight: 600;
+}
+
+.enterprise-model-form,
+.enterprise-models-list {
+    margin: 0.75rem 0 1rem;
+}
+
+.enterprise-models-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.enterprise-model-item {
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-secondary);
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+}
+
+.security-notice {
+    padding: 0.75rem;
+    margin-bottom: 1rem;
+    border-left: 4px solid #f59e0b;
+    background-color: #fffbeb;
+    color: #92400e;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+}
+
+.token-status-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.4rem 0.75rem;
+    border-radius: 999px;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.token-status-active {
+    background-color: #d1fae5;
+    color: #065f46;
+}
+
+.token-status-idle {
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+}
+
 .tool-result {
     margin-top: 0.5rem;
     padding: 0.75rem;

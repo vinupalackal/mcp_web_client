@@ -4,7 +4,7 @@
 **Feature**: Enterprise LLM Gateway Support (Comcast-LLM)  
 **Version**: 0.3.0-enterprise-gateway  
 **Date**: March 10, 2026  
-**Status**: Draft — Pending Review  
+**Status**: Implemented (Initial v0.3.0 scope)  
 **Parent Document**: REQUIREMENTS.md (v0.2.0-jsonrpc)
 
 ---
@@ -12,6 +12,13 @@
 ## 1. Executive Summary
 
 This document describes the requirements for adding **Enterprise LLM Gateway** support to the MCP Client Web application. The feature introduces a gateway mode selector in the UI that allows users to switch between **Non-Enterprise** (standard OpenAI/Ollama) and **Enterprise** (Comcast-LLM) gateway modes. When Enterprise mode is selected, the system authenticates against a corporate OAuth token endpoint, caches the bearer token, and routes all LLM inference requests through the Comcast Model Gateway using an OpenAI-compatible `/chat/completions` API.
+
+### 1.1 Implementation Alignment Notes
+
+- Enterprise configuration is persisted through the existing `POST /api/llm/config` endpoint by extending the shared `LLMConfig` model, rather than introducing a separate LLM config endpoint.
+- Enterprise mode is represented explicitly as `gateway_mode = enterprise` and `provider = enterprise` in saved configuration payloads.
+- The enterprise model catalog and custom model extensions are managed in the frontend with `localStorage`; a dedicated backend `/api/enterprise/models` endpoint is not required in the current implementation.
+- The Enterprise Gateway base URL is required in the saved UI configuration in v0.3.0. Backend environment-based fallback for an omitted UI value remains a future enhancement.
 
 ---
 
@@ -122,7 +129,7 @@ This document describes the requirements for adding **Enterprise LLM Gateway** s
 - **Field Label**: `LLM Gateway URL`
 - **Placeholder**: `https://<LLM-GATEWAY-HOST>/modelgw/models/openai/v1`
 - **Validation**: Must be a valid HTTPS URL
-- **Environment Variable Override**: `ENTERPRISE_LLM_GATEWAY_URL` (backend default; UI value takes precedence)
+- **Environment Variable Override**: Deferred in current implementation; the UI-saved value is required and used as the source of truth in v0.3.0.
 - **Acceptance Criteria**:
   - Field is required when saving Enterprise Gateway configuration
   - Value persists to `localStorage`
@@ -166,7 +173,7 @@ This document describes the requirements for adding **Enterprise LLM Gateway** s
   - All three fields are required; saving without them shows inline validation errors
   - `X-Client-Secret` is masked; toggle-to-reveal icon (eye icon) optional
   - Values persist to `localStorage` after saving
-  - Backend receives credentials via `POST /api/llm-config` (see FR-EG-5.1)
+  - Backend receives credentials via `POST /api/llm/config` as part of the extended `LLMConfig`
 
 ---
 

@@ -51,6 +51,9 @@ function setupSettingsDOM() {
 
         <!-- LLM form -->
         <form id="llmConfigForm">
+          <input type="radio" id="llmGatewayModeStandard" name="llmGatewayMode" value="standard" checked />
+          <input type="radio" id="llmGatewayModeEnterprise" name="llmGatewayMode" value="enterprise" />
+          <div id="standardLlmPanel">
           <select id="llmProvider">
             <option value="openai">openai</option>
             <option value="ollama">ollama</option>
@@ -60,6 +63,30 @@ function setupSettingsDOM() {
           <input id="llmBaseUrl" />
           <div id="llmApiKeyGroup">
             <input id="llmApiKey" type="password" />
+          </div>
+          </div>
+          <div id="enterpriseLlmPanel" style="display:none">
+            <span id="enterpriseProviderBadge"></span>
+            <select id="enterpriseModel"></select>
+            <button type="button" id="addEnterpriseModelBtn">Add Model</button>
+            <div id="enterpriseModelForm" style="display:none">
+              <input id="enterpriseCustomModelId" />
+              <input id="enterpriseCustomModelProvider" />
+              <select id="enterpriseCustomModelType">
+                <option value="LLM">LLM</option>
+                <option value="Embedding">Embedding</option>
+              </select>
+              <button type="button" id="enterpriseSaveModelBtn">Save Model</button>
+              <button type="button" id="enterpriseCancelModelBtn">Cancel</button>
+            </div>
+            <div id="enterpriseModelsList"></div>
+            <input id="enterpriseGatewayUrl" />
+            <select id="enterpriseAuthMethod"><option value="bearer">bearer</option></select>
+            <input id="enterpriseClientId" />
+            <input id="enterpriseClientSecret" type="password" />
+            <input id="enterpriseTokenEndpoint" />
+            <div id="enterpriseTokenStatus"></div>
+            <button type="button" id="fetchEnterpriseTokenBtn">Fetch Token</button>
           </div>
           <input id="llmTemperature" type="number" value="0.7" />
           <button type="submit">Save</button>
@@ -108,6 +135,9 @@ function setupFullDOM() {
         </form>
         <div id="serversList"></div>
         <form id="llmConfigForm">
+          <input type="radio" id="llmGatewayModeStandard" name="llmGatewayMode" value="standard" checked />
+          <input type="radio" id="llmGatewayModeEnterprise" name="llmGatewayMode" value="enterprise" />
+          <div id="standardLlmPanel">
           <select id="llmProvider">
             <option value="openai">openai</option>
             <option value="ollama">ollama</option>
@@ -116,6 +146,30 @@ function setupFullDOM() {
           <input id="llmModel" />
           <input id="llmBaseUrl" />
           <div id="llmApiKeyGroup"><input id="llmApiKey" type="password" /></div>
+          </div>
+          <div id="enterpriseLlmPanel" style="display:none">
+            <span id="enterpriseProviderBadge"></span>
+            <select id="enterpriseModel"></select>
+            <button type="button" id="addEnterpriseModelBtn">Add Model</button>
+            <div id="enterpriseModelForm" style="display:none">
+              <input id="enterpriseCustomModelId" />
+              <input id="enterpriseCustomModelProvider" />
+              <select id="enterpriseCustomModelType">
+                <option value="LLM">LLM</option>
+                <option value="Embedding">Embedding</option>
+              </select>
+              <button type="button" id="enterpriseSaveModelBtn">Save Model</button>
+              <button type="button" id="enterpriseCancelModelBtn">Cancel</button>
+            </div>
+            <div id="enterpriseModelsList"></div>
+            <input id="enterpriseGatewayUrl" />
+            <select id="enterpriseAuthMethod"><option value="bearer">bearer</option></select>
+            <input id="enterpriseClientId" />
+            <input id="enterpriseClientSecret" type="password" />
+            <input id="enterpriseTokenEndpoint" />
+            <div id="enterpriseTokenStatus"></div>
+            <button type="button" id="fetchEnterpriseTokenBtn">Fetch Token</button>
+          </div>
           <input id="llmTemperature" type="number" value="0.7" />
           <button type="submit">Save</button>
         </form>

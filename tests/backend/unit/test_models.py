@@ -4,6 +4,8 @@ Unit tests for Pydantic models (TR-MODEL-*)
 
 import pytest
 from pydantic import ValidationError
+from datetime import datetime
+
 from backend.models import (
     ServerConfig,
     LLMConfig,
@@ -11,6 +13,9 @@ from backend.models import (
     ToolSchema,
     FunctionCall,
     ToolCall,
+    EnterpriseTokenRequest,
+    EnterpriseTokenResponse,
+    EnterpriseTokenStatusResponse,
 )
 
 
@@ -105,6 +110,111 @@ class TestLLMConfig:
         """TC-MODEL-08a: All valid providers accepted."""
         for p in ("openai", "ollama", "mock"):
             LLMConfig(provider=p, model="m", base_url="https://x.com")
+
+    def test_enterprise_provider_valid_config(self):
+        """TC-MODEL-08c: Enterprise provider accepted with required gateway fields."""
+        cfg = LLMConfig(
+            gateway_mode="enterprise",
+            provider="enterprise",
+            model="gpt-4o",
+            base_url="https://llm-gateway.internal/modelgw/models/openai/v1",
+            auth_method="bearer",
+            client_id="enterprise-client",
+            client_secret="enterprise-secret",
+            token_endpoint_url="https://auth.internal/v2/oauth/token",
+        )
+        assert cfg.provider == "enterprise"
+
+    def test_enterprise_provider_missing_token_endpoint_rejected(self):
+        """TC-MODEL-08d: Enterprise provider requires token_endpoint_url."""
+        with pytest.raises(ValidationError):
+            LLMConfig(
+                gateway_mode="enterprise",
+                provider="enterprise",
+                model="gpt-4o",
+                base_url="https://llm-gateway.internal/modelgw/models/openai/v1",
+                auth_method="bearer",
+                client_id="enterprise-client",
+                client_secret="enterprise-secret",
+            )
+
+    def test_enterprise_provider_missing_client_id_rejected(self):
+        """TC-MODEL-08e: Enterprise provider without client_id raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LLMConfig(
+                gateway_mode="enterprise",
+                provider="enterprise",
+                model="gpt-4o",
+                base_url="https://llm-gateway.internal/modelgw/models/openai/v1",
+                auth_method="bearer",
+                client_secret="enterprise-secret",
+                token_endpoint_url="https://auth.internal/v2/oauth/token",
+            )
+
+    def test_enterprise_provider_missing_client_secret_rejected(self):
+        """TC-MODEL-08f: Enterprise provider without client_secret raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LLMConfig(
+                gateway_mode="enterprise",
+                provider="enterprise",
+                model="gpt-4o",
+                base_url="https://llm-gateway.internal/modelgw/models/openai/v1",
+                auth_method="bearer",
+                client_id="enterprise-client",
+                token_endpoint_url="https://auth.internal/v2/oauth/token",
+            )
+
+    def test_enterprise_provider_http_base_url_rejected(self):
+        """TC-MODEL-08g: Enterprise provider with HTTP base_url raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LLMConfig(
+                gateway_mode="enterprise",
+                provider="enterprise",
+                model="gpt-4o",
+                base_url="http://llm-gateway.internal/modelgw/models/openai/v1",
+                auth_method="bearer",
+                client_id="enterprise-client",
+                client_secret="enterprise-secret",
+                token_endpoint_url="https://auth.internal/v2/oauth/token",
+            )
+
+    def test_enterprise_provider_http_token_endpoint_rejected(self):
+        """TC-MODEL-08h: Enterprise provider with HTTP token_endpoint_url raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LLMConfig(
+                gateway_mode="enterprise",
+                provider="enterprise",
+                model="gpt-4o",
+                base_url="https://llm-gateway.internal/modelgw/models/openai/v1",
+                auth_method="bearer",
+                client_id="enterprise-client",
+                client_secret="enterprise-secret",
+                token_endpoint_url="http://auth.internal/v2/oauth/token",
+            )
+
+    def test_enterprise_provider_missing_auth_method_rejected(self):
+        """TC-MODEL-08i: Enterprise provider without auth_method raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LLMConfig(
+                gateway_mode="enterprise",
+                provider="enterprise",
+                model="gpt-4o",
+                base_url="https://llm-gateway.internal/modelgw/models/openai/v1",
+                client_id="enterprise-client",
+                client_secret="enterprise-secret",
+                token_endpoint_url="https://auth.internal/v2/oauth/token",
+            )
+
+    def test_gateway_mode_enterprise_with_non_enterprise_provider_rejected(self):
+        """TC-MODEL-08j: gateway_mode='enterprise' with provider='openai' raises ValidationError."""
+        with pytest.raises(ValidationError):
+            LLMConfig(
+                gateway_mode="enterprise",
+                provider="openai",
+                model="gpt-4o",
+                base_url="https://api.openai.com",
+                api_key="sk-test",
+            )
 
     def test_provider_invalid_rejected(self):
         """TC-MODEL-08b: Unknown provider raises ValidationError."""
@@ -210,3 +320,118 @@ class TestToolSchema:
         """TC-MODEL-16b: Missing required fields raises ValidationError."""
         with pytest.raises(ValidationError):
             ToolSchema(server_alias="svc", name="ping", description="")
+
+
+# ============================================================================
+# TR-MODEL-5: EnterpriseTokenRequest
+# ============================================================================
+
+class TestEnterpriseTokenRequest:
+
+    def test_valid_token_request(self):
+        """TC-MODEL-18: Valid enterprise token request accepted."""
+        req = EnterpriseTokenRequest(
+            token_endpoint_url="https://auth.internal/v2/oauth/token",
+            client_id="enterprise-client",
+            client_secret="enterprise-secret",
+        )
+        assert req.client_id == "enterprise-client"
+        assert req.token_endpoint_url == "https://auth.internal/v2/oauth/token"
+
+    def test_http_token_endpoint_rejected(self):
+        """TC-MODEL-19: HTTP token_endpoint_url rejected (must be HTTPS)."""
+        with pytest.raises(ValidationError):
+            EnterpriseTokenRequest(
+                token_endpoint_url="http://auth.internal/v2/oauth/token",
+                client_id="enterprise-client",
+                client_secret="enterprise-secret",
+            )
+
+    def test_empty_client_id_rejected(self):
+        """TC-MODEL-20: Empty client_id rejected by min_length constraint."""
+        with pytest.raises(ValidationError):
+            EnterpriseTokenRequest(
+                token_endpoint_url="https://auth.internal/v2/oauth/token",
+                client_id="",
+                client_secret="enterprise-secret",
+            )
+
+    def test_empty_client_secret_rejected(self):
+        """TC-MODEL-21: Empty client_secret rejected by min_length constraint."""
+        with pytest.raises(ValidationError):
+            EnterpriseTokenRequest(
+                token_endpoint_url="https://auth.internal/v2/oauth/token",
+                client_id="enterprise-client",
+                client_secret="",
+            )
+
+    def test_missing_token_endpoint_url_rejected(self):
+        """TC-MODEL-21b: Missing token_endpoint_url raises ValidationError."""
+        with pytest.raises(ValidationError):
+            EnterpriseTokenRequest(
+                client_id="enterprise-client",
+                client_secret="enterprise-secret",
+            )
+
+
+# ============================================================================
+# TR-MODEL-6: EnterpriseTokenResponse
+# ============================================================================
+
+class TestEnterpriseTokenResponse:
+
+    def test_successful_response(self):
+        """TC-MODEL-22: Successful token response with all fields."""
+        now = datetime.utcnow()
+        resp = EnterpriseTokenResponse(
+            token_acquired=True,
+            expires_in=3600,
+            cached_at=now,
+            error=None,
+        )
+        assert resp.token_acquired is True
+        assert resp.expires_in == 3600
+        assert resp.cached_at == now
+        assert resp.error is None
+
+    def test_failure_response(self):
+        """TC-MODEL-23: Failed token response with error field and no metadata."""
+        resp = EnterpriseTokenResponse(
+            token_acquired=False,
+            error="Token endpoint returned 401",
+        )
+        assert resp.token_acquired is False
+        assert resp.error == "Token endpoint returned 401"
+        assert resp.cached_at is None
+        assert resp.expires_in is None
+
+    def test_access_token_field_absent(self):
+        """TC-MODEL-23b: EnterpriseTokenResponse has no access_token field."""
+        resp = EnterpriseTokenResponse(token_acquired=True, expires_in=3600)
+        assert not hasattr(resp, "access_token")
+
+
+# ============================================================================
+# TR-MODEL-7: EnterpriseTokenStatusResponse
+# ============================================================================
+
+class TestEnterpriseTokenStatusResponse:
+
+    def test_not_cached_status(self):
+        """TC-MODEL-24: Not-cached status has token_cached=False and no metadata."""
+        status = EnterpriseTokenStatusResponse(token_cached=False)
+        assert status.token_cached is False
+        assert status.cached_at is None
+        assert status.expires_in is None
+
+    def test_cached_status_with_metadata(self):
+        """TC-MODEL-25: Cached status includes cached_at and expires_in."""
+        ts = datetime.utcnow()
+        status = EnterpriseTokenStatusResponse(
+            token_cached=True,
+            cached_at=ts,
+            expires_in=3600,
+        )
+        assert status.token_cached is True
+        assert status.cached_at == ts
+        assert status.expires_in == 3600

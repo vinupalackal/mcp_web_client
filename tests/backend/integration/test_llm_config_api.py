@@ -44,6 +44,13 @@ class TestSaveLLMConfig:
         r = client.post("/api/llm/config", json=llm_mock)
         assert r.status_code == 200
 
+    def test_save_enterprise_config(self, client, llm_enterprise):
+        """TC-LLM-06b: Enterprise config saved, returns 200."""
+        r = client.post("/api/llm/config", json=llm_enterprise)
+        assert r.status_code == 200
+        assert r.json()["provider"] == "enterprise"
+        assert r.json()["gateway_mode"] == "enterprise"
+
     def test_invalid_provider_returns_422(self, client):
         """TC-LLM-07: Unknown provider returns 422."""
         r = client.post("/api/llm/config", json={
@@ -89,3 +96,10 @@ class TestSaveLLMConfig:
         """TC-LLM-14: api_key omitted → accepted."""
         r = client.post("/api/llm/config", json=llm_ollama)
         assert r.status_code == 200
+
+    def test_enterprise_missing_token_endpoint_returns_422(self, client, llm_enterprise):
+        """TC-LLM-15: Enterprise config without token endpoint rejected."""
+        bad = {**llm_enterprise}
+        bad.pop("token_endpoint_url")
+        r = client.post("/api/llm/config", json=bad)
+        assert r.status_code == 422

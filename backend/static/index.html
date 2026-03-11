@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Client Web</title>
-    <link rel="stylesheet" href="/static/style.css?v=4">
+    <link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
     <!-- Main Container -->
@@ -124,6 +124,21 @@
                     <h3>LLM Provider Configuration</h3>
                     <form id="llmConfigForm">
                         <div class="form-group">
+                            <label>Gateway Mode</label>
+                            <div class="gateway-mode-group">
+                                <label class="radio-option">
+                                    <input type="radio" name="llmGatewayMode" id="llmGatewayModeStandard" value="standard" checked>
+                                    <span>Non-Enterprise Gateway</span>
+                                </label>
+                                <label class="radio-option">
+                                    <input type="radio" name="llmGatewayMode" id="llmGatewayModeEnterprise" value="enterprise">
+                                    <span>Enterprise Gateway</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div id="standardLlmPanel">
+                        <div class="form-group">
                             <label for="llmProvider">Provider *</label>
                             <select id="llmProvider" required>
                                 <option value="">Select provider...</option>
@@ -144,6 +159,82 @@
                             <label for="llmApiKey">API Key</label>
                             <input type="password" id="llmApiKey" placeholder="sk-...">
                         </div>
+                        </div>
+
+                        <div id="enterpriseLlmPanel" class="enterprise-panel" style="display: none;">
+                            <div class="enterprise-badge-row">
+                                <span class="enterprise-badge-label">Provider</span>
+                                <span id="enterpriseProviderBadge" class="enterprise-provider-badge">Comcast-LLM</span>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="enterpriseModel">Enterprise Model *</label>
+                                <select id="enterpriseModel"></select>
+                            </div>
+
+                            <div class="enterprise-model-actions">
+                                <button type="button" id="addEnterpriseModelBtn" class="btn btn-secondary">+ Add Model</button>
+                            </div>
+
+                            <div id="enterpriseModelForm" class="enterprise-model-form" style="display: none;">
+                                <div class="form-group">
+                                    <label for="enterpriseCustomModelId">Model ID *</label>
+                                    <input type="text" id="enterpriseCustomModelId" placeholder="e.g., gemini-2-pro">
+                                </div>
+                                <div class="form-group">
+                                    <label for="enterpriseCustomModelProvider">Provider *</label>
+                                    <input type="text" id="enterpriseCustomModelProvider" placeholder="e.g., Azure, AWS, Google">
+                                </div>
+                                <div class="form-group">
+                                    <label for="enterpriseCustomModelType">Type *</label>
+                                    <select id="enterpriseCustomModelType">
+                                        <option value="LLM">LLM</option>
+                                        <option value="Embedding">Embedding</option>
+                                    </select>
+                                </div>
+                                <div class="enterprise-model-form-actions">
+                                    <button type="button" id="enterpriseSaveModelBtn" class="btn btn-primary">Save Model</button>
+                                    <button type="button" id="enterpriseCancelModelBtn" class="btn btn-secondary">Cancel</button>
+                                </div>
+                            </div>
+
+                            <div id="enterpriseModelsList" class="enterprise-models-list"></div>
+
+                            <div class="form-group">
+                                <label for="enterpriseGatewayUrl">LLM Gateway URL *</label>
+                                <input type="url" id="enterpriseGatewayUrl" placeholder="https://gateway.example.com/modelgw/models/openai/v1">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="enterpriseAuthMethod">Authentication</label>
+                                <select id="enterpriseAuthMethod">
+                                    <option value="bearer">Bearer Token (OAuth)</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="enterpriseClientId">X-Client-Id *</label>
+                                <input type="text" id="enterpriseClientId" placeholder="Enter enterprise client ID">
+                            </div>
+                            <div class="form-group">
+                                <label for="enterpriseClientSecret">X-Client-Secret *</label>
+                                <input type="password" id="enterpriseClientSecret" placeholder="Enter enterprise client secret">
+                            </div>
+                            <div class="form-group">
+                                <label for="enterpriseTokenEndpoint">Token Endpoint URL *</label>
+                                <input type="url" id="enterpriseTokenEndpoint" placeholder="https://auth.example.com/v2/oauth/token">
+                            </div>
+
+                            <div class="security-notice">
+                                Enterprise credentials are stored in browser localStorage for this single-user app. Use trusted environments only.
+                            </div>
+
+                            <div class="enterprise-token-row">
+                                <div id="enterpriseTokenStatus" class="token-status-badge token-status-idle">Token not fetched</div>
+                                <button type="button" id="fetchEnterpriseTokenBtn" class="btn btn-secondary">Fetch Token</button>
+                            </div>
+                        </div>
+
                         <div class="form-group">
                             <label for="llmTemperature">Temperature</label>
                             <input type="number" id="llmTemperature" min="0" max="2" step="0.1" value="0.7">
@@ -164,6 +255,6 @@
     </div>
 
     <script src="/static/app.js?v=3"></script>
-    <script src="/static/settings.js?v=3"></script>
+    <script src="/static/settings.js?v=5"></script>
 </body>
 </html>

@@ -77,6 +77,52 @@ class TestCredentialHandling:
         headers = mgr._build_headers(server)
         assert headers.get("Authorization") == "Bearer my-secret-token"
 
+    def test_enterprise_client_secret_not_in_external_logs(self, client, caplog):
+        """TC-SEC-08: Enterprise client_secret never appears in external log output."""
+        import respx
+        import httpx
+
+        with respx.mock:
+            respx.post("https://auth.internal/v2/oauth/token").mock(
+                return_value=httpx.Response(200, json={"access_token": "tok-xyz", "expires_in": 3600})
+            )
+            with caplog.at_level(logging.DEBUG, logger="mcp_client.external"):
+                client.post(
+                    "/api/enterprise/token",
+                    json={
+                        "token_endpoint_url": "https://auth.internal/v2/oauth/token",
+                        "client_id": "enterprise-client",
+                        "client_secret": "ultra-secret-value",
+                    },
+                )
+
+        for record in caplog.records:
+            if record.name == "mcp_client.external":
+                assert "ultra-secret-value" not in record.message
+
+    def test_enterprise_access_token_not_in_api_response(self, client):
+        """TC-SEC-09: Token acquisition response body never contains the raw access_token."""
+        import respx
+        import httpx
+
+        with respx.mock:
+            respx.post("https://auth.internal/v2/oauth/token").mock(
+                return_value=httpx.Response(200, json={"access_token": "raw-secret-token", "expires_in": 3600})
+            )
+            response = client.post(
+                "/api/enterprise/token",
+                json={
+                    "token_endpoint_url": "https://auth.internal/v2/oauth/token",
+                    "client_id": "enterprise-client",
+                    "client_secret": "enterprise-secret",
+                },
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "access_token" not in body
+        assert "raw-secret-token" not in str(body)
+
 
 class TestDualLoggerPattern:
 

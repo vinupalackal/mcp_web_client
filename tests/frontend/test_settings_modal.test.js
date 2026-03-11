@@ -226,6 +226,268 @@ describe('Settings modal — LLM provider toggle', () => {
 
 
 // ============================================================================
+// Enterprise gateway mode (TC-FE-SET-18a to 18d)
+// ============================================================================
+describe('Settings modal — enterprise gateway mode', () => {
+
+  beforeEach(() => {
+    setupFullDOM();
+    loadSettings();
+  });
+
+  test('TC-FE-SET-18a: selecting enterprise mode shows enterprise panel', () => {
+    const enterpriseMode = document.getElementById('llmGatewayModeEnterprise');
+    enterpriseMode.checked = true;
+    enterpriseMode.dispatchEvent(new Event('change'));
+
+    expect(document.getElementById('enterpriseLlmPanel').style.display).toBe('block');
+    expect(document.getElementById('standardLlmPanel').style.display).toBe('none');
+  });
+
+  test('TC-FE-SET-18b: saving enterprise config POSTs provider enterprise payload', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          gateway_mode: 'enterprise',
+          provider: 'enterprise',
+          model: 'gpt-4o',
+          base_url: 'https://gateway.internal/modelgw/models/openai/v1',
+          auth_method: 'bearer',
+          client_id: 'enterprise-client',
+          client_secret: 'enterprise-secret',
+          token_endpoint_url: 'https://auth.internal/v2/oauth/token',
+          temperature: 0.2,
+        }),
+      });
+    });
+
+    const enterpriseMode = document.getElementById('llmGatewayModeEnterprise');
+    enterpriseMode.checked = true;
+    enterpriseMode.dispatchEvent(new Event('change'));
+    document.getElementById('enterpriseModel').value = 'gpt-4o';
+    document.getElementById('enterpriseGatewayUrl').value = 'https://gateway.internal/modelgw/models/openai/v1';
+    document.getElementById('enterpriseClientId').value = 'enterprise-client';
+    document.getElementById('enterpriseClientSecret').value = 'enterprise-secret';
+    document.getElementById('enterpriseTokenEndpoint').value = 'https://auth.internal/v2/oauth/token';
+    document.getElementById('llmTemperature').value = '0.2';
+
+    const form = document.getElementById('llmConfigForm');
+    form.dispatchEvent(new Event('submit', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 0));
+
+    const llmCall = global.fetch.mock.calls.find(([url]) => url === '/api/llm/config');
+    const body = JSON.parse(llmCall[1].body);
+    expect(body.provider).toBe('enterprise');
+    expect(body.gateway_mode).toBe('enterprise');
+    expect(body.client_secret).toBe('enterprise-secret');
+  });
+
+  test('TC-FE-SET-18c: fetch token calls enterprise token endpoint', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: true, cached_at: '2026-03-10T12:00:00Z' }) });
+      }
+      if (url === '/api/enterprise/token') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_acquired: true, cached_at: '2026-03-10T12:00:00Z' }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    const enterpriseMode = document.getElementById('llmGatewayModeEnterprise');
+    enterpriseMode.checked = true;
+    enterpriseMode.dispatchEvent(new Event('change'));
+    document.getElementById('enterpriseClientId').value = 'enterprise-client';
+    document.getElementById('enterpriseClientSecret').value = 'enterprise-secret';
+    document.getElementById('enterpriseTokenEndpoint').value = 'https://auth.internal/v2/oauth/token';
+
+    document.getElementById('fetchEnterpriseTokenBtn').click();
+    await new Promise(r => setTimeout(r, 0));
+
+    const tokenCall = global.fetch.mock.calls.find(([url]) => url === '/api/enterprise/token');
+    expect(tokenCall).toBeTruthy();
+  });
+
+  test('TC-FE-SET-18d: adding custom enterprise model updates selector', () => {
+    const store = {};
+    localStorage.getItem.mockImplementation((key) => store[key] ?? null);
+    localStorage.setItem.mockImplementation((key, value) => {
+      store[key] = String(value);
+    });
+
+    const enterpriseMode = document.getElementById('llmGatewayModeEnterprise');
+    enterpriseMode.checked = true;
+    enterpriseMode.dispatchEvent(new Event('change'));
+
+    document.getElementById('addEnterpriseModelBtn').click();
+    document.getElementById('enterpriseCustomModelId').value = 'gemini-2-pro';
+    document.getElementById('enterpriseCustomModelProvider').value = 'Google';
+    document.getElementById('enterpriseCustomModelType').value = 'LLM';
+    document.getElementById('enterpriseSaveModelBtn').click();
+
+    const options = Array.from(document.getElementById('enterpriseModel').options).map(option => option.value);
+    expect(options).toContain('gemini-2-pro');
+  });
+
+  test('TC-FE-SET-18e: switching back to standard mode shows standard panel', () => {
+    // First switch to enterprise
+    const enterpriseMode = document.getElementById('llmGatewayModeEnterprise');
+    enterpriseMode.checked = true;
+    enterpriseMode.dispatchEvent(new Event('change'));
+    expect(document.getElementById('enterpriseLlmPanel').style.display).toBe('block');
+
+    // Then switch back to standard
+    const standardMode = document.getElementById('llmGatewayModeStandard');
+    standardMode.checked = true;
+    standardMode.dispatchEvent(new Event('change'));
+
+    expect(document.getElementById('standardLlmPanel').style.display).toBe('block');
+    expect(document.getElementById('enterpriseLlmPanel').style.display).toBe('none');
+  });
+
+  test('TC-FE-SET-18f: token status badge shows active class when token is cached', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ token_cached: true, cached_at: '2026-03-10T12:00:00Z', expires_in: 3600 }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    const enterpriseMode = document.getElementById('llmGatewayModeEnterprise');
+    enterpriseMode.checked = true;
+    enterpriseMode.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 20));
+
+    const badge = document.getElementById('enterpriseTokenStatus');
+    expect(badge.classList.contains('token-status-active')).toBe(true);
+    expect(badge.textContent).toContain('Token active');
+  });
+
+  test('TC-FE-SET-18g: token status badge shows idle class when token is not cached', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ token_cached: false }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    const enterpriseMode = document.getElementById('llmGatewayModeEnterprise');
+    enterpriseMode.checked = true;
+    enterpriseMode.dispatchEvent(new Event('change'));
+    await new Promise(r => setTimeout(r, 20));
+
+    const badge = document.getElementById('enterpriseTokenStatus');
+    expect(badge.classList.contains('token-status-idle')).toBe(true);
+    expect(badge.textContent).toContain('Token not fetched');
+  });
+
+  test('TC-FE-SET-18h: fetch token failure shows error in token status badge', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/enterprise/token') {
+        return Promise.resolve({
+          ok: false,
+          status: 502,
+          json: async () => ({ detail: 'Token endpoint returned 401' }),
+        });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    const enterpriseMode = document.getElementById('llmGatewayModeEnterprise');
+    enterpriseMode.checked = true;
+    enterpriseMode.dispatchEvent(new Event('change'));
+    document.getElementById('enterpriseClientId').value = 'enterprise-client';
+    document.getElementById('enterpriseClientSecret').value = 'enterprise-secret';
+    document.getElementById('enterpriseTokenEndpoint').value = 'https://auth.internal/v2/oauth/token';
+
+    document.getElementById('fetchEnterpriseTokenBtn').click();
+    await new Promise(r => setTimeout(r, 20));
+
+    const badge = document.getElementById('enterpriseTokenStatus');
+    expect(badge.classList.contains('token-status-idle')).toBe(true);
+    expect(badge.textContent).toContain('Token unavailable');
+  });
+
+  test('TC-FE-SET-18i: loadLLMConfig restores enterprise mode when config has provider=enterprise', async () => {
+    const store = {};
+    const enterpriseConfig = {
+      gateway_mode: 'enterprise',
+      provider: 'enterprise',
+      model: 'gpt-4o',
+      base_url: 'https://gateway.internal/v1',
+      auth_method: 'bearer',
+      client_id: 'ent-client',
+      client_secret: 'ent-secret',
+      token_endpoint_url: 'https://auth.internal/token',
+      temperature: 0.2,
+    };
+    store['llmConfig'] = JSON.stringify(enterpriseConfig);
+    localStorage.getItem.mockImplementation((key) => store[key] ?? null);
+    localStorage.setItem.mockImplementation((key, value) => { store[key] = String(value); });
+
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    setupFullDOM();
+    loadSettings();
+    await new Promise(r => setTimeout(r, 30));
+
+    expect(document.getElementById('enterpriseLlmPanel').style.display).toBe('block');
+    expect(document.getElementById('standardLlmPanel').style.display).toBe('none');
+  });
+
+  test('TC-FE-SET-18j: loadLLMConfig populates enterprise fields from stored config', async () => {
+    const store = {};
+    const enterpriseConfig = {
+      gateway_mode: 'enterprise',
+      provider: 'enterprise',
+      model: 'gpt-4o',
+      base_url: 'https://gateway.internal/v1',
+      auth_method: 'bearer',
+      client_id: 'ent-client',
+      client_secret: 'ent-secret',
+      token_endpoint_url: 'https://auth.internal/token',
+      temperature: 0.2,
+    };
+    store['llmConfig'] = JSON.stringify(enterpriseConfig);
+    localStorage.getItem.mockImplementation((key) => store[key] ?? null);
+    localStorage.setItem.mockImplementation((key, value) => { store[key] = String(value); });
+
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    setupFullDOM();
+    loadSettings();
+    await new Promise(r => setTimeout(r, 30));
+
+    expect(document.getElementById('enterpriseGatewayUrl').value).toBe('https://gateway.internal/v1');
+    expect(document.getElementById('enterpriseClientId').value).toBe('ent-client');
+    expect(document.getElementById('enterpriseTokenEndpoint').value).toBe('https://auth.internal/token');
+  });
+});
+
+
+// ============================================================================
 // handleAddServer (TC-FE-SET-19 to 23)
 // ============================================================================
 describe('Settings modal — handleAddServer', () => {

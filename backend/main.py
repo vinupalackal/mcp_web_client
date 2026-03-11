@@ -6,6 +6,7 @@ LibreChat-inspired interface for MCP server communication via JSON-RPC 2.0
 import logging
 import os
 import json
+import httpx
 from pathlib import Path as PathLib
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -19,6 +20,9 @@ from datetime import datetime
 from backend.models import (
     ServerConfig,
     LLMConfig,
+    EnterpriseTokenRequest,
+    EnterpriseTokenResponse,
+    EnterpriseTokenStatusResponse,
     ChatMessage,
     ChatResponse,
     SessionConfig,
@@ -54,7 +58,38 @@ session_manager = SessionManager()
 # In-memory storage
 servers_storage: dict[str, ServerConfig] = {}
 llm_config_storage: LLMConfig | None = None
+enterprise_token_cache: dict[str, object] = {}
 # Tools now managed by mcp_manager
+
+
+def _get_enterprise_token_status() -> EnterpriseTokenStatusResponse:
+    """Return current enterprise token cache status."""
+    if not enterprise_token_cache.get("access_token"):
+        return EnterpriseTokenStatusResponse(
+            token_cached=False,
+            cached_at=None,
+            expires_in=None
+        )
+
+    return EnterpriseTokenStatusResponse(
+        token_cached=True,
+        cached_at=enterprise_token_cache.get("cached_at"),
+        expires_in=enterprise_token_cache.get("expires_in")
+    )
+
+
+def _get_cached_enterprise_token() -> str | None:
+    """Get cached enterprise token if available."""
+    access_token = enterprise_token_cache.get("access_token")
+    return access_token if isinstance(access_token, str) and access_token else None
+
+
+def _redacted_token_request_curl(token_request: EnterpriseTokenRequest) -> str:
+    """Build a redacted curl equivalent for enterprise token acquisition logs."""
+    return (
+        "curl --location --request POST "
+        f"'{token_request.token_endpoint_url}' \\\n+  --header 'Content-Type: application/json' \\\n+  --header 'X-Client-Id: [REDACTED]' \\\n+  --header 'X-Client-Secret: [REDACTED]' \\\n+  --data ''"
+    )
 
 
 @asynccontextmanager
@@ -387,7 +422,7 @@ async def get_llm_config() -> LLMConfig:
     response_model=LLMConfig,
     tags=["LLM"],
     summary="Save LLM configuration",
-    description="Configure LLM provider (OpenAI, Ollama, or Mock)",
+    description="Configure LLM provider (OpenAI, Ollama, Mock, or Enterprise Gateway)",
     responses={
         200: {"description": "Configuration saved successfully"},
         422: {"model": ErrorResponse, "description": "Validation error"}
@@ -401,11 +436,134 @@ async def save_llm_config(
     
     logger_external.info(f"→ POST /api/llm/config (provider={config.provider})")
     logger_internal.info(f"LLM config saved: {config.provider} / {config.model}")
+
+    if config.provider == "enterprise":
+        previous_enterprise = llm_config_storage if llm_config_storage and llm_config_storage.provider == "enterprise" else None
+        if previous_enterprise and (
+            previous_enterprise.client_id != config.client_id
+            or previous_enterprise.token_endpoint_url != config.token_endpoint_url
+            or previous_enterprise.base_url != config.base_url
+        ):
+            enterprise_token_cache.clear()
+            logger_internal.info("Cleared enterprise token cache due to configuration change")
     
     llm_config_storage = config
     logger_external.info(f"← 200 OK")
     
     return config
+
+
+@app.post(
+    "/api/enterprise/token",
+    response_model=EnterpriseTokenResponse,
+    tags=["LLM"],
+    summary="Acquire enterprise bearer token",
+    description="Request an OAuth bearer token for Enterprise Gateway usage and cache it in memory",
+    responses={
+        200: {"description": "Token acquired successfully"},
+        422: {"model": ErrorResponse, "description": "Validation error"},
+        502: {"model": ErrorResponse, "description": "Upstream token endpoint failure"}
+    }
+)
+async def acquire_enterprise_token(
+    token_request: EnterpriseTokenRequest = Body(..., description="Enterprise token request")
+) -> EnterpriseTokenResponse:
+    """Acquire and cache enterprise OAuth token."""
+    logger_external.info("→ POST /api/enterprise/token")
+    logger_external.debug("[enterprise] token request curl equivalent:\n%s", _redacted_token_request_curl(token_request))
+
+    timeout = httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=5.0)
+    headers = {
+        "Content-Type": "application/json",
+        "X-Client-Id": token_request.client_id,
+        "X-Client-Secret": token_request.client_secret,
+    }
+
+    try:
+        logger_external.info(f"→ POST {token_request.token_endpoint_url}")
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(token_request.token_endpoint_url, content="", headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+        logger_external.info(f"← {response.status_code} OK")
+
+        access_token = payload.get("access_token")
+        if not access_token:
+            logger_internal.error("Enterprise token endpoint response missing access_token")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Token endpoint response missing access_token"
+            )
+
+        cached_at = datetime.utcnow()
+        enterprise_token_cache.clear()
+        enterprise_token_cache.update({
+            "access_token": access_token,
+            "cached_at": cached_at,
+            "expires_in": payload.get("expires_in")
+        })
+
+        logger_external.info("← 200 OK (enterprise token cached)")
+        return EnterpriseTokenResponse(
+            token_acquired=True,
+            expires_in=payload.get("expires_in"),
+            cached_at=cached_at,
+            error=None
+        )
+    except HTTPException:
+        raise
+    except httpx.TimeoutException:
+        logger_internal.error("Enterprise token endpoint timeout")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Token endpoint request timed out"
+        )
+    except httpx.HTTPStatusError as e:
+        logger_internal.error(f"Enterprise token endpoint HTTP error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Token endpoint returned {e.response.status_code}"
+        )
+    except httpx.HTTPError as e:
+        logger_internal.error(f"Enterprise token endpoint error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to reach token endpoint"
+        )
+
+
+@app.get(
+    "/api/enterprise/token/status",
+    response_model=EnterpriseTokenStatusResponse,
+    tags=["LLM"],
+    summary="Get enterprise token cache status",
+    responses={
+        200: {"description": "Token cache status returned successfully"}
+    }
+)
+async def get_enterprise_token_status() -> EnterpriseTokenStatusResponse:
+    """Get enterprise token cache status."""
+    logger_external.info("→ GET /api/enterprise/token/status")
+    status_response = _get_enterprise_token_status()
+    logger_external.info(f"← 200 OK (cached={status_response.token_cached})")
+    return status_response
+
+
+@app.delete(
+    "/api/enterprise/token",
+    response_model=DeleteResponse,
+    tags=["LLM"],
+    summary="Clear cached enterprise token",
+    responses={
+        200: {"description": "Token cache cleared successfully"}
+    }
+)
+async def delete_enterprise_token() -> DeleteResponse:
+    """Clear cached enterprise token metadata and token value."""
+    logger_external.info("→ DELETE /api/enterprise/token")
+    enterprise_token_cache.clear()
+    logger_external.info("← 200 OK")
+    return DeleteResponse(success=True, message="Enterprise token cache cleared")
 
 
 # ============================================================================
@@ -488,7 +646,26 @@ async def send_message(
     
     try:
         # Create LLM client
-        llm_client = LLMClientFactory.create(llm_config_storage)
+        enterprise_access_token = None
+        if llm_config_storage.provider == "enterprise":
+            enterprise_access_token = _get_cached_enterprise_token()
+            if not enterprise_access_token:
+                logger_internal.warning("Enterprise provider selected without cached token")
+                response_message = ChatMessage(
+                    role="assistant",
+                    content="Please fetch an Enterprise Gateway token in Settings before sending messages."
+                )
+                session_manager.add_message(session_id, response_message)
+                return ChatResponse(
+                    session_id=session_id,
+                    message=response_message,
+                    tool_executions=[]
+                )
+
+        llm_client = LLMClientFactory.create(
+            llm_config_storage,
+            enterprise_access_token=enterprise_access_token
+        )
         
         # Get available tools
         tools_for_llm = mcp_manager.get_tools_for_llm()

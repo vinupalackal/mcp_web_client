@@ -9,6 +9,7 @@ import httpx
 from backend.llm_client import (
     OpenAIClient,
     OllamaClient,
+    EnterpriseLLMClient,
     MockLLMClient,
     LLMClientFactory,
 )
@@ -47,6 +48,21 @@ def mock_config():
         model="mock-model",
         base_url="http://localhost",
         temperature=0.7,
+    )
+
+
+@pytest.fixture
+def enterprise_config():
+    return LLMConfig(
+        gateway_mode="enterprise",
+        provider="enterprise",
+        model="gpt-4o",
+        base_url="https://llm-gateway.internal/modelgw/models/openai/v1",
+        auth_method="bearer",
+        client_id="enterprise-client",
+        client_secret="enterprise-secret",
+        token_endpoint_url="https://auth.internal/v2/oauth/token",
+        temperature=0.2,
     )
 
 
@@ -343,28 +359,167 @@ class TestMockLLMClient:
 
 
 # ============================================================================
-# TR-LLMC-4: LLMClientFactory
+# TR-LLMC-4: EnterpriseLLMClient
+# ============================================================================
+
+class TestEnterpriseLLMClient:
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_successful_completion(self, enterprise_config):
+        """TC-LLMC-23: Enterprise response returns parsed dict."""
+        respx.post("https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_OPENAI_RESPONSE)
+        )
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        result = await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        assert result["choices"][0]["message"]["role"] == "assistant"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_bearer_auth_header(self, enterprise_config):
+        """TC-LLMC-24: Enterprise requests use cached bearer token."""
+        route = respx.post("https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_OPENAI_RESPONSE)
+        )
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        assert route.calls.last.request.headers["authorization"] == "Bearer enterprise-token"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_url_construction(self, enterprise_config):
+        """TC-LLMC-29: Request sent to {base_url}/chat/completions (NOT /v1/chat/completions)."""
+        route = respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(return_value=httpx.Response(200, json=_OPENAI_RESPONSE))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        assert route.called
+        assert "/v1/chat/completions" in str(route.calls.last.request.url)
+        # Enterprise appends /chat/completions directly to base_url, not /v1/
+        assert "/modelgw/models/openai/v1/chat/completions" in str(route.calls.last.request.url)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_tools_included_in_payload(self, enterprise_config):
+        """TC-LLMC-30: Tools list included with tool_choice=auto."""
+        route = respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(return_value=httpx.Response(200, json=_OPENAI_RESPONSE))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        tools = [{"type": "function", "function": {"name": "ping"}}]
+        await client.chat_completion([{"role": "user", "content": "hi"}], tools)
+        import json
+        payload = json.loads(route.calls.last.request.read())
+        assert "tools" in payload
+        assert payload["tool_choice"] == "auto"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_no_tools_key_when_empty(self, enterprise_config):
+        """TC-LLMC-31: tools key omitted when tools list is empty."""
+        route = respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(return_value=httpx.Response(200, json=_OPENAI_RESPONSE))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        import json
+        payload = json.loads(route.calls.last.request.read())
+        assert "tools" not in payload
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_max_tokens_included(self, enterprise_config):
+        """TC-LLMC-32: max_tokens sent when set in config."""
+        enterprise_config.max_tokens = 1000
+        route = respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(return_value=httpx.Response(200, json=_OPENAI_RESPONSE))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        import json
+        payload = json.loads(route.calls.last.request.read())
+        assert payload["max_tokens"] == 1000
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_max_tokens_omitted_when_none(self, enterprise_config):
+        """TC-LLMC-33: max_tokens absent when config.max_tokens is None."""
+        enterprise_config.max_tokens = None
+        route = respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(return_value=httpx.Response(200, json=_OPENAI_RESPONSE))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        import json
+        payload = json.loads(route.calls.last.request.read())
+        assert "max_tokens" not in payload
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_timeout_raises_exception(self, enterprise_config):
+        """TC-LLMC-34: TimeoutException mapped to Exception('LLM request timeout')."""
+        respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(side_effect=httpx.TimeoutException("timed out"))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        with pytest.raises(Exception, match="LLM request timeout"):
+            await client.chat_completion([{"role": "user", "content": "hi"}], [])
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_http_500_raises_exception(self, enterprise_config):
+        """TC-LLMC-35: HTTP 500 raises Exception."""
+        respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(return_value=httpx.Response(500, text="Server Error"))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        with pytest.raises(Exception):
+            await client.chat_completion([{"role": "user", "content": "hi"}], [])
+
+    def test_format_tool_result(self, enterprise_config):
+        """TC-LLMC-36: Enterprise format_tool_result uses OpenAI-compatible tool_call_id."""
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        result = client.format_tool_result("call_1", "pong")
+        assert result == {"role": "tool", "tool_call_id": "call_1", "content": "pong"}
+
+
+# ============================================================================
+# TR-LLMC-5: LLMClientFactory
 # ============================================================================
 
 class TestLLMClientFactory:
 
     def test_openai_factory(self):
-        """TC-LLMC-23: provider='openai' returns OpenAIClient."""
+        """TC-LLMC-37: provider='openai' returns OpenAIClient."""
         cfg = LLMConfig(provider="openai", model="gpt-4o", base_url="https://api.openai.com")
         assert isinstance(LLMClientFactory.create(cfg), OpenAIClient)
 
     def test_ollama_factory(self):
-        """TC-LLMC-24: provider='ollama' returns OllamaClient."""
+        """TC-LLMC-38: provider='ollama' returns OllamaClient."""
         cfg = LLMConfig(provider="ollama", model="llama3", base_url="http://localhost:11434")
         assert isinstance(LLMClientFactory.create(cfg), OllamaClient)
 
     def test_mock_factory(self):
-        """TC-LLMC-25: provider='mock' returns MockLLMClient."""
+        """TC-LLMC-39: provider='mock' returns MockLLMClient."""
         cfg = LLMConfig(provider="mock", model="mock", base_url="http://localhost")
         assert isinstance(LLMClientFactory.create(cfg), MockLLMClient)
 
+    def test_enterprise_factory_requires_token(self, enterprise_config):
+        """TC-LLMC-40: enterprise provider requires cached token."""
+        with pytest.raises(ValueError, match="cached access token"):
+            LLMClientFactory.create(enterprise_config)
+
+    def test_enterprise_factory(self, enterprise_config):
+        """TC-LLMC-41: provider='enterprise' returns EnterpriseLLMClient."""
+        assert isinstance(
+            LLMClientFactory.create(enterprise_config, enterprise_access_token="enterprise-token"),
+            EnterpriseLLMClient,
+        )
+
     def test_unknown_provider_raises_value_error(self):
-        """TC-LLMC-26: Unknown provider raises ValueError."""
+        """TC-LLMC-42: Unknown provider raises ValueError."""
         # Bypass Pydantic validation with a direct config mutation
         cfg = LLMConfig(provider="mock", model="m", base_url="http://localhost")
         object.__setattr__(cfg, "provider", "unknown")

@@ -21,11 +21,13 @@ def reset_backend_state():
     """Clear all module-level in-memory storage before each test."""
     main_module.servers_storage.clear()
     main_module.llm_config_storage = None
+    main_module.enterprise_token_cache.clear()
     main_module.session_manager = SessionManager()
     main_module.mcp_manager = MCPManager()
     yield
     main_module.servers_storage.clear()
     main_module.llm_config_storage = None
+    main_module.enterprise_token_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +100,21 @@ def llm_mock():
         "model": "mock-model",
         "base_url": "http://localhost",
         "temperature": 0.7,
+    }
+
+
+@pytest.fixture
+def llm_enterprise():
+    return {
+        "gateway_mode": "enterprise",
+        "provider": "enterprise",
+        "model": "gpt-4o",
+        "base_url": "https://llm-gateway.internal/modelgw/models/openai/v1",
+        "auth_method": "bearer",
+        "client_id": "enterprise-client",
+        "client_secret": "enterprise-secret",
+        "token_endpoint_url": "https://auth.internal/v2/oauth/token",
+        "temperature": 0.3,
     }
 
 
