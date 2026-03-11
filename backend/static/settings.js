@@ -388,8 +388,12 @@ function renderServersList(servers) {
     serversList.innerHTML = servers.map(server => `
         <div class="server-item">
             <div class="server-info">
-                <div class="server-name">${server.alias}</div>
+                <div class="server-name">
+                    <span class="server-health-dot ${server.health_status || 'unknown'}" title="${server.health_status || 'unknown'}"></span>
+                    ${server.alias}
+                </div>
                 <div class="server-url">${server.base_url}</div>
+                <div class="server-url">Status: ${server.health_status || 'unknown'}</div>
             </div>
             <button class="btn btn-danger btn-sm" onclick="deleteServer('${server.server_id}')">Delete</button>
         </div>

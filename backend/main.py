@@ -423,6 +423,16 @@ async def refresh_tools() -> ToolRefreshResponse:
     
     # Use MCP Manager to discover tools
     total_tools, servers_refreshed, errors = await mcp_manager.discover_all_tools(servers)
+
+    error_aliases = {
+        error.split(":", 1)[0].strip()
+        for error in errors
+        if ":" in error
+    }
+    checked_at = datetime.utcnow()
+    for server in servers:
+        server.last_health_check = checked_at
+        server.health_status = "unhealthy" if server.alias in error_aliases else "healthy"
     
     logger_internal.info(
         f"Tool refresh complete: {total_tools} tools from {servers_refreshed}/{len(servers)} servers"

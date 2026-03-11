@@ -187,16 +187,47 @@ function addMessage(role, content, toolExecutions = []) {
 
     messageWrapper.appendChild(messageContent);
 
-    // Add compact tools used summary
+    // Collapsible tool execution cards
     if (toolExecutions && toolExecutions.length > 0) {
-        const toolsSummary = document.createElement('div');
-        toolsSummary.classList.add('tools-used-summary');
-        const toolNames = toolExecutions.map(exec => {
-            const successIcon = exec.success ? '✓' : '✗';
-            return `<span class="tool-badge ${exec.success ? 'success' : 'error'}">${successIcon} ${exec.tool}</span>`;
-        }).join(' ');
-        toolsSummary.innerHTML = `<div class="tools-label">🔧 Tools Used:</div><div class="tools-badges">${toolNames}</div>`;
-        messageWrapper.appendChild(toolsSummary);
+        const section = document.createElement('div');
+        section.classList.add('tool-executions-section');
+
+        const escHtml = s => String(s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+        toolExecutions.forEach(exec => {
+            const statusClass = exec.success ? 'success' : 'error';
+            const statusLabel = exec.success ? '✓ OK' : '✗ Error';
+            const durationLabel = exec.duration_ms != null ? `${exec.duration_ms} ms` : '';
+            const argsStr = exec.arguments && Object.keys(exec.arguments).length
+                ? JSON.stringify(exec.arguments, null, 2) : '{}';
+            const resultStr = typeof exec.result === 'string'
+                ? exec.result : JSON.stringify(exec.result, null, 2);
+
+            const details = document.createElement('details');
+            details.className = `tool-exec-details ${statusClass}`;
+            details.innerHTML = `
+                <summary class="tool-exec-summary">
+                    <span class="tool-exec-icon">🔧</span>
+                    <span class="tool-exec-name">${escHtml(exec.tool)}</span>
+                    ${durationLabel ? `<span class="tool-exec-duration">${escHtml(durationLabel)}</span>` : ''}
+                    <span class="tool-exec-status ${statusClass}">${statusLabel}</span>
+                </summary>
+                <div class="tool-exec-body">
+                    <div class="tool-exec-section">
+                        <label>Arguments</label>
+                        <code>${escHtml(argsStr)}</code>
+                    </div>
+                    <div class="tool-exec-section">
+                        <label>Result</label>
+                        <code>${escHtml(resultStr)}</code>
+                    </div>
+                </div>`;
+            section.appendChild(details);
+        });
+
+        messageWrapper.appendChild(section);
     }
 
     chatMessages.appendChild(messageWrapper);
@@ -305,21 +336,17 @@ window.loadToolsSidebar = async function() {
     
     try {
         const response = await fetch('/api/tools');
-        console.log('🔧 API Response status:', response.status);
-        
         if (!response.ok) {
-            throw new Error(`Failed to load tools: ${response.status}`);
+            throw new Error(`HTTP ${response.status}`);
         }
-        
+
         const tools = await response.json();
-        console.log(`🔧 Loaded ${tools.length} tools`);
-        
-        if (tools.length === 0) {
+
+        if (!tools.length) {
             toolsSidebarContent.innerHTML = '<p class="empty-state">No tools discovered yet.<br>Add servers and refresh tools.</p>';
             return;
         }
-        
-        // Group tools by server
+
         const toolsByServer = {};
         tools.forEach(tool => {
             if (!toolsByServer[tool.server_alias]) {
@@ -327,15 +354,16 @@ window.loadToolsSidebar = async function() {
             }
             toolsByServer[tool.server_alias].push(tool);
         });
-        
-        // Render tools
+
         let html = '';
         for (const [serverAlias, serverTools] of Object.entries(toolsByServer)) {
+            html += `<div class="tool-server">${serverAlias}</div>`;
+
             serverTools.forEach(tool => {
-                const paramsCount = tool.parameters?.properties 
-                    ? Object.keys(tool.parameters.properties).length 
+                const paramsCount = tool.parameters?.properties
+                    ? Object.keys(tool.parameters.properties).length
                     : 0;
-                
+
                 html += `
                     <div class="tool-item" title="${tool.description || ''}">
                         <div class="tool-name">${tool.name}</div>
@@ -345,19 +373,16 @@ window.loadToolsSidebar = async function() {
                 `;
             });
         }
-        
+
         toolsSidebarContent.innerHTML = html;
-        
     } catch (error) {
         console.error('❌ Error loading tools:', error);
         toolsSidebarContent.innerHTML = '<p class="error-message">Failed to load tools: ' + error.message + '</p>';
     }
-}
+};
 
-// Initialize tools sidebar
 console.log('🔧 Setting up tools sidebar...');
 
-// Refresh tools sidebar button
 document.addEventListener('DOMContentLoaded', () => {
     const refreshBtn = document.getElementById('refreshToolsSidebarBtn');
     if (refreshBtn) {
@@ -365,8 +390,7 @@ document.addEventListener('DOMContentLoaded', () => {
             window.loadToolsSidebar();
         });
     }
-    
-    // Load tools on page load
+
     window.loadToolsSidebar();
 });
 
