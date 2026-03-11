@@ -345,57 +345,105 @@ function scrollToBottom() {
 // Tools Sidebar
 // ============================================================================
 
+// Sidebar tool filter - pure client-side, no API calls
+function filterTools(query) {
+    const groups = document.querySelectorAll('.tool-server-group');
+    groups.forEach(group => {
+        let groupHasMatch = false;
+        group.querySelectorAll('.tool-item').forEach(item => {
+            const match = !query ||
+                (item.dataset.toolName || '').includes(query) ||
+                (item.dataset.toolDesc || '').includes(query);
+            item.style.display = match ? '' : 'none';
+            if (match) groupHasMatch = true;
+        });
+        group.style.display = groupHasMatch ? '' : 'none';
+    });
+}
+
 // Make this function global so settings.js can call it
 window.loadToolsSidebar = async function() {
     console.log('🔧 Loading tools for sidebar...');
     const toolsSidebarContent = document.getElementById('toolsSidebarContent');
-    
+
     if (!toolsSidebarContent) {
         console.error('❌ toolsSidebarContent element not found!');
         return;
     }
-    
+
+    // Show loading spinner
+    toolsSidebarContent.innerHTML = '<div class="tools-loading"><div class="spinner"></div><span>Loading tools…</span></div>';
+
     try {
         const response = await fetch('/api/tools');
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
         const tools = await response.json();
+
+        // Update count badge
+        const countBadge = document.getElementById('toolsCountBadge');
+        if (countBadge) {
+            if (tools.length > 0) {
+                countBadge.textContent = tools.length;
+                countBadge.style.display = 'inline-flex';
+            } else {
+                countBadge.style.display = 'none';
+            }
+        }
 
         if (!tools.length) {
             toolsSidebarContent.innerHTML = '<p class="empty-state">No tools discovered yet.<br>Add servers and refresh tools.</p>';
             return;
         }
 
+        // Group by server
         const toolsByServer = {};
         tools.forEach(tool => {
-            if (!toolsByServer[tool.server_alias]) {
-                toolsByServer[tool.server_alias] = [];
-            }
+            if (!toolsByServer[tool.server_alias]) toolsByServer[tool.server_alias] = [];
             toolsByServer[tool.server_alias].push(tool);
         });
 
         let html = '';
         for (const [serverAlias, serverTools] of Object.entries(toolsByServer)) {
-            html += `<div class="tool-server">${serverAlias}</div>`;
+            const toolItems = serverTools.map((tool, idx) => {
+                const params = tool.parameters?.properties
+                    ? Object.keys(tool.parameters.properties)
+                    : [];
+                const chipsHtml = params.length
+                    ? `<div class="tool-params-chips">${params.map(p => `<span class="tool-param-chip">${p}</span>`).join('')}</div>`
+                    : '';
+                const escapedDesc = (tool.description || '').replace(/"/g, '&quot;');
+                const delay = idx * 0.04;
+                return `<div class="tool-item" style="animation-delay:${delay}s"
+                    data-tool-name="${tool.name.toLowerCase()}"
+                    data-tool-desc="${escapedDesc.toLowerCase()}"
+                    title="${escapedDesc}">
+                    <div class="tool-name">${tool.name}</div>
+                    ${tool.description ? `<div class="tool-description">${tool.description}</div>` : ''}
+                    ${chipsHtml}
+                </div>`;
+            }).join('');
 
-            serverTools.forEach(tool => {
-                const paramsCount = tool.parameters?.properties
-                    ? Object.keys(tool.parameters.properties).length
-                    : 0;
-
-                html += `
-                    <div class="tool-item" title="${tool.description || ''}">
-                        <div class="tool-name">${tool.name}</div>
-                        ${tool.description ? `<div class="tool-description">${tool.description}</div>` : ''}
-                        ${paramsCount > 0 ? `<div class="tool-params">${paramsCount} parameter${paramsCount > 1 ? 's' : ''}</div>` : ''}
+            html += `
+                <div class="tool-server-group" data-server="${serverAlias}">
+                    <div class="tool-server-header" onclick="this.closest('.tool-server-group').classList.toggle('collapsed')">
+                        <span class="tool-server-name">${serverAlias}</span>
+                        <span class="tool-server-meta">
+                            <span class="server-tool-count">${serverTools.length}</span>
+                            <span class="tool-server-chevron">▼</span>
+                        </span>
                     </div>
-                `;
-            });
+                    <div class="tool-server-tools">${toolItems}</div>
+                </div>`;
         }
 
         toolsSidebarContent.innerHTML = html;
+
+        // Re-apply active search filter if any
+        const searchInput = document.getElementById('toolsSearchInput');
+        if (searchInput && searchInput.value.trim()) {
+            filterTools(searchInput.value.trim().toLowerCase());
+        }
     } catch (error) {
         console.error('❌ Error loading tools:', error);
         toolsSidebarContent.innerHTML = '<p class="error-message">Failed to load tools: ' + error.message + '</p>';
@@ -405,10 +453,35 @@ window.loadToolsSidebar = async function() {
 console.log('🔧 Setting up tools sidebar...');
 
 document.addEventListener('DOMContentLoaded', () => {
+    // Refresh tools button
     const refreshBtn = document.getElementById('refreshToolsSidebarBtn');
     if (refreshBtn) {
-        refreshBtn.addEventListener('click', () => {
-            window.loadToolsSidebar();
+        refreshBtn.addEventListener('click', () => window.loadToolsSidebar());
+    }
+
+    // Collapse / expand sidebar
+    const collapseBtn = document.getElementById('collapseSidebarBtn');
+    const sidebar = document.getElementById('toolsSidebar');
+    if (collapseBtn && sidebar) {
+        collapseBtn.addEventListener('click', () => {
+            sidebar.classList.toggle('collapsed');
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            collapseBtn.title = isCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+            try { localStorage.setItem('sidebarCollapsed', isCollapsed ? '1' : '0'); } catch (e) {}
+        });
+        // Restore persisted state
+        try {
+            if (localStorage.getItem('sidebarCollapsed') === '1') {
+                sidebar.classList.add('collapsed');
+            }
+        } catch (e) {}
+    }
+
+    // Client-side search / filter (no API calls)
+    const searchInput = document.getElementById('toolsSearchInput');
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            filterTools(e.target.value.trim().toLowerCase());
         });
     }
 

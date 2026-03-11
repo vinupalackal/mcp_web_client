@@ -6,6 +6,7 @@ LibreChat-inspired interface for MCP server communication via JSON-RPC 2.0
 import logging
 import os
 import json
+import sys
 import httpx
 from pathlib import Path as PathLib
 from contextlib import asynccontextmanager
@@ -16,6 +17,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import List, Optional
 from datetime import datetime
+
+
+CURRENT_DIR = PathLib(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.models import (
     ServerConfig,
@@ -58,7 +66,7 @@ session_manager = SessionManager()
 
 # In-memory storage
 servers_storage: dict[str, ServerConfig] = {}
-llm_config_storage: LLMConfig | None = None
+llm_config_storage: Optional[LLMConfig] = None
 enterprise_token_cache: dict[str, object] = {}
 # Tools now managed by mcp_manager
 
@@ -134,7 +142,7 @@ def _get_enterprise_token_status() -> EnterpriseTokenStatusResponse:
     )
 
 
-def _get_cached_enterprise_token() -> str | None:
+def _get_cached_enterprise_token() -> Optional[str]:
     """Get cached enterprise token if available."""
     access_token = enterprise_token_cache.get("access_token")
     return access_token if isinstance(access_token, str) and access_token else None
@@ -1361,7 +1369,7 @@ async def serve_frontend():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
+        "backend.main:app",
         host="0.0.0.0",
         port=8000,
         reload=True,

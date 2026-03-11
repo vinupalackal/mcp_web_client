@@ -57,8 +57,7 @@ OLLAMA_BASE_URL=http://192.168.1.50:11434
 ### Run the Application
 
 ```bash
-cd backend
-python main.py
+python -m backend
 ```
 
 Or with uvicorn:
@@ -66,6 +65,8 @@ Or with uvicorn:
 ```bash
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
+
+Run both commands from the repository root (`mcp_client`).
 
 ### Access the Application
 
@@ -170,8 +171,20 @@ mcp_client/
 ### Running Tests
 
 ```bash
-# TODO: Add test suite
-pytest tests/
+# Run everything from the repo root
+make test
+
+# Run backend tests only
+make test-backend
+
+# Run frontend tests only
+make test-frontend
+```
+
+Frontend tests use Jest from [tests/frontend](tests/frontend), so install its dependencies once if needed:
+
+```bash
+cd tests/frontend && npm install
 ```
 
 ## Environment Variables
@@ -209,6 +222,20 @@ python -c "import httpx; print(httpx.get('http://192.168.1.100:3000/health'))"
 2. Verify `/rpc` endpoint exists on MCP server
 3. Check authentication credentials
 4. Review timeout settings
+
+### `ModuleNotFoundError: No module named 'backend'`
+
+This usually means the app was started from the wrong working directory.
+
+Use one of these commands from the repository root:
+
+```bash
+python -m backend
+# or
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Avoid running `uvicorn backend.main:app` from inside the `backend/` folder.
 
 ## Documentation
 

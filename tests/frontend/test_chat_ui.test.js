@@ -269,7 +269,7 @@ describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
     expect(sidebar.innerHTML).toContain('traceroute');
   });
 
-  test('TC-FE-CHAT-41: parameter count displayed', async () => {
+  test('TC-FE-CHAT-41: parameter chips displayed and tool count badge updated', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => [{
@@ -283,7 +283,74 @@ describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
 
     await window.loadToolsSidebar();
 
-    expect(document.getElementById('toolsSidebarContent').innerHTML).toContain('2 parameter');
+    const sidebarHtml = document.getElementById('toolsSidebarContent').innerHTML;
+    expect(sidebarHtml).toContain('host');
+    expect(sidebarHtml).toContain('port');
+
+    const countBadge = document.getElementById('toolsCountBadge');
+    expect(countBadge.textContent).toBe('1');
+    expect(countBadge.style.display).toBe('inline-flex');
+  });
+
+  test('TC-FE-CHAT-42: loading spinner shown while tools request is pending', async () => {
+    let resolveTools;
+    global.fetch = jest.fn().mockImplementation(() => new Promise((resolve) => {
+      resolveTools = resolve;
+    }));
+
+    const loadPromise = window.loadToolsSidebar();
+
+    expect(document.getElementById('toolsSidebarContent').innerHTML).toContain('Loading tools');
+    expect(document.querySelector('.spinner')).toBeTruthy();
+
+    resolveTools({ ok: true, json: async () => [] });
+    await loadPromise;
+  });
+
+  test('TC-FE-CHAT-43: search input filters tools and hides empty groups', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { namespaced_id: 'svc__ping', server_alias: 'svc', name: 'ping', description: 'Ping host', parameters: {} },
+        { namespaced_id: 'ops__trace', server_alias: 'ops', name: 'traceroute', description: 'Trace route', parameters: {} },
+      ],
+    });
+
+    await window.loadToolsSidebar();
+
+    const searchInput = document.getElementById('toolsSearchInput');
+    searchInput.value = 'ping';
+    searchInput.dispatchEvent(new Event('input'));
+
+    const groups = document.querySelectorAll('.tool-server-group');
+    expect(groups[0].style.display).toBe('');
+    expect(groups[1].style.display).toBe('none');
+    expect(groups[0].querySelectorAll('.tool-item')[0].style.display).toBe('');
+  });
+
+  test('TC-FE-CHAT-45: server group header toggles collapsed state', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [{
+        namespaced_id: 'svc__ping',
+        server_alias: 'svc',
+        name: 'ping',
+        description: 'Ping',
+        parameters: {},
+      }],
+    });
+
+    await window.loadToolsSidebar();
+
+    const group = document.querySelector('.tool-server-group');
+    const header = document.querySelector('.tool-server-header');
+    expect(group.classList.contains('collapsed')).toBe(false);
+
+    header.click();
+    expect(group.classList.contains('collapsed')).toBe(true);
+
+    header.click();
+    expect(group.classList.contains('collapsed')).toBe(false);
   });
 
   test('TC-FE-CHAT-44: API error shows error message in sidebar', async () => {
@@ -297,7 +364,34 @@ describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
     expect(document.getElementById('toolsSidebarContent').innerHTML).toContain('Failed');
   });
 
-  test('TC-FE-CHAT-46: sidebar loaded on DOMContentLoaded', async () => {
+  test('TC-FE-CHAT-46: collapse button toggles sidebar class and persists state', async () => {
+    setupChatDOM();
+    jest.resetModules();
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const addEventListenerSpy = jest.spyOn(document, 'addEventListener');
+
+    require('../../backend/static/app.js');
+    const domContentLoadedHandlers = addEventListenerSpy.mock.calls
+      .filter(([eventName]) => eventName === 'DOMContentLoaded')
+      .map(([, handler]) => handler);
+    domContentLoadedHandlers.forEach((handler) => handler());
+
+    const sidebar = document.getElementById('toolsSidebar');
+    const collapseBtn = document.getElementById('collapseSidebarBtn');
+
+    expect(sidebar.classList.contains('collapsed')).toBe(false);
+
+    collapseBtn.click();
+    expect(sidebar.classList.contains('collapsed')).toBe(true);
+    expect(localStorage.setItem).toHaveBeenCalledWith('sidebarCollapsed', '1');
+
+    collapseBtn.click();
+    expect(sidebar.classList.contains('collapsed')).toBe(false);
+    expect(localStorage.setItem).toHaveBeenCalledWith('sidebarCollapsed', '0');
+  });
+
+  test('TC-FE-CHAT-47: sidebar loaded on DOMContentLoaded', async () => {
     // Wait for the DOMContentLoaded async handler to complete
     await new Promise(r => setTimeout(r, 10));
 
@@ -307,6 +401,28 @@ describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
       ([url]) => url && url.includes('/api/tools')
     );
     expect(toolsCalls.length).toBeGreaterThan(0);
+  });
+});
+
+
+describe('Chat UI — Tools Sidebar persisted state (TC-FE-CHAT-48)', () => {
+  test('TC-FE-CHAT-48: persisted collapsed state is restored on page load', async () => {
+    setupChatDOM();
+    jest.resetModules();
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const addEventListenerSpy = jest.spyOn(document, 'addEventListener');
+    localStorage.getItem.mockImplementation((key) => key === 'sidebarCollapsed' ? '1' : null);
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => [] });
+
+    require('../../backend/static/app.js');
+    const domContentLoadedHandlers = addEventListenerSpy.mock.calls
+      .filter(([eventName]) => eventName === 'DOMContentLoaded')
+      .map(([, handler]) => handler);
+    domContentLoadedHandlers.forEach((handler) => handler());
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(document.getElementById('toolsSidebar').classList.contains('collapsed')).toBe(true);
   });
 });
 

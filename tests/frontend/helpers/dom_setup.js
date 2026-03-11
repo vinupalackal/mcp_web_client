@@ -10,8 +10,19 @@ function setupChatDOM() {
     <button id="sendBtn" disabled></button>
     <button id="darkModeBtn"></button>
     <button id="newChatBtn"></button>
-    <div id="toolsSidebarContent"></div>
-    <button id="refreshToolsSidebarBtn"></button>
+    <aside id="toolsSidebar" class="tools-sidebar">
+      <div class="tools-sidebar-header">
+        <h3>Available Tools <span id="toolsCountBadge" style="display:none;"></span></h3>
+        <div class="sidebar-header-actions">
+          <button id="refreshToolsSidebarBtn"></button>
+          <button id="collapseSidebarBtn"></button>
+        </div>
+      </div>
+      <div class="tools-search-bar">
+        <input id="toolsSearchInput" />
+      </div>
+      <div id="toolsSidebarContent"></div>
+    </aside>
   `;
 }
 
@@ -118,8 +129,19 @@ function setupFullDOM() {
     <textarea id="messageInput"></textarea>
     <button id="sendBtn" disabled></button>
     <button id="newChatBtn"></button>
-    <div id="toolsSidebarContent"></div>
-    <button id="refreshToolsSidebarBtn"></button>
+    <aside id="toolsSidebar" class="tools-sidebar">
+      <div class="tools-sidebar-header">
+        <h3>Available Tools <span id="toolsCountBadge" style="display:none;"></span></h3>
+        <div class="sidebar-header-actions">
+          <button id="refreshToolsSidebarBtn"></button>
+          <button id="collapseSidebarBtn"></button>
+        </div>
+      </div>
+      <div class="tools-search-bar">
+        <input id="toolsSearchInput" />
+      </div>
+      <div id="toolsSidebarContent"></div>
+    </aside>
 
     <!-- Settings elements -->
     <div id="settingsModal">
