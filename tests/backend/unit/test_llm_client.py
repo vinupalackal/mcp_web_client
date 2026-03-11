@@ -125,7 +125,7 @@ class TestOpenAIClient:
     @respx.mock
     @pytest.mark.asyncio
     async def test_tools_included_in_payload(self, openai_config):
-        """TC-LLMC-02: Tools list included with tool_choice=auto."""
+        """TC-LLMC-02: Tools list included with tool_choice=auto and parallel_tool_calls=True."""
         route = respx.post("https://api.openai.com/v1/chat/completions").mock(
             return_value=httpx.Response(200, json=_OPENAI_RESPONSE)
         )
@@ -137,6 +137,20 @@ class TestOpenAIClient:
         payload = json.loads(body)
         assert "tools" in payload
         assert payload["tool_choice"] == "auto"
+        assert payload["parallel_tool_calls"] is True
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls_absent_when_no_tools(self, openai_config):
+        """TC-LLMC-02a: parallel_tool_calls not sent when tools list is empty."""
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_OPENAI_RESPONSE)
+        )
+        client = OpenAIClient(openai_config)
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        import json
+        payload = json.loads(route.calls.last.request.read())
+        assert "parallel_tool_calls" not in payload
 
     @respx.mock
     @pytest.mark.asyncio
@@ -327,6 +341,18 @@ class TestOllamaClient:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_read_timeout_includes_phase_and_duration(self, ollama_config):
+        """TC-LLMC-18b: Read timeout includes phase and configured timeout in the surfaced error."""
+        ollama_config.llm_timeout_ms = 42000
+        respx.post("http://127.0.0.1:11434/api/chat").mock(
+            side_effect=httpx.ReadTimeout("read timed out")
+        )
+        client = OllamaClient(ollama_config)
+        with pytest.raises(Exception, match=r"read timeout after 42\.0s"):
+            await client.chat_completion([{"role": "user", "content": "hi"}], [])
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_http_400_raises_exception(self, ollama_config):
         """TC-LLMC-19: HTTP 400 raises Exception."""
         respx.post("http://127.0.0.1:11434/api/chat").mock(
@@ -411,7 +437,7 @@ class TestEnterpriseLLMClient:
     @respx.mock
     @pytest.mark.asyncio
     async def test_tools_included_in_payload(self, enterprise_config):
-        """TC-LLMC-30: Tools list included with tool_choice=auto."""
+        """TC-LLMC-30: Tools list included with tool_choice=auto and parallel_tool_calls=True."""
         route = respx.post(
             "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
         ).mock(return_value=httpx.Response(200, json=_OPENAI_RESPONSE))
@@ -422,6 +448,20 @@ class TestEnterpriseLLMClient:
         payload = json.loads(route.calls.last.request.read())
         assert "tools" in payload
         assert payload["tool_choice"] == "auto"
+        assert payload["parallel_tool_calls"] is True
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_parallel_tool_calls_absent_when_no_tools(self, enterprise_config):
+        """TC-LLMC-30a: parallel_tool_calls not sent when tools list is empty."""
+        route = respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(return_value=httpx.Response(200, json=_OPENAI_RESPONSE))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        import json
+        payload = json.loads(route.calls.last.request.read())
+        assert "parallel_tool_calls" not in payload
 
     @respx.mock
     @pytest.mark.asyncio

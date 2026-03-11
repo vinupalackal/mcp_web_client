@@ -48,6 +48,11 @@ function setupSettingsDOM() {
           </div>
           <button type="submit">Add</button>
         </form>
+        <button id="refreshServerHealthBtn">Check Health</button>
+        <label>
+          <input id="autoRefreshHealthToggle" type="checkbox" />
+          Auto refresh
+        </label>
         <div id="serversList"></div>
 
         <!-- LLM form -->
@@ -92,6 +97,7 @@ function setupSettingsDOM() {
             <button type="button" id="fetchEnterpriseTokenBtn">Fetch Token</button>
           </div>
           <input id="llmTemperature" type="number" value="0.7" />
+          <input id="includeHistoryToggle" type="checkbox" checked />
           <button type="submit">Save</button>
         </form>
 
@@ -137,6 +143,11 @@ function setupFullDOM() {
           <div id="apiKeyGroup" style="display:none"><input id="apiKey" /></div>
           <button type="submit">Add</button>
         </form>
+        <button id="refreshServerHealthBtn">Check Health</button>
+        <label>
+          <input id="autoRefreshHealthToggle" type="checkbox" />
+          Auto refresh
+        </label>
         <div id="serversList"></div>
         <form id="llmConfigForm">
           <input type="radio" id="llmGatewayModeStandard" name="llmGatewayMode" value="standard" checked />
@@ -177,6 +188,7 @@ function setupFullDOM() {
             <button type="button" id="fetchEnterpriseTokenBtn">Fetch Token</button>
           </div>
           <input id="llmTemperature" type="number" value="0.7" />
+          <input id="includeHistoryToggle" type="checkbox" checked />
           <button type="submit">Save</button>
         </form>
         <div id="toolsList"></div>

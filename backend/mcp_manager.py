@@ -180,6 +180,29 @@ class MCPManager:
         )
         
         return total_tools, servers_refreshed, errors
+
+    async def check_server_health(self, server: ServerConfig) -> tuple[bool, Optional[str]]:
+        """Check whether a server is reachable via MCP initialize handshake."""
+        try:
+            await self.initialize_server(server)
+            return True, None
+        except Exception as e:
+            self.initialized_servers.pop(server.server_id, None)
+            return False, str(e)
+
+    async def refresh_server_health(self, servers: List[ServerConfig]) -> tuple[int, int, List[str]]:
+        """Refresh health metadata for all configured servers."""
+        healthy_servers = 0
+        errors: List[str] = []
+
+        for server in servers:
+            is_healthy, error = await self.check_server_health(server)
+            if is_healthy:
+                healthy_servers += 1
+            else:
+                errors.append(f"{server.alias}: {error}")
+
+        return len(servers), healthy_servers, errors
     
     async def execute_tool(
         self,

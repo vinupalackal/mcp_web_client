@@ -449,6 +449,10 @@ class SessionConfig(BaseModel):
         default_factory=list,
         description="List of server aliases enabled for this session"
     )
+    include_history: bool = Field(
+        default=True,
+        description="Whether prior chat history should be sent with each new user query"
+    )
 
 
 class Session(BaseModel):
@@ -491,6 +495,10 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Tool execution details from this turn"
     )
+    initial_llm_response: Optional[str] = Field(
+        default=None,
+        description="Initial assistant response before any tool execution, if present"
+    )
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -501,6 +509,7 @@ class ChatResponse(BaseModel):
                         "role": "assistant",
                         "content": "The current weather in NYC is 72°F and partly cloudy."
                     },
+                    "initial_llm_response": "I'll check the live weather and summarize it for you.",
                     "tool_executions": [
                         {
                             "tool": "weather_api__get_weather",
@@ -594,6 +603,45 @@ class ToolRefreshResponse(BaseModel):
                     "total_tools": 8,
                     "servers_refreshed": 2,
                     "errors": []
+                }
+            ]
+        }
+    )
+
+
+class ServerHealthRefreshResponse(BaseModel):
+    """Response from server health refresh operation"""
+
+    servers_checked: int = Field(
+        ...,
+        description="Number of servers checked"
+    )
+    healthy_servers: int = Field(
+        ...,
+        description="Number of healthy servers"
+    )
+    unhealthy_servers: int = Field(
+        ...,
+        description="Number of unhealthy servers"
+    )
+    errors: List[str] = Field(
+        default_factory=list,
+        description="Error messages from failed health checks"
+    )
+    servers: List[ServerConfig] = Field(
+        default_factory=list,
+        description="Updated server records including health metadata"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "servers_checked": 2,
+                    "healthy_servers": 1,
+                    "unhealthy_servers": 1,
+                    "errors": ["weather_api: Timeout connecting to weather_api"],
+                    "servers": []
                 }
             ]
         }

@@ -154,4 +154,23 @@ describe('UI preference storage', () => {
     expect(document.getElementById('llmModel').value).toBe('gpt-4o');
     expect(document.getElementById('llmModel').value).not.toBe('local-model');
   });
+
+  test('TC-FE-PREF-05: chat history preference persists locally', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/servers') return Promise.resolve({ ok: true, json: async () => [] });
+      if (url === '/api/llm/config') return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+      if (url === '/api/tools') return Promise.resolve({ ok: true, json: async () => [] });
+      if (url === '/api/enterprise/token/status') return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    loadModules();
+    await new Promise(r => setTimeout(r, 20));
+
+    const toggle = document.getElementById('includeHistoryToggle');
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change'));
+
+    expect(localStorage.setItem).toHaveBeenCalledWith('includeHistory', 'false');
+  });
 });

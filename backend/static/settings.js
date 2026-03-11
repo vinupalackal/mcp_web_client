@@ -29,7 +29,14 @@ const STORAGE_KEYS = {
     gatewayMode: 'llmGatewayMode',
     enterpriseSelectedModel: 'enterpriseSelectedModel',
     enterpriseCustomModels: 'enterpriseCustomModels',
+    autoRefreshServerHealth: 'autoRefreshServerHealth',
+    includeHistory: 'includeHistory',
 };
+
+const SERVER_HEALTH_REFRESH_INTERVAL_MS = 30000;
+let serverHealthRefreshIntervalId = null;
+let isRefreshingServerHealth = false;
+let pendingServerHealthRefresh = false;
 
 // DOM Elements
 const settingsModal = document.getElementById('settingsModal');
@@ -51,11 +58,19 @@ const enterpriseSaveModelBtn = document.getElementById('enterpriseSaveModelBtn')
 const enterpriseCancelModelBtn = document.getElementById('enterpriseCancelModelBtn');
 const fetchEnterpriseTokenBtn = document.getElementById('fetchEnterpriseTokenBtn');
 const enterpriseTokenStatus = document.getElementById('enterpriseTokenStatus');
+const refreshServerHealthBtn = document.getElementById('refreshServerHealthBtn');
+const autoRefreshHealthToggle = document.getElementById('autoRefreshHealthToggle');
+const includeHistoryToggle = document.getElementById('includeHistoryToggle');
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log('⚙️ Settings: DOM loaded');
     initializeSettings();
-    loadSettings();
+    window.setTimeout(() => {
+        loadServersFromBackend();
+    }, 0);
+    loadLLMConfigFromBackend();
+    loadEnterpriseTokenStatus();
+    loadTools();
 });
 
 function initializeSettings() {
@@ -86,18 +101,34 @@ function initializeSettings() {
     addServerForm?.addEventListener('submit', handleAddServer);
     llmConfigForm?.addEventListener('submit', handleSaveLLMConfig);
     refreshToolsBtn?.addEventListener('click', handleRefreshTools);
+    refreshServerHealthBtn?.addEventListener('click', () => refreshServerHealth());
     addEnterpriseModelBtn?.addEventListener('click', () => toggleEnterpriseModelForm(true));
     enterpriseSaveModelBtn?.addEventListener('click', saveEnterpriseCustomModel);
     enterpriseCancelModelBtn?.addEventListener('click', () => toggleEnterpriseModelForm(false));
     fetchEnterpriseTokenBtn?.addEventListener('click', handleFetchEnterpriseToken);
+    autoRefreshHealthToggle?.addEventListener('change', (event) => {
+        setServerHealthAutoRefresh(event.target.checked);
+    });
 
     updateServerAuthUI();
     updateStandardProviderUI();
     renderEnterpriseModelOptions();
     renderEnterpriseModelsList();
     setGatewayMode(getGatewayMode(), false);
+    initializeServerHealthAutoRefresh();
+    initializeChatHistoryPreference();
 
     console.log('⚙️ Settings: Initialized');
+}
+
+function initializeChatHistoryPreference() {
+    const includeHistory = localStorage.getItem(STORAGE_KEYS.includeHistory) !== 'false';
+    if (includeHistoryToggle) {
+        includeHistoryToggle.checked = includeHistory;
+        includeHistoryToggle.addEventListener('change', (event) => {
+            localStorage.setItem(STORAGE_KEYS.includeHistory, event.target.checked ? 'true' : 'false');
+        });
+    }
 }
 
 function closeSettingsModal() {
@@ -221,6 +252,49 @@ async function loadServersFromBackend() {
         console.error('⚙️ Settings: Failed to load servers from backend', error);
         renderServersList([]);
     }
+}
+
+function initializeServerHealthAutoRefresh() {
+    const enabled = localStorage.getItem(STORAGE_KEYS.autoRefreshServerHealth) === 'true';
+    if (autoRefreshHealthToggle) {
+        autoRefreshHealthToggle.checked = enabled;
+    }
+    setServerHealthAutoRefresh(enabled, false);
+}
+
+function setServerHealthAutoRefresh(enabled, persist = true) {
+    if (persist) {
+        localStorage.setItem(STORAGE_KEYS.autoRefreshServerHealth, enabled ? 'true' : 'false');
+    }
+
+    if (autoRefreshHealthToggle) {
+        autoRefreshHealthToggle.checked = enabled;
+    }
+
+    if (serverHealthRefreshIntervalId) {
+        clearInterval(serverHealthRefreshIntervalId);
+        serverHealthRefreshIntervalId = null;
+    }
+
+    if (enabled) {
+        serverHealthRefreshIntervalId = window.setInterval(() => {
+            refreshServerHealth({ silent: true });
+        }, SERVER_HEALTH_REFRESH_INTERVAL_MS);
+        refreshServerHealth({ silent: true });
+    }
+}
+
+function formatLastHealthCheck(timestamp) {
+    if (!timestamp) {
+        return 'Not checked yet';
+    }
+
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) {
+        return 'Not checked yet';
+    }
+
+    return date.toLocaleString();
 }
 
 function updateLlmFieldRequirements(mode) {
@@ -389,15 +463,63 @@ function renderServersList(servers) {
         <div class="server-item">
             <div class="server-info">
                 <div class="server-name">
-                    <span class="server-health-dot ${server.health_status || 'unknown'}" title="${server.health_status || 'unknown'}"></span>
+                    <span class="server-health-dot ${server.health_status || 'unknown'}" title="${server.health_status || 'unknown'} · Last checked: ${formatLastHealthCheck(server.last_health_check)}"></span>
                     ${server.alias}
                 </div>
                 <div class="server-url">${server.base_url}</div>
                 <div class="server-url">Status: ${server.health_status || 'unknown'}</div>
+                <div class="server-health-meta">Last checked: ${formatLastHealthCheck(server.last_health_check)}</div>
             </div>
             <button class="btn btn-danger btn-sm" onclick="deleteServer('${server.server_id}')">Delete</button>
         </div>
     `).join('');
+}
+
+async function refreshServerHealth({ silent = false } = {}) {
+    if (isRefreshingServerHealth) {
+        pendingServerHealthRefresh = true;
+        return;
+    }
+
+    isRefreshingServerHealth = true;
+    if (refreshServerHealthBtn) {
+        refreshServerHealthBtn.disabled = true;
+        refreshServerHealthBtn.textContent = '🩺 Checking...';
+    }
+
+    try {
+        const response = await fetch('/api/servers/refresh-health', { method: 'POST' });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const result = await response.json();
+        renderServersList(result.servers || []);
+
+        if (!silent) {
+            showSuccess(`Health checked: ${result.healthy_servers}/${result.servers_checked} healthy`);
+        }
+
+        if (result.errors?.length && !silent) {
+            alert('Some health checks failed:\n' + result.errors.join('\n'));
+        }
+    } catch (error) {
+        console.error('⚙️ Settings: Health refresh failed', error);
+        if (!silent) {
+            alert('Failed to refresh server health: ' + error.message);
+        }
+    } finally {
+        isRefreshingServerHealth = false;
+        if (refreshServerHealthBtn) {
+            refreshServerHealthBtn.disabled = false;
+            refreshServerHealthBtn.textContent = '🩺 Check Health';
+        }
+
+        if (pendingServerHealthRefresh) {
+            pendingServerHealthRefresh = false;
+            refreshServerHealth({ silent: true });
+        }
+    }
 }
 
 async function deleteServer(serverId) {
@@ -431,6 +553,7 @@ async function handleRefreshTools() {
 
         const result = await response.json();
         await loadTools();
+        await loadServersFromBackend();
 
         if (typeof window.loadToolsSidebar === 'function') {
             await window.loadToolsSidebar();

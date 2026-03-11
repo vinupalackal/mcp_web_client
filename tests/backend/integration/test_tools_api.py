@@ -149,3 +149,58 @@ class TestRefreshTools:
         data = r.json()
         assert data["servers_refreshed"] == 1
         assert len(data["errors"]) == 1
+
+
+class TestRefreshServerHealth:
+
+    @respx.mock
+    def test_no_servers_returns_zero(self, client):
+        """TC-TOOL-11: refresh-health with no servers returns zero counts."""
+        r = client.post("/api/servers/refresh-health")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["servers_checked"] == 0
+        assert data["healthy_servers"] == 0
+        assert data["unhealthy_servers"] == 0
+
+    @respx.mock
+    def test_successful_health_refresh_marks_server_healthy(self, client, monkeypatch):
+        """TC-TOOL-12: refresh-health marks server healthy after initialize succeeds."""
+        monkeypatch.setenv("MCP_ALLOW_HTTP_INSECURE", "true")
+        client.post("/api/servers", json={
+            "alias": "svc", "base_url": "https://mcp.example.com", "auth_type": "none"
+        })
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            return_value=httpx.Response(200, json=_init_ok())
+        )
+
+        r = client.post("/api/servers/refresh-health")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["servers_checked"] == 1
+        assert data["healthy_servers"] == 1
+        assert data["unhealthy_servers"] == 0
+        assert data["servers"][0]["health_status"] == "healthy"
+        assert data["servers"][0]["last_health_check"] is not None
+
+    @respx.mock
+    def test_failed_health_refresh_marks_server_unhealthy(self, client, monkeypatch):
+        """TC-TOOL-13: refresh-health marks server unhealthy on initialize failure."""
+        monkeypatch.setenv("MCP_ALLOW_HTTP_INSECURE", "true")
+        client.post("/api/servers", json={
+            "alias": "svc", "base_url": "https://mcp.example.com", "auth_type": "none"
+        })
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            return_value=httpx.Response(500, text="Unavailable")
+        )
+
+        r = client.post("/api/servers/refresh-health")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["servers_checked"] == 1
+        assert data["healthy_servers"] == 0
+        assert data["unhealthy_servers"] == 1
+        assert len(data["errors"]) == 1
+        assert data["servers"][0]["health_status"] == "unhealthy"

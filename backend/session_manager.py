@@ -19,6 +19,7 @@ class SimpleSession:
     session_id: str
     created_at: datetime = field(default_factory=datetime.now)
     title: str = "New Conversation"
+    config: Dict[str, Any] = field(default_factory=dict)
 
 
 class SessionManager:
@@ -31,7 +32,7 @@ class SessionManager:
         
         logger_internal.info("SessionManager initialized")
     
-    def create_session(self, session_id: Optional[str] = None) -> SimpleSession:
+    def create_session(self, session_id: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> SimpleSession:
         """Create new chat session"""
         
         if session_id is None:
@@ -40,7 +41,8 @@ class SessionManager:
         session = SimpleSession(
             session_id=session_id,
             created_at=datetime.now(),
-            title="New Conversation"
+            title="New Conversation",
+            config=config or {}
         )
         
         self.sessions[session_id] = session
@@ -123,15 +125,16 @@ class SessionManager:
         logger_internal.info(f"Updated session title: {session_id} -> {title}")
         return True
     
-    def get_messages_for_llm(self, session_id: str, provider: str = "openai") -> List[Dict[str, Any]]:
+    def get_messages_for_llm(self, session_id: str, provider: str = "openai", start_index: int = 0) -> List[Dict[str, Any]]:
         """Convert messages to LLM API format
         
         Args:
             session_id: Session identifier
             provider: LLM provider ('openai' or 'ollama') - affects tool_call_id inclusion
+            start_index: Index offset into session messages for scoped history
         """
         
-        messages = self.get_messages(session_id)
+        messages = self.get_messages(session_id)[start_index:]
         
         llm_messages = []
         for msg in messages:

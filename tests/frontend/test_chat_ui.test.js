@@ -341,6 +341,7 @@ describe('Chat UI — addMessage renders content (TC-FE-CHAT-27 to 29)', () => {
             session_id: 'sess-1',
             message: { role: 'assistant', content: 'Hello there!' },
             tool_executions: [{ tool: 'svc__ping', success: true }],
+            initial_llm_response: 'Let me inspect that server for you.',
           }),
         });
       }
@@ -378,5 +379,24 @@ describe('Chat UI — addMessage renders content (TC-FE-CHAT-27 to 29)', () => {
     const chat = document.getElementById('chatMessages').innerHTML;
     expect(chat).toContain('svc__ping');
     expect(chat).toContain('success');
+  });
+
+  test('TC-FE-CHAT-29: final answer is primary and initial suggestion is collapsible', async () => {
+    const input = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+
+    input.value = 'hello';
+    input.dispatchEvent(new Event('input'));
+    sendBtn.click();
+
+    await new Promise(r => setTimeout(r, 50));
+
+    const chatMessages = document.getElementById('chatMessages');
+    const assistantMessages = chatMessages.querySelectorAll('.message-wrapper.assistant');
+    const lastAssistant = assistantMessages[assistantMessages.length - 1];
+
+    expect(lastAssistant.querySelector('.message-content').textContent).toContain('Hello there!');
+    expect(lastAssistant.querySelector('.assistant-meta-summary').textContent).toContain('Initial LLM suggestion');
+    expect(lastAssistant.querySelector('.assistant-meta-body').textContent).toContain('Let me inspect that server for you.');
   });
 });

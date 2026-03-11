@@ -132,6 +132,53 @@ describe('Frontend integration — TC-FE-INT-01 to 05', () => {
     expect(sessionCreations.length).toBeGreaterThanOrEqual(1);
   });
 
+  test('TC-FE-INT-03b: first message includes include_history preference in session creation', async () => {
+    const fetchCalls = [];
+    localStorage.getItem.mockImplementation((key) => key === 'includeHistory' ? 'false' : null);
+    global.fetch = jest.fn().mockImplementation((url, opts) => {
+      fetchCalls.push({ url, opts });
+      if (url === '/api/llm/config') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ provider: 'mock', model: 'mock', base_url: 'http://mock', temperature: 1.0 }),
+        });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url.includes('/api/sessions') && opts?.method === 'POST' && !url.includes('/messages')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ session_id: 'auto-sess', created_at: new Date().toISOString() }),
+        });
+      }
+      if (url.includes('/messages')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ session_id: 'auto-sess', message: { role: 'assistant', content: 'hi' }, tool_executions: [] }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    window.loadToolsSidebar = jest.fn().mockResolvedValue(undefined);
+    loadAll();
+
+    const input = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    input.value = 'hello auto';
+    input.dispatchEvent(new Event('input'));
+    sendBtn.click();
+
+    await new Promise(r => setTimeout(r, 50));
+
+    const sessionCreation = fetchCalls.find(
+      c => c.url && c.url.includes('/api/sessions') && !c.url.includes('/messages') && c.opts?.method === 'POST'
+    );
+    expect(sessionCreation).toBeTruthy();
+    expect(JSON.parse(sessionCreation.opts.body).include_history).toBe(false);
+  });
+
   // -------------------------------------------------------------------------
   // TC-FE-INT-04: Missing LLM config prevents message send
   // -------------------------------------------------------------------------

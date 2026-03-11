@@ -239,3 +239,12 @@ class TestGetMessagesForLLM:
             mgr.add_message(s.session_id, ChatMessage(role=role, content=role))
         msgs = mgr.get_messages_for_llm(s.session_id, "openai")
         assert [m["role"] for m in msgs] == roles
+
+    def test_start_index_limits_history_scope(self, mgr):
+        """Only messages from start_index onward are formatted for the LLM."""
+        s = mgr.create_session()
+        mgr.add_message(s.session_id, ChatMessage(role="user", content="old"))
+        mgr.add_message(s.session_id, ChatMessage(role="assistant", content="old reply"))
+        mgr.add_message(s.session_id, ChatMessage(role="user", content="new"))
+        msgs = mgr.get_messages_for_llm(s.session_id, "openai", start_index=2)
+        assert msgs == [{"role": "user", "content": "new"}]

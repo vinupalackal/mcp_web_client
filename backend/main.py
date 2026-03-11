@@ -30,6 +30,7 @@ from backend.models import (
     MessageListResponse,
     ToolSchema,
     ToolRefreshResponse,
+    ServerHealthRefreshResponse,
     DeleteResponse,
     ErrorResponse,
     HealthResponse,
@@ -433,6 +434,7 @@ async def refresh_tools() -> ToolRefreshResponse:
     for server in servers:
         server.last_health_check = checked_at
         server.health_status = "unhealthy" if server.alias in error_aliases else "healthy"
+    _save_servers_to_disk()
     
     logger_internal.info(
         f"Tool refresh complete: {total_tools} tools from {servers_refreshed}/{len(servers)} servers"
@@ -443,6 +445,62 @@ async def refresh_tools() -> ToolRefreshResponse:
         total_tools=total_tools,
         servers_refreshed=servers_refreshed,
         errors=errors
+    )
+
+
+@app.post(
+    "/api/servers/refresh-health",
+    response_model=ServerHealthRefreshResponse,
+    tags=["MCP Servers"],
+    summary="Refresh server health status",
+    description="Check MCP server reachability via initialize handshake without refreshing tools",
+    responses={
+        200: {"description": "Server health refreshed successfully"},
+        500: {"model": ErrorResponse, "description": "Health refresh failed"}
+    }
+)
+async def refresh_server_health() -> ServerHealthRefreshResponse:
+    """Refresh health status for all configured MCP servers."""
+    logger_external.info("→ POST /api/servers/refresh-health")
+
+    servers = list(servers_storage.values())
+
+    if not servers:
+        logger_internal.warning("No servers configured for health refresh")
+        return ServerHealthRefreshResponse(
+            servers_checked=0,
+            healthy_servers=0,
+            unhealthy_servers=0,
+            errors=["No MCP servers configured"],
+            servers=[]
+        )
+
+    checked_count, healthy_servers, errors = await mcp_manager.refresh_server_health(servers)
+
+    error_aliases = {
+        error.split(":", 1)[0].strip()
+        for error in errors
+        if ":" in error
+    }
+    checked_at = datetime.utcnow()
+    for server in servers:
+        server.last_health_check = checked_at
+        server.health_status = "unhealthy" if server.alias in error_aliases else "healthy"
+
+    _save_servers_to_disk()
+    unhealthy_servers = checked_count - healthy_servers
+
+    logger_internal.info(
+        f"Server health refresh complete: {healthy_servers}/{checked_count} healthy"
+    )
+    logger_external.info(f"← 200 OK (checked {checked_count} servers)")
+
+    return ServerHealthRefreshResponse(
+        servers_checked=checked_count,
+        healthy_servers=healthy_servers,
+        unhealthy_servers=unhealthy_servers,
+        errors=errors,
+        servers=servers
     )
 
 
@@ -669,7 +727,9 @@ async def create_session(
     logger_external.info("→ POST /api/sessions")
     
     # Create session via SessionManager
-    session = session_manager.create_session()
+    session = session_manager.create_session(
+        config=config.model_dump() if config else {"include_history": True, "enabled_servers": []}
+    )
     
     logger_internal.info(f"Session created: {session.session_id}")
     logger_external.info(f"← 201 Created")
@@ -708,6 +768,7 @@ async def send_message(
         )
     
     # Add user message to session
+    existing_message_count = len(session_manager.get_messages(session_id))
     session_manager.add_message(session_id, message)
     
     # Check LLM config
@@ -721,7 +782,8 @@ async def send_message(
         return ChatResponse(
             session_id=session_id,
             message=response_message,
-            tool_executions=[]
+            tool_executions=[],
+            initial_llm_response=None
         )
     
     try:
@@ -739,7 +801,8 @@ async def send_message(
                 return ChatResponse(
                     session_id=session_id,
                     message=response_message,
-                    tool_executions=[]
+                    tool_executions=[],
+                    initial_llm_response=None
                 )
 
         llm_client = LLMClientFactory.create(
@@ -756,16 +819,34 @@ async def send_message(
         else:
             logger_internal.warning("No tools available! LLM will not be able to call any tools.")
         
+        session = session_manager.get_session(session_id)
+        include_history = True
+        if session and isinstance(session.config, dict):
+            include_history = session.config.get("include_history", True)
+
+        history_start_index = 0 if include_history else existing_message_count
+
         # Get conversation history (pass provider for correct message formatting)
         messages_for_llm = session_manager.get_messages_for_llm(
             session_id, 
-            provider=llm_config_storage.provider
+            provider=llm_config_storage.provider,
+            start_index=history_start_index
         )
         
         # Add system message to guide LLM behavior with tool results
         system_message = {
             "role": "system",
             "content": """You are a helpful AI assistant with access to MCP (Model Context Protocol) tools.
+
+**Tool usage policy:**
+1. If the user asks for current server, device, network, process, log, runtime, or system information, use a relevant tool instead of answering from general knowledge.
+2. If a tool can fetch real-time or environment-specific data, call the tool first and then explain the result.
+3. Do not guess server state, configuration, health, uptime, memory, routes, interfaces, or capabilities when a matching tool is available.
+
+**IMPORTANT — Call multiple tools in a single response when needed:**
+- If the user's request requires data from more than one tool (e.g. "show CPU and memory", "list processes and disk usage", "show interface stats and uptime"), you MUST call ALL the relevant tools together in your first response as parallel function calls.
+- Do NOT call one tool, wait for results, then call the next. Issue all independent tool calls simultaneously in a single response.
+- Example: for "show CPU and memory information" → call `get_cpu_info` AND `get_memory_info` in the same response, not sequentially.
 
 **When you receive tool execution results, always:**
 1. **Explain what you found** - Describe the tool output in clear, understandable terms
@@ -787,6 +868,76 @@ async def send_message(
 Always aim to make technical information accessible and actionable."""
         }
         
+        def rebuild_messages_for_llm() -> List[dict]:
+            provider_messages = session_manager.get_messages_for_llm(
+                session_id,
+                provider=llm_config_storage.provider,
+                start_index=history_start_index
+            )
+            if not provider_messages or provider_messages[0].get("role") != "system":
+                provider_messages.insert(0, system_message)
+            return provider_messages
+
+        def extract_tool_calls_from_content(content: str, turn_number: int) -> List[dict]:
+            """Recover tool requests when a provider returns JSON in content instead of tool_calls."""
+            raw_content = (content or "").strip()
+            if not raw_content:
+                return []
+
+            cleaned_content = raw_content
+            if cleaned_content.startswith("**") and cleaned_content.endswith("**"):
+                cleaned_content = cleaned_content[2:-2].strip()
+            if cleaned_content.startswith("`") and cleaned_content.endswith("`"):
+                cleaned_content = cleaned_content.strip("`").strip()
+            if cleaned_content.startswith("json"):
+                cleaned_content = cleaned_content[4:].strip()
+
+            try:
+                parsed_content = json.loads(cleaned_content)
+            except (TypeError, json.JSONDecodeError):
+                return []
+
+            candidate_calls = parsed_content if isinstance(parsed_content, list) else [parsed_content]
+            available_tool_names = {
+                tool["function"]["name"]
+                for tool in tools_for_llm
+                if tool.get("type") == "function" and tool.get("function", {}).get("name")
+            }
+
+            recovered_tool_calls = []
+            for content_index, candidate in enumerate(candidate_calls, 1):
+                if not isinstance(candidate, dict):
+                    return []
+
+                function_payload = candidate.get("function") if isinstance(candidate.get("function"), dict) else {}
+                tool_name = candidate.get("name") or function_payload.get("name")
+                if not tool_name or tool_name not in available_tool_names:
+                    return []
+
+                arguments = candidate.get("parameters")
+                if arguments is None:
+                    arguments = candidate.get("arguments")
+                if arguments is None:
+                    arguments = function_payload.get("arguments")
+                if arguments is None:
+                    arguments = {}
+
+                if isinstance(arguments, str):
+                    arguments_str = arguments
+                else:
+                    arguments_str = json.dumps(arguments)
+
+                recovered_tool_calls.append({
+                    "id": f"content_tool_call_{turn_number}_{content_index}",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments_str,
+                    },
+                })
+
+            return recovered_tool_calls
+
         # Insert system message at the beginning if not already present
         if not messages_for_llm or messages_for_llm[0].get("role") != "system":
             messages_for_llm.insert(0, system_message)
@@ -794,20 +945,33 @@ Always aim to make technical information accessible and actionable."""
         # Multi-turn loop for tool calling
         max_turns = int(os.getenv("MCP_MAX_TOOL_CALLS_PER_TURN", "8"))
         tool_executions = []
+        initial_llm_response = None
+        executed_tool_results: dict[str, dict] = {}
         
         for turn in range(max_turns):
             logger_internal.info(f"Turn {turn + 1}/{max_turns}")
+            # Tools are sent only on the first request. Once any tool has executed,
+            # subsequent requests omit the catalog so the model focuses on summarising
+            # the results. The system prompt instructs the model to call all needed
+            # tools in parallel in the first response.
+            tools_for_request = tools_for_llm if not tool_executions else []
             
             # Log request to LLM
-            logger_external.info(f"→ LLM Request: {len(messages_for_llm)} messages, {len(tools_for_llm)} tools available")
+            logger_external.info(
+                f"→ LLM Request: {len(messages_for_llm)} messages, {len(tools_for_request)} tools sent ({len(tools_for_llm)} available)"
+            )
             logger_internal.info(f"Messages to LLM: {json.dumps(messages_for_llm, indent=2)}")
-            if tools_for_llm:
-                logger_internal.info(f"Tools sent to LLM: {json.dumps(tools_for_llm, indent=2)}")
+            if tools_for_request:
+                logger_internal.info(f"Tools sent to LLM: {json.dumps(tools_for_request, indent=2)}")
+            elif tools_for_llm:
+                logger_internal.info(
+                    "Skipping tool catalog for follow-up LLM request because tool results are already in context"
+                )
             
             # Call LLM
             llm_response = await llm_client.chat_completion(
                 messages=messages_for_llm,
-                tools=tools_for_llm
+                tools=tools_for_request
             )
             
             # Extract assistant message
@@ -821,29 +985,69 @@ Always aim to make technical information accessible and actionable."""
             logger_internal.info(f"LLM message has tool_calls: {'tool_calls' in assistant_msg}")
             
             # Check if LLM wants to call tools
-            if finish_reason == "tool_calls" and "tool_calls" in assistant_msg:
-                num_tool_calls = len(assistant_msg['tool_calls'])
+            assistant_tool_calls = assistant_msg.get("tool_calls") or []
+            recovered_tool_calls_from_content = []
+            if not assistant_tool_calls and assistant_msg.get("content"):
+                recovered_tool_calls_from_content = extract_tool_calls_from_content(
+                    assistant_msg.get("content", ""),
+                    turn + 1,
+                )
+                if recovered_tool_calls_from_content:
+                    assistant_tool_calls = recovered_tool_calls_from_content
+                    logger_internal.warning(
+                        "Recovered %s tool call(s) from assistant content because provider returned JSON content instead of tool_calls",
+                        len(assistant_tool_calls),
+                    )
+            has_tool_calls = len(assistant_tool_calls) > 0
+
+            if has_tool_calls:
+                assistant_content = (assistant_msg.get("content") or "").strip()
+                if assistant_content and initial_llm_response is None and not recovered_tool_calls_from_content:
+                    initial_llm_response = assistant_content
+
+                if finish_reason != "tool_calls":
+                    logger_internal.info(
+                        "LLM returned tool_calls with non-standard finish_reason=%s; continuing with tool execution",
+                        finish_reason,
+                    )
+
+                num_tool_calls = len(assistant_tool_calls)
                 logger_internal.info(f"LLM requested {num_tool_calls} tool call{'s' if num_tool_calls > 1 else ''}")
                 
                 if num_tool_calls > 1:
-                    tool_names = [tc["function"]["name"] for tc in assistant_msg["tool_calls"]]
+                    tool_names = [tc.get("function", {}).get("name", "") for tc in assistant_tool_calls]
                     logger_internal.info(f"Multiple tools will be executed: {', '.join(tool_names)}")
                 
                 # Store assistant message with tool calls
                 from backend.models import ToolCall, FunctionCall
                 tool_calls_models = []
-                for tc in assistant_msg["tool_calls"]:
+                normalized_tool_calls = []
+                for tool_call_index, tc in enumerate(assistant_tool_calls, 1):
+                    function_payload = tc.get("function", {})
+                    tool_call_id = tc.get("id") or f"tool_call_{turn + 1}_{tool_call_index}"
+
                     # Convert arguments to JSON string if it's a dict (Ollama format)
-                    arguments = tc["function"]["arguments"]
+                    arguments = function_payload.get("arguments", {})
                     if isinstance(arguments, dict):
                         arguments = json.dumps(arguments)
+                    elif not isinstance(arguments, str):
+                        arguments = json.dumps(arguments or {})
+
+                    normalized_tool_calls.append({
+                        "id": tool_call_id,
+                        "type": tc.get("type", "function"),
+                        "function": {
+                            "name": function_payload.get("name", ""),
+                            "arguments": arguments,
+                        },
+                    })
                     
                     tool_calls_models.append(
                         ToolCall(
-                            id=tc["id"],
+                            id=tool_call_id,
                             type="function",
                             function=FunctionCall(
-                                name=tc["function"]["name"],
+                                name=function_payload.get("name", ""),
                                 arguments=arguments
                             )
                         )
@@ -851,17 +1055,16 @@ Always aim to make technical information accessible and actionable."""
                 
                 assistant_message_obj = ChatMessage(
                     role="assistant",
-                    content=assistant_msg.get("content"),
+                    content="" if recovered_tool_calls_from_content else (assistant_msg.get("content") or ""),
                     tool_calls=tool_calls_models
                 )
                 session_manager.add_message(session_id, assistant_message_obj)
-                messages_for_llm.append(assistant_msg)
                 
                 # Execute tool calls
-                for idx, tool_call in enumerate(assistant_msg["tool_calls"], 1):
+                for idx, tool_call in enumerate(normalized_tool_calls, 1):
                     tool_id = tool_call["id"]
-                    namespaced_tool_name = tool_call["function"]["name"]
-                    arguments_str = tool_call["function"]["arguments"]
+                    namespaced_tool_name = tool_call["function"].get("name", "")
+                    arguments_str = tool_call["function"].get("arguments", "{}")
                     
                     logger_internal.info(f"Executing tool {idx}/{num_tool_calls}: {namespaced_tool_name}")
                     
@@ -870,9 +1073,39 @@ Always aim to make technical information accessible and actionable."""
                         arguments = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
                     except json.JSONDecodeError:
                         arguments = {}
+
+                    dedupe_key = json.dumps({
+                        "tool": namespaced_tool_name,
+                        "arguments": arguments,
+                    }, sort_keys=True, default=str)
+
+                    if dedupe_key in executed_tool_results:
+                        cached_execution = executed_tool_results[dedupe_key]
+                        logger_internal.info(
+                            "Skipping duplicate tool call in same turn: %s with arguments=%s",
+                            namespaced_tool_name,
+                            arguments,
+                        )
+                        result_content = cached_execution["result_content"]
+
+                        tool_result_msg = llm_client.format_tool_result(
+                            tool_call_id=tool_id,
+                            content=result_content
+                        )
+
+                        messages_for_llm.append(tool_result_msg)
+
+                        tool_msg_obj = ChatMessage(
+                            role="tool",
+                            content=result_content
+                        )
+                        if "tool_call_id" in tool_result_msg:
+                            tool_msg_obj.tool_call_id = tool_result_msg["tool_call_id"]
+                        session_manager.add_message(session_id, tool_msg_obj)
+                        continue
                     
                     # Parse namespaced tool name (server_alias__tool_name)
-                    if "__" not in namespaced_tool_name:
+                    if not namespaced_tool_name or "__" not in namespaced_tool_name:
                         logger_internal.error(f"Invalid tool name format: {namespaced_tool_name}")
                         continue
                     
@@ -918,6 +1151,12 @@ Always aim to make technical information accessible and actionable."""
                                 "success": True,
                                 "duration_ms": duration_ms
                             })
+
+                            executed_tool_results[dedupe_key] = {
+                                "result_content": result_content,
+                                "result": tool_result,
+                                "success": True,
+                            }
                             
                             # Trace successful execution
                             session_manager.add_tool_trace(
@@ -941,6 +1180,12 @@ Always aim to make technical information accessible and actionable."""
                                 "success": False,
                                 "duration_ms": duration_ms
                             })
+
+                            executed_tool_results[dedupe_key] = {
+                                "result_content": result_content,
+                                "result": str(e),
+                                "success": False,
+                            }
                             
                             # Trace failed execution
                             session_manager.add_tool_trace(
@@ -956,6 +1201,13 @@ Always aim to make technical information accessible and actionable."""
                         tool_call_id=tool_id,
                         content=result_content
                     )
+                    logger_internal.info(
+                        "Prepared tool result for LLM: provider=%s tool=%s tool_call_id=%s content_preview=%s",
+                        llm_config_storage.provider,
+                        namespaced_tool_name,
+                        tool_id,
+                        result_content[:400],
+                    )
                     
                     # Add to messages
                     messages_for_llm.append(tool_result_msg)
@@ -968,12 +1220,41 @@ Always aim to make technical information accessible and actionable."""
                     if "tool_call_id" in tool_result_msg:
                         tool_msg_obj.tool_call_id = tool_result_msg["tool_call_id"]
                     session_manager.add_message(session_id, tool_msg_obj)
+
+                # Rebuild provider-specific message history before the next LLM turn.
+                # This is required for Ollama, which cannot accept raw tool-role
+                # messages or assistant tool_calls history in the same format as OpenAI.
+                messages_for_llm = rebuild_messages_for_llm()
+                tool_result_messages = [
+                    msg for msg in messages_for_llm
+                    if msg.get("role") == "tool"
+                    or (
+                        msg.get("role") == "user"
+                        and isinstance(msg.get("content"), str)
+                        and msg.get("content", "").startswith("Tool result:")
+                    )
+                ]
+                if tool_result_messages:
+                    latest_tool_result = tool_result_messages[-1]
+                    logger_internal.info(
+                        "Follow-up LLM request includes tool result message: role=%s content_preview=%s",
+                        latest_tool_result.get("role"),
+                        str(latest_tool_result.get("content", ""))[:400],
+                    )
                 
                 # Continue loop to get next LLM response
                 continue
             
             # No more tool calls - final response
             else:
+                if tools_for_llm and not has_tool_calls:
+                    logger_internal.warning(
+                        "LLM returned final response without tool_calls despite %s tools being available. finish_reason=%s, response_preview=%s",
+                        len(tools_for_llm),
+                        finish_reason,
+                        (assistant_msg.get("content", "")[:200] or "<empty>")
+                    )
+
                 logger_internal.info(f"LLM gave final response (no tool calls). Response length: {len(assistant_msg.get('content', ''))}")
                 logger_internal.info(f"=== FINAL LLM MESSAGE ===\n{assistant_msg.get('content', '')}\n========================")
                 
@@ -992,7 +1273,8 @@ Always aim to make technical information accessible and actionable."""
                 return ChatResponse(
                     session_id=session_id,
                     message=final_response,
-                    tool_executions=tool_executions
+                    tool_executions=tool_executions,
+                    initial_llm_response=initial_llm_response
                 )
         
         # Max turns reached
@@ -1007,7 +1289,8 @@ Always aim to make technical information accessible and actionable."""
         return ChatResponse(
             session_id=session_id,
             message=fallback,
-            tool_executions=tool_executions
+            tool_executions=tool_executions,
+            initial_llm_response=initial_llm_response
         )
         
     except Exception as e:
@@ -1022,7 +1305,8 @@ Always aim to make technical information accessible and actionable."""
         return ChatResponse(
             session_id=session_id,
             message=error_response,
-            tool_executions=[]
+            tool_executions=[],
+            initial_llm_response=None
         )
 
 

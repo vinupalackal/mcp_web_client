@@ -690,6 +690,31 @@ describe('Settings modal — deleteServer', () => {
     expect(html).not.toContain('srv1');
     expect(html).toContain('srv2');
   });
+
+  test('TC-FE-SET-31a: renders last health check label for configured server', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/servers') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [{
+            server_id: 'srv-2',
+            alias: 'srv2',
+            base_url: 'https://b.com',
+            auth_type: 'none',
+            health_status: 'healthy',
+            last_health_check: '2026-03-11T10:15:00Z',
+          }],
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+    });
+
+    await new Promise(r => setTimeout(r, 0));
+
+    const html = document.getElementById('serversList').innerHTML;
+    expect(html).toContain('Last checked:');
+    expect(html).toContain('healthy');
+  });
 });
 
 
@@ -765,6 +790,95 @@ describe('Settings modal — handleRefreshTools', () => {
     await new Promise(r => setTimeout(r, 50));
 
     expect(btn.disabled).toBe(false);
+  });
+});
+
+
+// ============================================================================
+// refreshServerHealth / auto refresh (TC-FE-SET-41 to 44)
+// ============================================================================
+describe('Settings modal — server health refresh', () => {
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    setupFullDOM();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  test('TC-FE-SET-41: health refresh button POSTs to /api/servers/refresh-health', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/servers/refresh-health') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ servers_checked: 1, healthy_servers: 1, unhealthy_servers: 0, errors: [], servers: [] }),
+        });
+      }
+      if (url === '/api/servers' || url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    loadSettings();
+
+    document.getElementById('refreshServerHealthBtn').click();
+    await Promise.resolve();
+
+    expect(global.fetch).toHaveBeenCalledWith('/api/servers/refresh-health', { method: 'POST' });
+  });
+
+  test('TC-FE-SET-42: enabling auto refresh persists preference', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/servers' || url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      if (url === '/api/servers/refresh-health') {
+        return Promise.resolve({ ok: true, json: async () => ({ servers_checked: 0, healthy_servers: 0, unhealthy_servers: 0, errors: [], servers: [] }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    loadSettings();
+
+    const toggle = document.getElementById('autoRefreshHealthToggle');
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(localStorage.setItem).toHaveBeenCalledWith('autoRefreshServerHealth', 'true');
+  });
+
+  test('TC-FE-SET-43: auto refresh triggers periodic health checks', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/servers' || url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      if (url === '/api/servers/refresh-health') {
+        return Promise.resolve({ ok: true, json: async () => ({ servers_checked: 0, healthy_servers: 0, unhealthy_servers: 0, errors: [], servers: [] }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    loadSettings();
+
+    const toggle = document.getElementById('autoRefreshHealthToggle');
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+
+    jest.advanceTimersByTime(30000);
+    await Promise.resolve();
+
+    const healthCalls = global.fetch.mock.calls.filter(([url]) => url === '/api/servers/refresh-health');
+    expect(healthCalls.length).toBeGreaterThanOrEqual(2);
   });
 });
 

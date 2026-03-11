@@ -8,6 +8,7 @@ console.log('💬 Chat app initializing...');
 // State
 let currentSessionId = null;
 let isProcessing = false;
+const CHAT_PREFERENCE_STORAGE_KEY = 'includeHistory';
 
 // DOM Elements
 const chatMessages = document.getElementById('chatMessages');
@@ -83,7 +84,8 @@ async function createNewSession() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 llm_config: llmConfig,
-                enabled_servers: enabledServers
+                enabled_servers: enabledServers,
+                include_history: localStorage.getItem(CHAT_PREFERENCE_STORAGE_KEY) !== 'false'
             })
         });
 
@@ -156,7 +158,7 @@ async function sendMessage() {
         removeMessage(loadingId);
         
         // Add assistant response
-        addMessage('assistant', data.message.content, data.tool_executions);
+        addMessage('assistant', data.message.content, data.tool_executions, data.initial_llm_response);
         
         // Log final LLM message
         console.log('💬 Final LLM Response:', data.message.content);
@@ -174,7 +176,7 @@ async function sendMessage() {
     }
 }
 
-function addMessage(role, content, toolExecutions = []) {
+function addMessage(role, content, toolExecutions = [], initialLlmResponse = '') {
     const messageWrapper = document.createElement('div');
     messageWrapper.classList.add('message-wrapper', role);
 
@@ -182,10 +184,29 @@ function addMessage(role, content, toolExecutions = []) {
     messageContent.classList.add('message-content');
     
     // Format content with line breaks and preserve formatting
-    const formattedContent = formatMessageContent(content);
+    const primaryContent = content || initialLlmResponse || '';
+    const formattedContent = formatMessageContent(primaryContent);
     messageContent.innerHTML = formattedContent;
 
     messageWrapper.appendChild(messageContent);
+
+    const hasInitialSuggestion = role === 'assistant'
+        && Boolean(initialLlmResponse)
+        && Boolean(content)
+        && initialLlmResponse.trim() !== content.trim();
+
+    if (hasInitialSuggestion) {
+        const suggestionDetails = document.createElement('details');
+        suggestionDetails.className = 'assistant-meta-details';
+        suggestionDetails.innerHTML = `
+            <summary class="assistant-meta-summary">
+                <span class="assistant-meta-icon">💡</span>
+                <span class="assistant-meta-title">Initial LLM suggestion</span>
+            </summary>
+            <div class="assistant-meta-body">${formatMessageContent(initialLlmResponse)}</div>
+        `;
+        messageWrapper.appendChild(suggestionDetails);
+    }
 
     // Collapsible tool execution cards
     if (toolExecutions && toolExecutions.length > 0) {

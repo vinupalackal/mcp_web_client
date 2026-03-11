@@ -27,6 +27,66 @@ class BaseLLMClient(ABC):
             write=min(30.0, timeout_seconds),
             pool=5.0,
         )
+
+    def _estimate_payload_bytes(self, payload: Dict[str, Any]) -> int:
+        """Estimate payload size for diagnostics without changing request behavior."""
+        try:
+            return len(json.dumps(payload, default=str).encode("utf-8"))
+        except Exception:
+            return -1
+
+    def _timeout_phase(self, error: httpx.TimeoutException) -> str:
+        """Classify the specific timeout stage when possible."""
+        if isinstance(error, httpx.ConnectTimeout):
+            return "connect"
+        if isinstance(error, httpx.ReadTimeout):
+            return "read"
+        if isinstance(error, httpx.WriteTimeout):
+            return "write"
+        if isinstance(error, httpx.PoolTimeout):
+            return "pool"
+        return "request"
+
+    def _timeout_seconds_for_phase(self, phase: str) -> float:
+        """Return the configured timeout for the given stage."""
+        if phase == "connect":
+            return float(self.timeout.connect)
+        if phase == "write":
+            return float(self.timeout.write)
+        if phase == "pool":
+            return float(self.timeout.pool)
+        return float(self.timeout.read)
+
+    def _format_timeout_error(self, error: httpx.TimeoutException) -> str:
+        """Create a stable, user-facing timeout error message."""
+        phase = self._timeout_phase(error)
+        timeout_seconds = self._timeout_seconds_for_phase(phase)
+        return f"LLM request timeout ({phase} timeout after {timeout_seconds:.1f}s)"
+
+    def _log_timeout(
+        self,
+        provider_name: str,
+        url: str,
+        error: httpx.TimeoutException,
+        payload_bytes: int,
+        messages_count: int,
+        tools_count: int,
+    ) -> None:
+        """Emit actionable timeout diagnostics for operators."""
+        phase = self._timeout_phase(error)
+        timeout_seconds = self._timeout_seconds_for_phase(phase)
+        logger_internal.error(
+            "%s timeout: phase=%s timeout_s=%.1f model=%s url=%s messages=%s tools=%s payload_bytes=%s raw_error=%r",
+            provider_name,
+            phase,
+            timeout_seconds,
+            self.config.model,
+            url,
+            messages_count,
+            tools_count,
+            payload_bytes,
+            error,
+        )
     
     @abstractmethod
     async def chat_completion(
@@ -68,6 +128,7 @@ class OpenAIClient(BaseLLMClient):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            payload["parallel_tool_calls"] = True
         
         if self.config.max_tokens:
             payload["max_tokens"] = self.config.max_tokens
@@ -76,6 +137,7 @@ class OpenAIClient(BaseLLMClient):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}"
         }
+        payload_bytes = self._estimate_payload_bytes(payload)
         
         try:
             logger_external.info(f"→ POST {url} (OpenAI chat)")
@@ -91,8 +153,8 @@ class OpenAIClient(BaseLLMClient):
             return result
             
         except httpx.TimeoutException as e:
-            logger_internal.error(f"OpenAI timeout: {e}")
-            raise Exception("LLM request timeout")
+            self._log_timeout("OpenAI", url, e, payload_bytes, len(messages), len(tools))
+            raise Exception(self._format_timeout_error(e))
         except httpx.HTTPError as e:
             logger_internal.error(f"OpenAI HTTP error: {e}")
             raise Exception(f"LLM HTTP error: {str(e)}")
@@ -138,6 +200,7 @@ class EnterpriseLLMClient(BaseLLMClient):
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+            payload["parallel_tool_calls"] = True
 
         if self.config.max_tokens:
             payload["max_tokens"] = self.config.max_tokens
@@ -146,6 +209,7 @@ class EnterpriseLLMClient(BaseLLMClient):
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.access_token}",
         }
+        payload_bytes = self._estimate_payload_bytes(payload)
 
         try:
             logger_external.info(f"→ POST {url} (Enterprise chat)")
@@ -161,8 +225,8 @@ class EnterpriseLLMClient(BaseLLMClient):
             return result
 
         except httpx.TimeoutException as e:
-            logger_internal.error(f"Enterprise gateway timeout: {e}")
-            raise Exception("LLM request timeout")
+            self._log_timeout("Enterprise gateway", url, e, payload_bytes, len(messages), len(tools))
+            raise Exception(self._format_timeout_error(e))
         except httpx.HTTPError as e:
             logger_internal.error(f"Enterprise gateway HTTP error: {e}")
             raise Exception(f"LLM HTTP error: {str(e)}")
@@ -208,10 +272,11 @@ class OllamaClient(BaseLLMClient):
             payload["tools"] = tools
         
         headers = {"Content-Type": "application/json"}
+        payload_bytes = self._estimate_payload_bytes(payload)
         
         try:
             logger_external.info(f"→ POST {url} (Ollama chat)")
-            logger_internal.info(f"Ollama payload: {len(messages)} messages, {len(tools)} tools")
+            logger_internal.info(f"Ollama payload: {len(messages)} messages, {len(tools)} tools, {payload_bytes} bytes")
             
             # Log each message for debugging
             for i, msg in enumerate(messages):
@@ -261,8 +326,8 @@ class OllamaClient(BaseLLMClient):
             logger_internal.error(f"Response body: {e.response.text}")
             raise Exception(f"LLM HTTP error: {str(e)}")
         except httpx.TimeoutException as e:
-            logger_internal.error(f"Ollama timeout: {e}")
-            raise Exception("LLM request timeout")
+            self._log_timeout("Ollama", url, e, payload_bytes, len(messages), len(tools))
+            raise Exception(self._format_timeout_error(e))
         except httpx.HTTPError as e:
             logger_internal.error(f"Ollama HTTP error: {e}")
             raise Exception(f"LLM HTTP error: {str(e)}")

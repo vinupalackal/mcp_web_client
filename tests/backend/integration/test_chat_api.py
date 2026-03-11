@@ -35,6 +35,147 @@ _MOCK_LLM_TOOL_CALL = {
     "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
 }
 
+_MOCK_LLM_TOOL_CALL_WITH_CONTENT = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "I'll check the server and summarize what I find.",
+            "tool_calls": [{
+                "id": "call_with_content",
+                "type": "function",
+                "function": {
+                    "name": "svc__ping",
+                    "arguments": '{"host": "1.2.3.4"}',
+                },
+            }],
+        },
+        "finish_reason": "tool_calls",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+}
+
+_MOCK_LLM_DUPLICATE_TOOL_CALLS = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_dup_1",
+                    "type": "function",
+                    "function": {
+                        "name": "svc__ping",
+                        "arguments": '{"host": "1.2.3.4"}',
+                    },
+                },
+                {
+                    "id": "call_dup_2",
+                    "type": "function",
+                    "function": {
+                        "name": "svc__ping",
+                        "arguments": '{"host": "1.2.3.4"}',
+                    },
+                },
+            ],
+        },
+        "finish_reason": "tool_calls",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+}
+
+_MOCK_LLM_TEXT_TOOL_CALL = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": '**{"name": "svc__ping", "parameters": {"host": "1.2.3.4"}}**',
+        },
+        "finish_reason": "stop",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+}
+
+_MOCK_LLM_SUMMARY_AFTER_TOOL = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "The host responded successfully with pong.",
+        },
+        "finish_reason": "stop",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+}
+
+_MOCK_LLM_TOOL_CALL_STOP_REASON = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_stop_reason",
+                "type": "function",
+                "function": {
+                    "name": "svc__ping",
+                    "arguments": '{"host": "1.2.3.4"}',
+                },
+            }],
+        },
+        "finish_reason": "stop",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+}
+
+_MOCK_LLM_TWO_TOOL_CALLS = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_cpu",
+                    "type": "function",
+                    "function": {
+                        "name": "svc__get_cpu",
+                        "arguments": '{}'  ,
+                    },
+                },
+                {
+                    "id": "call_mem",
+                    "type": "function",
+                    "function": {
+                        "name": "svc__get_memory",
+                        "arguments": '{}',
+                    },
+                },
+            ],
+        },
+        "finish_reason": "tool_calls",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+}
+
+_MOCK_OLLAMA_TOOL_CALL = {
+    "message": {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{
+            "function": {
+                "name": "svc__ping",
+                "arguments": {"host": "1.2.3.4"},
+            }
+        }],
+    },
+    "done": True,
+    "prompt_eval_count": 5,
+    "eval_count": 4,
+}
+
+_MOCK_OLLAMA_STOP = {
+    "message": {"role": "assistant", "content": "Ping completed."},
+    "done": True,
+    "prompt_eval_count": 5,
+    "eval_count": 4,
+}
+
 
 # ============================================================================
 # TR-SESS-1: Create Session
@@ -140,6 +281,53 @@ class TestSendMessage:
         client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "hi"})
         assert captured_payload["messages"][0]["role"] == "system"
 
+    @respx.mock
+    def test_system_prompt_contains_parallel_tool_call_instruction(self, client, llm_openai):
+        """TC-CHAT-07a: System prompt explicitly instructs the model to call multiple tools in parallel."""
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        captured_payload = {}
+
+        def capture(request):
+            import json
+            captured_payload.update(json.loads(request.content))
+            return httpx.Response(200, json=_MOCK_LLM_STOP)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "hi"})
+
+        system_content = captured_payload["messages"][0]["content"]
+        assert "parallel" in system_content.lower()
+        assert "parallel function calls" in system_content or "parallel tool calls" in system_content or "simultaneously" in system_content
+
+    @respx.mock
+    def test_session_with_include_history_false_sends_only_latest_query(self, client, llm_openai):
+        """When include_history is false, prior session messages are not sent with the next user query."""
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions", json={
+            "llm_config": llm_openai,
+            "enabled_servers": [],
+            "include_history": False,
+        }).json()["session_id"]
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            return httpx.Response(200, json=_MOCK_LLM_STOP)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "first"})
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "second"})
+
+        assert len(captured_payloads) == 2
+        second_messages = captured_payloads[1]["messages"]
+        assert [msg["role"] for msg in second_messages] == ["system", "user"]
+        assert second_messages[1]["content"] == "second"
+
 
 # ============================================================================
 # TR-CHAT-2: Tool Calling Flow
@@ -231,6 +419,102 @@ class TestToolCallingFlow:
         assert any(t["success"] is True for t in traces)
 
     @respx.mock
+    def test_response_includes_initial_llm_response_when_tool_call_has_content(self, client, llm_openai, monkeypatch):
+        """Initial assistant pre-tool text is returned separately from the final answer."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_TOOL_CALL_WITH_CONTENT),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["message"]["content"] == "Hello from mock!"
+        assert data["initial_llm_response"] == "I'll check the server and summarize what I find."
+
+    @respx.mock
+    def test_duplicate_same_tool_same_args_runs_once_per_turn(self, client, llm_openai, monkeypatch):
+        """Duplicate same-tool same-args calls in one turn are executed only once."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_DUPLICATE_TOOL_CALLS),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        mcp_route = respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping twice"})
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["tool_executions"]) == 1
+        assert data["tool_executions"][0]["tool"] == "svc__ping"
+        assert len(mcp_route.calls) == 2
+
+    @respx.mock
+    def test_json_tool_call_content_is_recovered_and_not_shown_as_final_answer(self, client, llm_openai, monkeypatch):
+        """JSON-like tool call content is treated as a tool request instead of the final user-facing answer."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
+                httpx.Response(200, json=_MOCK_LLM_TEXT_TOOL_CALL),
+                httpx.Response(200, json=_MOCK_LLM_SUMMARY_AFTER_TOOL),
+            ]
+        )
+        mcp_route = respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping then summarize"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["message"]["content"] == "The host responded successfully with pong."
+        assert len(data["tool_executions"]) == 1
+        assert len(mcp_route.calls) == 2
+
+    @respx.mock
     def test_max_tool_calls_limit(self, client, llm_openai, monkeypatch):
         """TC-CHAT-12: Loop exits after MCP_MAX_TOOL_CALLS_PER_TURN."""
         monkeypatch.setenv("MCP_MAX_TOOL_CALLS_PER_TURN", "2")
@@ -289,9 +573,199 @@ class TestToolCallingFlow:
         client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "big"})
         # Check that the tool result in the second LLM call is truncated
         if captured:
+            assert "tools" not in captured
+            assert "tool_choice" not in captured
             for msg in captured.get("messages", []):
                 if msg.get("role") == "tool":
                     assert len(msg.get("content", "")) <= 200  # truncated
+
+    @respx.mock
+    def test_tool_executed_when_tool_calls_present_with_stop_finish_reason(self, client, llm_openai, monkeypatch):
+        """Tool execution still runs when provider returns tool_calls with finish_reason='stop'."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_TOOL_CALL_STOP_REASON),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        mcp_route = respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
+        assert r.status_code == 200
+        assert len(r.json()["tool_executions"]) == 1
+        assert len(mcp_route.calls) == 2
+
+    @respx.mock
+    def test_ollama_tool_call_without_id_executes_mcp_tool(self, client, llm_ollama, monkeypatch):
+        """Ollama tool_calls without id still dispatch to the MCP server."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_ollama)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        ollama_payloads = []
+
+        def capture_ollama(request):
+            import json
+            ollama_payloads.append(json.loads(request.content))
+            if len(ollama_payloads) == 1:
+                return httpx.Response(200, json=_MOCK_OLLAMA_TOOL_CALL)
+            return httpx.Response(200, json=_MOCK_OLLAMA_STOP)
+
+        respx.post("http://127.0.0.1:11434/api/chat").mock(side_effect=capture_ollama)
+        mcp_route = respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["message"]["content"] == "Ping completed."
+        assert len(data["tool_executions"]) == 1
+        assert data["tool_executions"][0]["success"] is True
+        assert len(mcp_route.calls) == 2
+        assert len(ollama_payloads) == 2
+
+        second_messages = ollama_payloads[1]["messages"]
+        assert all(msg["role"] != "tool" for msg in second_messages)
+        assert all("tool_calls" not in msg for msg in second_messages)
+        assert any(
+            msg["role"] == "user" and "Tool result:" in msg["content"]
+            for msg in second_messages
+        )
+
+    @respx.mock
+    def test_first_llm_request_includes_parallel_tool_calls_flag(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-14: First LLM request includes parallel_tool_calls=True when tools are available."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            return httpx.Response(200, json=_MOCK_LLM_STOP)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "show system info"})
+
+        assert len(captured_payloads) >= 1
+        assert captured_payloads[0].get("parallel_tool_calls") is True
+
+    @respx.mock
+    def test_second_llm_request_omits_parallel_tool_calls_flag(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-15: Follow-up LLM request after tool execution omits parallel_tool_calls (no tools in payload)."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            if len(captured_payloads) == 1:
+                return httpx.Response(200, json=_MOCK_LLM_TOOL_CALL)
+            return httpx.Response(200, json=_MOCK_LLM_STOP)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
+
+        assert len(captured_payloads) == 2
+        follow_up = captured_payloads[1]
+        # Tools are omitted on follow-up; parallel_tool_calls must also be absent
+        assert "tools" not in follow_up
+        assert "parallel_tool_calls" not in follow_up
+
+    @respx.mock
+    def test_two_distinct_tools_called_in_single_turn(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-16: LLM returning two distinct tool calls in one response executes both."""
+        monkeypatch.setenv("MCP_ALLOW_HTTP_INSECURE", "true")
+        client.post("/api/servers", json={
+            "alias": "svc",
+            "base_url": "https://mcp.example.com",
+            "auth_type": "none",
+        })
+        from backend.models import ToolSchema
+        main_module.mcp_manager.tools["svc__get_cpu"] = ToolSchema(
+            namespaced_id="svc__get_cpu",
+            server_alias="svc",
+            name="get_cpu",
+            description="Get CPU info",
+        )
+        main_module.mcp_manager.tools["svc__get_memory"] = ToolSchema(
+            namespaced_id="svc__get_memory",
+            server_alias="svc",
+            name="get_memory",
+            description="Get memory info",
+        )
+
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_TWO_TOOL_CALLS),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 2, "result": {"cpu_percent": 42}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"mem_used_mb": 1024}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "show CPU and memory"})
+        assert r.status_code == 200
+        data = r.json()
+        executed_tools = [te["tool"] for te in data["tool_executions"]]
+        assert "svc__get_cpu" in executed_tools
+        assert "svc__get_memory" in executed_tools
+        assert len(data["tool_executions"]) == 2
 
 
 # ============================================================================
