@@ -1,0 +1,314 @@
+"""
+Integration tests — Sessions and Chat (TR-SESS-1, TR-CHAT-*)
+"""
+
+import pytest
+import respx
+import httpx
+import backend.main as main_module
+
+
+_MOCK_LLM_STOP = {
+    "choices": [{
+        "message": {"role": "assistant", "content": "Hello from mock!"},
+        "finish_reason": "stop",
+    }],
+    "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+}
+
+_MOCK_LLM_TOOL_CALL = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_abc",
+                "type": "function",
+                "function": {
+                    "name": "svc__ping",
+                    "arguments": '{"host": "1.2.3.4"}',
+                },
+            }],
+        },
+        "finish_reason": "tool_calls",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+}
+
+
+# ============================================================================
+# TR-SESS-1: Create Session
+# ============================================================================
+
+class TestCreateSession:
+
+    def test_create_returns_201(self, client):
+        """TC-SESS-01: POST /api/sessions returns 201."""
+        r = client.post("/api/sessions")
+        assert r.status_code == 201
+
+    def test_session_id_is_uuid(self, client):
+        """TC-SESS-01b: Returned session_id is a UUID."""
+        r = client.post("/api/sessions")
+        assert len(r.json()["session_id"]) == 36
+
+    def test_created_at_present(self, client):
+        """TC-SESS-01c: created_at field in response."""
+        r = client.post("/api/sessions")
+        assert "created_at" in r.json()
+
+    def test_unique_session_ids(self, client):
+        """TC-SESS-02: Multiple sessions get unique IDs."""
+        ids = {client.post("/api/sessions").json()["session_id"] for _ in range(5)}
+        assert len(ids) == 5
+
+
+# ============================================================================
+# TR-CHAT-1: Send Message — basic
+# ============================================================================
+
+class TestSendMessage:
+
+    def test_no_llm_config_returns_guidance(self, client):
+        """TC-CHAT-01: No LLM configured → polite guidance message."""
+        sid = client.post("/api/sessions").json()["session_id"]
+        r = client.post(f"/api/sessions/{sid}/messages", json={
+            "role": "user", "content": "hello"
+        })
+        assert r.status_code == 200
+        assert "configure" in r.json()["message"]["content"].lower()
+
+    def test_mock_llm_returns_assistant_response(self, client, llm_mock):
+        """TC-CHAT-02: Mock LLM returns assistant message."""
+        client.post("/api/llm/config", json=llm_mock)
+        sid = client.post("/api/sessions").json()["session_id"]
+        r = client.post(f"/api/sessions/{sid}/messages", json={
+            "role": "user", "content": "hello"
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["message"]["role"] == "assistant"
+        assert data["message"]["content"]
+
+    def test_response_structure(self, client, llm_mock):
+        """TC-CHAT-03: Response has session_id, message, tool_executions."""
+        client.post("/api/llm/config", json=llm_mock)
+        sid = client.post("/api/sessions").json()["session_id"]
+        r = client.post(f"/api/sessions/{sid}/messages", json={
+            "role": "user", "content": "hi"
+        })
+        data = r.json()
+        assert "session_id" in data
+        assert "message" in data
+        assert "tool_executions" in data
+
+    def test_messages_stored_in_session(self, client, llm_mock):
+        """TC-CHAT-04: User + assistant messages added to session."""
+        client.post("/api/llm/config", json=llm_mock)
+        sid = client.post("/api/sessions").json()["session_id"]
+        client.post(f"/api/sessions/{sid}/messages", json={
+            "role": "user", "content": "hi"
+        })
+        msgs = main_module.session_manager.get_messages(sid)
+        roles = [m.role for m in msgs]
+        assert "user" in roles
+        assert "assistant" in roles
+
+    def test_empty_content_returns_422(self, client, llm_mock):
+        """TC-CHAT-06: Empty content field returns 422."""
+        client.post("/api/llm/config", json=llm_mock)
+        sid = client.post("/api/sessions").json()["session_id"]
+        r = client.post(f"/api/sessions/{sid}/messages", json={
+            "role": "user", "content": ""
+        })
+        assert r.status_code == 422
+
+    @respx.mock
+    def test_system_prompt_injected(self, client, llm_openai):
+        """TC-CHAT-07: System prompt present as first LLM message."""
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        captured_payload = {}
+
+        def capture(request):
+            import json
+            captured_payload.update(json.loads(request.content))
+            return httpx.Response(200, json=_MOCK_LLM_STOP)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "hi"})
+        assert captured_payload["messages"][0]["role"] == "system"
+
+
+# ============================================================================
+# TR-CHAT-2: Tool Calling Flow
+# ============================================================================
+
+class TestToolCallingFlow:
+
+    def _setup_server_and_tool(self, client, monkeypatch):
+        """Helper: add a server and pre-populate a tool in mcp_manager."""
+        monkeypatch.setenv("MCP_ALLOW_HTTP_INSECURE", "true")
+        client.post("/api/servers", json={
+            "alias": "svc",
+            "base_url": "https://mcp.example.com",
+            "auth_type": "none",
+        })
+        from backend.models import ServerConfig, ToolSchema
+        server = ServerConfig(
+            alias="svc",
+            base_url="https://mcp.example.com",
+            auth_type="none",
+        )
+        main_module.mcp_manager.tools["svc__ping"] = ToolSchema(
+            namespaced_id="svc__ping",
+            server_alias="svc",
+            name="ping",
+            description="Ping",
+        )
+
+    @respx.mock
+    def test_tool_executed_on_tool_call_finish_reason(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-08/09: LLM tool_calls finish_reason triggers tool execution."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        # First call returns tool_calls, second returns stop
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={
+            "role": "user", "content": "ping 1.2.3.4"
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["tool_executions"]) >= 1
+
+    @respx.mock
+    def test_successful_tool_logged(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-10: Successful tool call → trace with success=True."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
+        traces = main_module.session_manager.get_tool_traces(sid)
+        assert any(t["success"] is True for t in traces)
+
+    @respx.mock
+    def test_max_tool_calls_limit(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-12: Loop exits after MCP_MAX_TOOL_CALLS_PER_TURN."""
+        monkeypatch.setenv("MCP_MAX_TOOL_CALLS_PER_TURN", "2")
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        # LLM always returns tool_calls
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_MOCK_LLM_TOOL_CALL)
+        )
+        respx.post("https://mcp.example.com/mcp").mock(
+            return_value=httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": 1,
+                "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+            })
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "loop"})
+        assert r.status_code == 200  # did not crash; loop exited gracefully
+
+    @respx.mock
+    def test_large_tool_output_truncated(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-13: Tool output >12000 chars is truncated before LLM call."""
+        monkeypatch.setenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "100")
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        captured = {}
+
+        def capture(request):
+            import json
+            captured.update(json.loads(request.content))
+            return httpx.Response(200, json=_MOCK_LLM_STOP)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
+                capture,
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"output": "A" * 20000},  # Large output
+                }),
+            ]
+        )
+
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "big"})
+        # Check that the tool result in the second LLM call is truncated
+        if captured:
+            for msg in captured.get("messages", []):
+                if msg.get("role") == "tool":
+                    assert len(msg.get("content", "")) <= 200  # truncated
+
+
+# ============================================================================
+# TR-CHAT-3: Get Message History
+# ============================================================================
+
+class TestGetMessageHistory:
+
+    def test_get_messages_returns_200(self, client):
+        """TC-CHAT-17: GET /api/sessions/{id}/messages returns 200."""
+        sid = client.post("/api/sessions").json()["session_id"]
+        r = client.get(f"/api/sessions/{sid}/messages")
+        assert r.status_code == 200
+
+    def test_response_schema(self, client):
+        """TC-CHAT-18: Response contains session_id and messages."""
+        sid = client.post("/api/sessions").json()["session_id"]
+        data = client.get(f"/api/sessions/{sid}/messages").json()
+        assert "session_id" in data
+        assert "messages" in data

@@ -3,7 +3,7 @@ Pydantic models for MCP Client Web API.
 These models serve as the source of truth for OpenAPI specification.
 """
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Literal, Optional, List, Dict, Any
 from datetime import datetime
 import uuid
@@ -54,8 +54,8 @@ class ServerConfig(BaseModel):
         description="Timestamp of last health check"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "server_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -74,6 +74,7 @@ class ServerConfig(BaseModel):
                 }
             ]
         }
+    )
 
 
 class LLMConfig(BaseModel):
@@ -107,8 +108,8 @@ class LLMConfig(BaseModel):
         description="Maximum tokens in response"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "provider": "ollama",
@@ -126,6 +127,7 @@ class LLMConfig(BaseModel):
                 }
             ]
         }
+    )
 
 
 class FunctionCall(BaseModel):
@@ -140,8 +142,8 @@ class FunctionCall(BaseModel):
         description="JSON-encoded function arguments"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "name": "weather_api__get_weather",
@@ -149,6 +151,7 @@ class FunctionCall(BaseModel):
                 }
             ]
         }
+    )
 
 
 class ToolCall(BaseModel):
@@ -188,8 +191,8 @@ class ChatMessage(BaseModel):
         description="Tool calls requested by assistant"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "role": "user",
@@ -216,6 +219,7 @@ class ChatMessage(BaseModel):
                 }
             ]
         }
+    )
 
 
 class ToolSchema(BaseModel):
@@ -242,8 +246,8 @@ class ToolSchema(BaseModel):
         description="JSON Schema for tool parameters"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "namespaced_id": "weather_api__get_weather",
@@ -268,6 +272,7 @@ class ToolSchema(BaseModel):
                 }
             ]
         }
+    )
 
 
 class SessionConfig(BaseModel):
@@ -324,8 +329,8 @@ class ChatResponse(BaseModel):
         description="Tool execution details from this turn"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "session_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -343,6 +348,7 @@ class ChatResponse(BaseModel):
                 }
             ]
         }
+    )
 
 
 class SessionResponse(BaseModel):
@@ -357,8 +363,8 @@ class SessionResponse(BaseModel):
         description="Session creation timestamp"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "session_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -366,6 +372,7 @@ class SessionResponse(BaseModel):
                 }
             ]
         }
+    )
 
 
 class MessageListResponse(BaseModel):
@@ -380,8 +387,8 @@ class MessageListResponse(BaseModel):
         description="List of messages in conversation"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "session_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -398,6 +405,7 @@ class MessageListResponse(BaseModel):
                 }
             ]
         }
+    )
 
 
 class ToolRefreshResponse(BaseModel):
@@ -416,8 +424,8 @@ class ToolRefreshResponse(BaseModel):
         description="Error messages from failed servers"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "total_tools": 8,
@@ -426,6 +434,7 @@ class ToolRefreshResponse(BaseModel):
                 }
             ]
         }
+    )
 
 
 class DeleteResponse(BaseModel):
@@ -440,8 +449,8 @@ class DeleteResponse(BaseModel):
         description="Status message"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "success": True,
@@ -449,6 +458,7 @@ class DeleteResponse(BaseModel):
                 }
             ]
         }
+    )
 
 
 class ErrorResponse(BaseModel):
@@ -467,8 +477,8 @@ class ErrorResponse(BaseModel):
         description="Additional error context"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "detail": "MCP server unreachable",
@@ -480,6 +490,7 @@ class ErrorResponse(BaseModel):
                 }
             ]
         }
+    )
 
 
 class HealthResponse(BaseModel):
@@ -498,8 +509,8 @@ class HealthResponse(BaseModel):
         description="Current server time"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "examples": [
                 {
                     "status": "healthy",
@@ -508,3 +519,4 @@ class HealthResponse(BaseModel):
                 }
             ]
         }
+    )

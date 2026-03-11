@@ -461,6 +461,13 @@ async def send_message(
     """Process user message through LLM with tool execution"""
     logger_external.info(f"→ POST /api/sessions/{session_id}/messages")
     logger_internal.info(f"Processing message in session {session_id}: {message.content[:50] if message.content else ''}...")
+
+    if not message.content.strip():
+        logger_internal.warning("Rejected empty message content")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Message content must not be empty"
+        )
     
     # Add user message to session
     session_manager.add_message(session_id, message)
