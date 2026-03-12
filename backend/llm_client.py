@@ -35,6 +35,139 @@ class BaseLLMClient(ABC):
         except Exception:
             return -1
 
+    def _build_openai_compatible_payload(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        *,
+        include_stream: bool,
+        include_tool_choice: bool = True,
+        include_parallel_tool_calls: bool = True,
+    ) -> Dict[str, Any]:
+        """Build a chat/completions payload shared by OpenAI-compatible providers."""
+        payload: Dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": self.config.temperature,
+        }
+
+        if include_stream:
+            payload["stream"] = False
+
+        if tools:
+            payload["tools"] = tools
+            if include_tool_choice:
+                payload["tool_choice"] = "auto"
+            if include_parallel_tool_calls:
+                payload["parallel_tool_calls"] = True
+
+        if self.config.max_tokens is not None:
+            payload["max_tokens"] = self.config.max_tokens
+
+        return payload
+
+    async def _post_openai_compatible_with_fallback(
+        self,
+        *,
+        provider_name: str,
+        url: str,
+        headers: Dict[str, str],
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        include_stream: bool,
+    ) -> Dict[str, Any]:
+        """Send an OpenAI-compatible request and retry once on strict 422 validation errors."""
+        payload_variants = [
+            (
+                self._build_openai_compatible_payload(
+                    messages,
+                    tools,
+                    include_stream=include_stream,
+                ),
+                [],
+            )
+        ]
+
+        if tools:
+            payload_variants.append(
+                (
+                    self._build_openai_compatible_payload(
+                        messages,
+                        tools,
+                        include_stream=include_stream,
+                        include_parallel_tool_calls=False,
+                    ),
+                    ["parallel_tool_calls"],
+                )
+            )
+            payload_variants.append(
+                (
+                    self._build_openai_compatible_payload(
+                        messages,
+                        tools,
+                        include_stream=include_stream,
+                        include_tool_choice=False,
+                        include_parallel_tool_calls=False,
+                    ),
+                    ["parallel_tool_calls", "tool_choice"],
+                )
+            )
+
+        for attempt_index, (payload, omitted_fields) in enumerate(payload_variants, start=1):
+            payload_bytes = self._estimate_payload_bytes(payload)
+
+            try:
+                logger_external.info(f"→ POST {url} ({provider_name} chat)")
+
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(url, json=payload, headers=headers)
+                    response.raise_for_status()
+                    result = response.json()
+
+                logger_external.info(f"← {response.status_code} ({provider_name} response)")
+                logger_internal.info(f"{provider_name} tokens: {result.get('usage', {})}")
+
+                if omitted_fields:
+                    logger_internal.warning(
+                        "%s request succeeded after omitting compatibility fields: %s",
+                        provider_name,
+                        ", ".join(omitted_fields),
+                    )
+
+                return result
+
+            except httpx.TimeoutException as e:
+                self._log_timeout(provider_name, url, e, payload_bytes, len(messages), len(tools))
+                raise Exception(self._format_timeout_error(e))
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                response_body = e.response.text[:2000] if e.response is not None else ""
+
+                if status_code == 422 and attempt_index < len(payload_variants):
+                    next_omitted_fields = payload_variants[attempt_index][1]
+                    logger_internal.warning(
+                        "%s returned 422 for %s. body=%s. Retrying with reduced compatibility fields: %s",
+                        provider_name,
+                        url,
+                        response_body,
+                        ", ".join(next_omitted_fields) if next_omitted_fields else "none",
+                    )
+                    continue
+
+                logger_internal.error(
+                    "%s HTTP error: status=%s body=%s error=%s",
+                    provider_name,
+                    status_code,
+                    response_body,
+                    e,
+                )
+                raise Exception(f"LLM HTTP error: {str(e)}")
+            except httpx.HTTPError as e:
+                logger_internal.error(f"{provider_name} HTTP error: {e}")
+                raise Exception(f"LLM HTTP error: {str(e)}")
+
+        raise Exception("LLM HTTP error: request failed after compatibility retries")
+
     def _timeout_phase(self, error: httpx.TimeoutException) -> str:
         """Classify the specific timeout stage when possible."""
         if isinstance(error, httpx.ConnectTimeout):
@@ -116,48 +249,23 @@ class OpenAIClient(BaseLLMClient):
         tools: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Call OpenAI chat completions API"""
-        
+
         url = f"{self.config.base_url.rstrip('/')}/v1/chat/completions"
-        
-        payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "temperature": self.config.temperature,
-        }
-        
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-            payload["parallel_tool_calls"] = True
-        
-        if self.config.max_tokens:
-            payload["max_tokens"] = self.config.max_tokens
-        
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.config.api_key}"
         }
-        payload_bytes = self._estimate_payload_bytes(payload)
-        
+
         try:
-            logger_external.info(f"→ POST {url} (OpenAI chat)")
-            
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                result = response.json()
-            
-            logger_external.info(f"← {response.status_code} (OpenAI response)")
-            logger_internal.info(f"OpenAI tokens: {result.get('usage', {})}")
-            
-            return result
-            
-        except httpx.TimeoutException as e:
-            self._log_timeout("OpenAI", url, e, payload_bytes, len(messages), len(tools))
-            raise Exception(self._format_timeout_error(e))
-        except httpx.HTTPError as e:
-            logger_internal.error(f"OpenAI HTTP error: {e}")
-            raise Exception(f"LLM HTTP error: {str(e)}")
+            return await self._post_openai_compatible_with_fallback(
+                provider_name="OpenAI",
+                url=url,
+                headers=headers,
+                messages=messages,
+                tools=tools,
+                include_stream=True,
+            )
         except Exception as e:
             logger_internal.error(f"OpenAI error: {e}")
             raise
@@ -191,45 +299,20 @@ class EnterpriseLLMClient(BaseLLMClient):
 
         url = f"{self.config.base_url.rstrip('/')}/chat/completions"
 
-        payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "temperature": self.config.temperature,
-        }
-
-        if tools:
-            payload["tools"] = tools
-            payload["tool_choice"] = "auto"
-            payload["parallel_tool_calls"] = True
-
-        if self.config.max_tokens:
-            payload["max_tokens"] = self.config.max_tokens
-
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.access_token}",
         }
-        payload_bytes = self._estimate_payload_bytes(payload)
 
         try:
-            logger_external.info(f"→ POST {url} (Enterprise chat)")
-
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(url, json=payload, headers=headers)
-                response.raise_for_status()
-                result = response.json()
-
-            logger_external.info(f"← {response.status_code} (Enterprise response)")
-            logger_internal.info(f"Enterprise tokens: {result.get('usage', {})}")
-
-            return result
-
-        except httpx.TimeoutException as e:
-            self._log_timeout("Enterprise gateway", url, e, payload_bytes, len(messages), len(tools))
-            raise Exception(self._format_timeout_error(e))
-        except httpx.HTTPError as e:
-            logger_internal.error(f"Enterprise gateway HTTP error: {e}")
-            raise Exception(f"LLM HTTP error: {str(e)}")
+            return await self._post_openai_compatible_with_fallback(
+                provider_name="Enterprise gateway",
+                url=url,
+                headers=headers,
+                messages=messages,
+                tools=tools,
+                include_stream=True,
+            )
         except Exception as e:
             logger_internal.error(f"Enterprise gateway error: {e}")
             raise

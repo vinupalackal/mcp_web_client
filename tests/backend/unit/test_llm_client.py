@@ -195,6 +195,45 @@ class TestOpenAIClient:
 
     @respx.mock
     @pytest.mark.asyncio
+    async def test_stream_false_included(self, openai_config):
+        """TC-LLMC-05a: OpenAI-compatible requests set stream=false."""
+        route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=httpx.Response(200, json=_OPENAI_RESPONSE)
+        )
+        client = OpenAIClient(openai_config)
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        import json
+        payload = json.loads(route.calls.last.request.read())
+        assert payload["stream"] is False
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_422_retries_without_parallel_tool_fields(self, openai_config):
+        """TC-LLMC-05b: 422 retries strip strict compatibility fields for OpenAI-compatible gateways."""
+        call_payloads = []
+
+        def capture(request):
+            import json
+            payload = json.loads(request.content)
+            call_payloads.append(payload)
+            if len(call_payloads) == 1:
+                return httpx.Response(422, json={"detail": "parallel_tool_calls not permitted"})
+            return httpx.Response(200, json=_OPENAI_RESPONSE)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        client = OpenAIClient(openai_config)
+        tools = [{"type": "function", "function": {"name": "ping"}}]
+
+        result = await client.chat_completion([{"role": "user", "content": "hi"}], tools)
+
+        assert result["choices"][0]["message"]["role"] == "assistant"
+        assert len(call_payloads) == 2
+        assert call_payloads[0]["parallel_tool_calls"] is True
+        assert "parallel_tool_calls" not in call_payloads[1]
+        assert call_payloads[1]["tool_choice"] == "auto"
+
+    @respx.mock
+    @pytest.mark.asyncio
     async def test_timeout_raises_exception(self, openai_config):
         """TC-LLMC-06: TimeoutException mapped to Exception('LLM request timeout')."""
         respx.post("https://api.openai.com/v1/chat/completions").mock(
@@ -503,6 +542,47 @@ class TestEnterpriseLLMClient:
         import json
         payload = json.loads(route.calls.last.request.read())
         assert "max_tokens" not in payload
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_stream_false_included(self, enterprise_config):
+        """TC-LLMC-33a: Enterprise gateway requests set stream=false."""
+        route = respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(return_value=httpx.Response(200, json=_OPENAI_RESPONSE))
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        await client.chat_completion([{"role": "user", "content": "hi"}], [])
+        import json
+        payload = json.loads(route.calls.last.request.read())
+        assert payload["stream"] is False
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_422_retries_without_parallel_tool_fields(self, enterprise_config):
+        """TC-LLMC-33b: Enterprise gateway retries without strict tool compatibility fields on 422."""
+        call_payloads = []
+
+        def capture(request):
+            import json
+            payload = json.loads(request.content)
+            call_payloads.append(payload)
+            if len(call_payloads) == 1:
+                return httpx.Response(422, json={"detail": "parallel_tool_calls not permitted"})
+            return httpx.Response(200, json=_OPENAI_RESPONSE)
+
+        respx.post(
+            "https://llm-gateway.internal/modelgw/models/openai/v1/chat/completions"
+        ).mock(side_effect=capture)
+        client = EnterpriseLLMClient(enterprise_config, "enterprise-token")
+        tools = [{"type": "function", "function": {"name": "ping"}}]
+
+        result = await client.chat_completion([{"role": "user", "content": "hi"}], tools)
+
+        assert result["choices"][0]["message"]["role"] == "assistant"
+        assert len(call_payloads) == 2
+        assert call_payloads[0]["parallel_tool_calls"] is True
+        assert "parallel_tool_calls" not in call_payloads[1]
+        assert call_payloads[1]["tool_choice"] == "auto"
 
     @respx.mock
     @pytest.mark.asyncio
