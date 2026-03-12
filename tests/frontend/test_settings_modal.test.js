@@ -577,6 +577,46 @@ describe('Settings modal — handleAddServer', () => {
     expect(document.getElementById('serversList').innerHTML).toContain('my_server');
   });
 
+  test('TC-FE-SET-21a: add server consumes success body only once', async () => {
+    const newServer = { server_id: 'new-id', alias: 'my_server', base_url: 'https://mcp.example.com', auth_type: 'none' };
+    const singleReadResponse = {
+      ok: true,
+      json: jest.fn()
+        .mockResolvedValueOnce(newServer)
+        .mockRejectedValueOnce(new TypeError('Body is disturbed or locked')),
+    };
+
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/servers' && global.fetch.mock.calls.length <= 1) {
+        return Promise.resolve(singleReadResponse);
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [newServer] });
+      }
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    document.getElementById('serverAlias').value = 'my_server';
+    document.getElementById('serverUrl').value = 'https://mcp.example.com';
+    document.getElementById('authType').value = 'none';
+
+    const form = document.getElementById('addServerForm');
+    form.dispatchEvent(new Event('submit', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(singleReadResponse.json).toHaveBeenCalledTimes(1);
+    expect(document.getElementById('serversList').innerHTML).toContain('my_server');
+  });
+
   test('TC-FE-SET-22: server form reset after successful add', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,

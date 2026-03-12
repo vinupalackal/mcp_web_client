@@ -439,8 +439,7 @@ async function handleAddServer(e) {
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
 
-        const server = await response.json();
-        await response.json();  // consume response body
+        await response.json();
         await loadServersFromBackend();
         addServerForm.reset();
         updateServerAuthUI();
