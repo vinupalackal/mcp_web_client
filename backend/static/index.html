@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MCP Client Web</title>
-    <link rel="stylesheet" href="/static/style.css?v=10">
+    <title>RDK MCP Triaging Tool</title>
+    <link rel="stylesheet" href="/static/style.css?v=15">
 </head>
 <body>
     <!-- Main Container -->
@@ -12,7 +12,14 @@
         <!-- Header -->
         <header class="app-header">
             <div class="header-left">
-                <h1 class="app-title">MCP Client</h1>
+                <h1 class="app-title">RDK MCP Triaging Tool</h1>
+            </div>
+            <div class="header-center">
+                <div class="live-clock">
+                    <span id="clockDate"></span>
+                    <span class="clock-sep">|</span>
+                    <span id="clockTime"></span>
+                </div>
             </div>
             <div class="header-right">
                 <button id="darkModeBtn" class="btn btn-secondary" title="Switch to dark mode">🌙</button>
@@ -23,6 +30,97 @@
 
         <!-- Main Content Area -->
         <div class="main-content">
+            <!-- Left Sidebar -->
+            <aside class="tools-sidebar" id="toolsSidebar">
+                <div class="sidebar-top-section">
+                    <div class="tools-sidebar-header sidebar-primary-header">
+                        <h3>Information</h3>
+                        <div class="sidebar-header-actions">
+                            <button id="collapseSidebarBtn" class="btn-icon" title="Collapse sidebar">▶</button>
+                        </div>
+                    </div>
+                    <div class="sidebar-top-scroll sidebar-tools-panel">
+                        <div class="tools-sidebar-header">
+                            <h3>🔧 MCP Available Tools <span class="tools-count-badge" id="toolsCountBadge" style="display:none;"></span></h3>
+                            <div class="sidebar-header-actions">
+                                <button id="refreshToolsSidebarBtn" class="btn-icon" title="Refresh tools">🔄</button>
+                            </div>
+                        </div>
+                        <div class="tools-search-bar">
+                            <input type="text" id="toolsSearchInput" class="tool-search-input" placeholder="🔍 Search tools...">
+                        </div>
+                        <div class="tools-sidebar-content" id="toolsSidebarContent">
+                            <p class="empty-state">No tools discovered yet.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="sidebar-bottom-section">
+                    <div class="sidebar-bottom-scroll">
+                        <section class="sidebar-block sidebar-footer-panel sidebar-action-block" id="sidebarActionBlock" hidden>
+                            <div class="sidebar-info-content" id="sidebarActionsContent" hidden>
+                                <div class="sidebar-action-buttons">
+                                    <a class="btn btn-secondary sidebar-action-btn sidebar-link-button" href="/docs" target="_blank" rel="noreferrer">📘 API Docs</a>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section class="sidebar-block sidebar-footer-panel sidebar-info-block" id="sidebarInfoBlock" hidden>
+                            <div class="sidebar-info-content" id="sidebarInfoContent" hidden>
+                            <div class="sidebar-section-heading">
+                                <h4>Environment Snapshot</h4>
+                                <span class="sidebar-section-badge">Current</span>
+                            </div>
+                            <div class="sidebar-info-grid">
+                                <article class="sidebar-info-card">
+                                    <span class="sidebar-info-label">Release Version</span>
+                                    <strong class="sidebar-info-value">0.2.0-jsonrpc</strong>
+                                    <p class="sidebar-info-copy">FastAPI backend with JSON-RPC MCP tooling.</p>
+                                </article>
+                                <article class="sidebar-info-card">
+                                    <span class="sidebar-info-label">Available Support</span>
+                                    <ul class="sidebar-support-list">
+                                        <li>OpenAI and Ollama providers</li>
+                                        <li>Enterprise gateway flow</li>
+                                        <li>Remote MCP server discovery</li>
+                                    </ul>
+                                </article>
+                            </div>
+                            <details class="sidebar-expandable" open>
+                                <summary>Platforms</summary>
+                                <p>Browser-first client with macOS and Linux developer workflows, plus remote MCP and LLM hosts when you expand deployment.</p>
+                            </details>
+                            </div>
+                        </section>
+
+                        <section class="sidebar-block sidebar-footer-panel sidebar-guide-block" id="sidebarGuideBlock" hidden>
+                            <div class="sidebar-info-content" id="sidebarGuideContent" hidden>
+                                <ol class="sidebar-guide-list">
+                                    <li>Add MCP servers in Settings.</li>
+                                    <li>Refresh tools and review the tool list below.</li>
+                                    <li>Configure your LLM provider before starting a chat.</li>
+                                    <li>Use the docs link for OpenAPI details and troubleshooting.</li>
+                                </ol>
+                            </div>
+                        </section>
+                    </div>
+                    <div class="sidebar-footer-nav" aria-label="Sidebar quick actions">
+                        <button type="button" class="sidebar-toggle-button sidebar-footer-button" id="actionsToggleBtn" aria-expanded="false" aria-controls="sidebarActionsContent">
+                            <span>⚡ Actions</span>
+                            <span class="sidebar-toggle-chevron">▼</span>
+                        </button>
+                        <button type="button" class="sidebar-toggle-button sidebar-footer-button" id="infoToggleBtn" aria-expanded="false" aria-controls="sidebarInfoContent">
+                            <span>ℹ️ Information</span>
+                            <span class="sidebar-toggle-chevron">▼</span>
+                        </button>
+                        <button type="button" class="sidebar-toggle-button sidebar-footer-button" id="guideToggleBtn" aria-expanded="false" aria-controls="sidebarGuideContent">
+                            <span>📖 User Guide</span>
+                            <span class="sidebar-toggle-chevron">▼</span>
+                        </button>
+                    </div>
+                </div>
+            </aside>
+
             <!-- Chat Container -->
             <main class="chat-container">
                 <div id="chatMessages" class="chat-messages">
@@ -31,7 +129,7 @@
                     <div class="message-content">
                         <h2>Welcome to MCP Client Web</h2>
                         <p>Connect to MCP servers and interact with AI tools through a chat interface.</p>
-                        <p>👈 Click <strong>Settings</strong> to configure your MCP servers and LLM provider.</p>
+                        <p>Click <strong>Settings</strong> to configure your MCP servers and LLM provider. 👆</p>
                     </div>
                 </div>
             </div>
@@ -51,23 +149,6 @@
                 </div>
             </div>
             </main>
-
-            <!-- Tools Sidebar -->
-            <aside class="tools-sidebar" id="toolsSidebar">
-                <div class="tools-sidebar-header">
-                    <h3>🔧 Available Tools <span class="tools-count-badge" id="toolsCountBadge" style="display:none;"></span></h3>
-                    <div class="sidebar-header-actions">
-                        <button id="refreshToolsSidebarBtn" class="btn-icon" title="Refresh tools">🔄</button>
-                        <button id="collapseSidebarBtn" class="btn-icon" title="Collapse sidebar">◀</button>
-                    </div>
-                </div>
-                <div class="tools-search-bar">
-                    <input type="text" id="toolsSearchInput" class="tool-search-input" placeholder="🔍 Search tools...">
-                </div>
-                <div class="tools-sidebar-content" id="toolsSidebarContent">
-                    <p class="empty-state">No tools discovered yet.</p>
-                </div>
-            </aside>
         </div>
     </div>
 
@@ -285,7 +366,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=5"></script>
+    <script src="/static/app.js?v=14"></script>
     <script src="/static/settings.js?v=7"></script>
 </body>
 </html>

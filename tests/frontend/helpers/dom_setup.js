@@ -9,19 +9,58 @@ function setupChatDOM() {
     <textarea id="messageInput"></textarea>
     <button id="sendBtn" disabled></button>
     <button id="darkModeBtn"></button>
+    <button id="settingsBtn"></button>
     <button id="newChatBtn"></button>
     <aside id="toolsSidebar" class="tools-sidebar">
-      <div class="tools-sidebar-header">
-        <h3>Available Tools <span id="toolsCountBadge" style="display:none;"></span></h3>
-        <div class="sidebar-header-actions">
-          <button id="refreshToolsSidebarBtn"></button>
-          <button id="collapseSidebarBtn"></button>
+      <div class="sidebar-top-section">
+        <div class="tools-sidebar-header sidebar-primary-header">
+          <h3>Workspace</h3>
+          <div class="sidebar-header-actions">
+            <button id="collapseSidebarBtn"></button>
+          </div>
+        </div>
+        <div class="sidebar-top-scroll sidebar-tools-panel">
+          <div class="tools-sidebar-header">
+            <h3>Available Tools <span id="toolsCountBadge" style="display:none;"></span></h3>
+            <div class="sidebar-header-actions">
+              <button id="refreshToolsSidebarBtn"></button>
+            </div>
+          </div>
+          <div class="tools-search-bar">
+            <input id="toolsSearchInput" />
+          </div>
+          <div id="toolsSidebarContent"></div>
         </div>
       </div>
-      <div class="tools-search-bar">
-        <input id="toolsSearchInput" />
+      <div class="sidebar-bottom-section">
+        <div class="sidebar-bottom-scroll">
+          <section class="sidebar-block sidebar-footer-panel sidebar-action-block" id="sidebarActionBlock" hidden>
+            <div id="sidebarActionsContent" hidden></div>
+          </section>
+          <section class="sidebar-block sidebar-footer-panel sidebar-info-block" id="sidebarInfoBlock" hidden>
+            <div id="sidebarInfoContent" hidden>
+              <div class="sidebar-info-grid">
+                <article class="sidebar-info-card">
+                  <span class="sidebar-info-label">Release Version</span>
+                  <strong class="sidebar-info-value">0.2.0-jsonrpc</strong>
+                </article>
+              </div>
+              <details class="sidebar-expandable" open>
+                <summary>Platforms</summary>
+                <p>macOS and Linux</p>
+              </details>
+            </div>
+          </section>
+          <section class="sidebar-block sidebar-footer-panel sidebar-guide-block" id="sidebarGuideBlock" hidden>
+            <div id="sidebarGuideContent" hidden></div>
+          </section>
+        </div>
+        <div class="sidebar-footer-nav">
+          <button id="actionsToggleBtn" aria-expanded="false"></button>
+          <button id="infoToggleBtn" aria-expanded="false"></button>
+          <button id="guideToggleBtn" aria-expanded="false"></button>
+        </div>
       </div>
-      <div id="toolsSidebarContent"></div>
     </aside>
   `;
 }
@@ -128,19 +167,56 @@ function setupFullDOM() {
     <div id="chatMessages"></div>
     <textarea id="messageInput"></textarea>
     <button id="sendBtn" disabled></button>
-    <button id="newChatBtn"></button>
     <aside id="toolsSidebar" class="tools-sidebar">
-      <div class="tools-sidebar-header">
-        <h3>Available Tools <span id="toolsCountBadge" style="display:none;"></span></h3>
-        <div class="sidebar-header-actions">
-          <button id="refreshToolsSidebarBtn"></button>
-          <button id="collapseSidebarBtn"></button>
+      <div class="sidebar-top-section">
+        <div class="tools-sidebar-header sidebar-primary-header">
+          <h3>Workspace</h3>
+          <div class="sidebar-header-actions">
+            <button id="collapseSidebarBtn"></button>
+          </div>
+        </div>
+        <div class="sidebar-top-scroll sidebar-tools-panel">
+          <div class="tools-sidebar-header">
+            <h3>Available Tools <span id="toolsCountBadge" style="display:none;"></span></h3>
+            <div class="sidebar-header-actions">
+              <button id="refreshToolsSidebarBtn"></button>
+            </div>
+          </div>
+          <div class="tools-search-bar">
+            <input id="toolsSearchInput" />
+          </div>
+          <div id="toolsSidebarContent"></div>
         </div>
       </div>
-      <div class="tools-search-bar">
-        <input id="toolsSearchInput" />
+      <div class="sidebar-bottom-section">
+        <div class="sidebar-bottom-scroll">
+          <section class="sidebar-block sidebar-footer-panel sidebar-action-block" id="sidebarActionBlock" hidden>
+            <div id="sidebarActionsContent" hidden></div>
+          </section>
+          <section class="sidebar-block sidebar-footer-panel sidebar-info-block" id="sidebarInfoBlock" hidden>
+            <div id="sidebarInfoContent" hidden>
+              <div class="sidebar-info-grid">
+                <article class="sidebar-info-card">
+                  <span class="sidebar-info-label">Release Version</span>
+                  <strong class="sidebar-info-value">0.2.0-jsonrpc</strong>
+                </article>
+              </div>
+              <details class="sidebar-expandable" open>
+                <summary>Platforms</summary>
+                <p>macOS and Linux</p>
+              </details>
+            </div>
+          </section>
+          <section class="sidebar-block sidebar-footer-panel sidebar-guide-block" id="sidebarGuideBlock" hidden>
+            <div id="sidebarGuideContent" hidden></div>
+          </section>
+        </div>
+        <div class="sidebar-footer-nav">
+          <button id="actionsToggleBtn" aria-expanded="false"></button>
+          <button id="infoToggleBtn" aria-expanded="false"></button>
+          <button id="guideToggleBtn" aria-expanded="false"></button>
+        </div>
       </div>
-      <div id="toolsSidebarContent"></div>
     </aside>
 
     <!-- Settings elements -->
@@ -217,9 +293,10 @@ function setupFullDOM() {
         <button id="refreshToolsBtn">Refresh Tools</button>
       </div>
     </div>
-    <button id="settingsBtn"></button>
     <button id="darkModeBtn"></button>
-  `;
+    <button id="settingsBtn"></button>
+    <button id="newChatBtn"></button>    <button id="settingsBtn"></button>
+    <button id="newChatBtn"></button>  `;
 }
 
 module.exports = { setupChatDOM, setupSettingsDOM, setupFullDOM };

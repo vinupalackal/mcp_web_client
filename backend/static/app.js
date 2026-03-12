@@ -129,7 +129,8 @@ async function sendMessage() {
     }
 
     // Add user message to UI
-    addMessage('user', content);
+    const querySentAt = new Date();
+    addMessage('user', content, [], '', querySentAt);
     messageInput.value = '';
     messageInput.style.height = 'auto';
     sendBtn.disabled = true;
@@ -158,7 +159,7 @@ async function sendMessage() {
         removeMessage(loadingId);
         
         // Add assistant response
-        addMessage('assistant', data.message.content, data.tool_executions, data.initial_llm_response);
+        addMessage('assistant', data.message.content, data.tool_executions, data.initial_llm_response, new Date());
         
         // Log final LLM message
         console.log('💬 Final LLM Response:', data.message.content);
@@ -176,7 +177,7 @@ async function sendMessage() {
     }
 }
 
-function addMessage(role, content, toolExecutions = [], initialLlmResponse = '') {
+function addMessage(role, content, toolExecutions = [], initialLlmResponse = '', timestamp = null) {
     const messageWrapper = document.createElement('div');
     messageWrapper.classList.add('message-wrapper', role);
 
@@ -189,6 +190,16 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '')
     messageContent.innerHTML = formattedContent;
 
     messageWrapper.appendChild(messageContent);
+
+    // Timestamp
+    if (timestamp) {
+        const ts = document.createElement('div');
+        ts.classList.add('message-timestamp');
+        const timeStr = timestamp.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const label = role === 'user' ? 'Sent' : 'Received';
+        ts.textContent = `${label} at ${timeStr}`;
+        messageWrapper.appendChild(ts);
+    }
 
     const hasInitialSuggestion = role === 'assistant'
         && Boolean(initialLlmResponse)
@@ -309,7 +320,7 @@ function addLoadingMessage() {
     messageWrapper.innerHTML = `
         <div class="message-content">
             <div class="typing-dots">
-                <span></span><span></span><span></span>
+                <span class="walking-man">&#x1F426;</span><span></span><span></span><span></span>
             </div>
         </div>
     `;
@@ -453,6 +464,46 @@ window.loadToolsSidebar = async function() {
 console.log('🔧 Setting up tools sidebar...');
 
 document.addEventListener('DOMContentLoaded', () => {
+    const sidebarFooterItems = [
+        {
+            btn: document.getElementById('actionsToggleBtn'),
+            content: document.getElementById('sidebarActionsContent'),
+            block: document.getElementById('sidebarActionBlock'),
+        },
+        {
+            btn: document.getElementById('infoToggleBtn'),
+            content: document.getElementById('sidebarInfoContent'),
+            block: document.getElementById('sidebarInfoBlock'),
+        },
+        {
+            btn: document.getElementById('guideToggleBtn'),
+            content: document.getElementById('sidebarGuideContent'),
+            block: document.getElementById('sidebarGuideBlock'),
+        },
+    ].filter((item) => item.btn && item.content && item.block);
+
+    if (sidebarFooterItems.length > 0) {
+        const setSidebarFooterState = (activeBtn = null) => {
+            sidebarFooterItems.forEach(({ btn, content, block }) => {
+                const isActive = btn === activeBtn;
+                btn.setAttribute('aria-expanded', isActive ? 'true' : 'false');
+                btn.classList.toggle('active', isActive);
+                content.hidden = !isActive;
+                block.hidden = !isActive;
+                block.classList.toggle('open', isActive);
+            });
+        };
+
+        setSidebarFooterState();
+
+        sidebarFooterItems.forEach(({ btn }) => {
+            btn.addEventListener('click', () => {
+                const isExpanded = btn.getAttribute('aria-expanded') === 'true';
+                setSidebarFooterState(isExpanded ? null : btn);
+            });
+        });
+    }
+
     // Refresh tools button
     const refreshBtn = document.getElementById('refreshToolsSidebarBtn');
     if (refreshBtn) {
@@ -463,10 +514,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const collapseBtn = document.getElementById('collapseSidebarBtn');
     const sidebar = document.getElementById('toolsSidebar');
     if (collapseBtn && sidebar) {
+        const syncSidebarCollapseButton = () => {
+            const isCollapsed = sidebar.classList.contains('collapsed');
+            collapseBtn.textContent = isCollapsed ? '◀' : '▶';
+            collapseBtn.title = isCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+            collapseBtn.setAttribute('aria-label', isCollapsed ? 'Expand sidebar' : 'Collapse sidebar');
+        };
+
         collapseBtn.addEventListener('click', () => {
             sidebar.classList.toggle('collapsed');
             const isCollapsed = sidebar.classList.contains('collapsed');
-            collapseBtn.title = isCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+            syncSidebarCollapseButton();
             try { localStorage.setItem('sidebarCollapsed', isCollapsed ? '1' : '0'); } catch (e) {}
         });
         // Restore persisted state
@@ -475,6 +533,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 sidebar.classList.add('collapsed');
             }
         } catch (e) {}
+        syncSidebarCollapseButton();
     }
 
     // Client-side search / filter (no API calls)
@@ -487,5 +546,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.loadToolsSidebar();
 });
+
+// Live clock
+(function startClock() {
+    const dateEl = document.getElementById('clockDate');
+    const timeEl = document.getElementById('clockTime');
+    if (!dateEl || !timeEl) return;
+    const tick = () => {
+        const now = new Date();
+        dateEl.textContent = now.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+        timeEl.textContent = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    };
+    tick();
+    setInterval(tick, 1000);
+}());
 
 console.log('💬 Chat: Module loaded');

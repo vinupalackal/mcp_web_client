@@ -381,14 +381,51 @@ describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
     const collapseBtn = document.getElementById('collapseSidebarBtn');
 
     expect(sidebar.classList.contains('collapsed')).toBe(false);
+    expect(collapseBtn.textContent).toBe('▶');
+    expect(collapseBtn.title).toBe('Collapse sidebar');
 
     collapseBtn.click();
     expect(sidebar.classList.contains('collapsed')).toBe(true);
+    expect(collapseBtn.textContent).toBe('◀');
+    expect(collapseBtn.title).toBe('Expand sidebar');
     expect(localStorage.setItem).toHaveBeenCalledWith('sidebarCollapsed', '1');
 
     collapseBtn.click();
     expect(sidebar.classList.contains('collapsed')).toBe(false);
+    expect(collapseBtn.textContent).toBe('▶');
+    expect(collapseBtn.title).toBe('Collapse sidebar');
     expect(localStorage.setItem).toHaveBeenCalledWith('sidebarCollapsed', '0');
+  });
+
+  test('TC-FE-CHAT-46b: information footer button reveals release version and platforms', async () => {
+    setupChatDOM();
+    jest.resetModules();
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const addEventListenerSpy = jest.spyOn(document, 'addEventListener');
+
+    require('../../backend/static/app.js');
+    const domContentLoadedHandlers = addEventListenerSpy.mock.calls
+      .filter(([eventName]) => eventName === 'DOMContentLoaded')
+      .map(([, handler]) => handler);
+    domContentLoadedHandlers.forEach((handler) => handler());
+
+    const infoToggleBtn = document.getElementById('infoToggleBtn');
+    const infoContent = document.getElementById('sidebarInfoContent');
+    const infoBlock  = document.getElementById('sidebarInfoBlock');
+
+    // Initially all footer panels are hidden
+    expect(infoBlock.hidden).toBe(true);
+    expect(infoToggleBtn.getAttribute('aria-expanded')).toBe('false');
+
+    infoToggleBtn.click();
+
+    // Panel is now visible
+    expect(infoBlock.hidden).toBe(false);
+    expect(infoContent.hidden).toBe(false);
+    expect(infoToggleBtn.getAttribute('aria-expanded')).toBe('true');
+    expect(infoContent.textContent).toContain('Release Version');
+    expect(infoContent.textContent).toContain('Platforms');
   });
 
   test('TC-FE-CHAT-47: sidebar loaded on DOMContentLoaded', async () => {
@@ -423,6 +460,88 @@ describe('Chat UI — Tools Sidebar persisted state (TC-FE-CHAT-48)', () => {
     await new Promise(r => setTimeout(r, 10));
 
     expect(document.getElementById('toolsSidebar').classList.contains('collapsed')).toBe(true);
+    expect(document.getElementById('collapseSidebarBtn').textContent).toBe('◀');
+  });
+});
+
+
+// ─── Helper: boot app.js and invoke all DOMContentLoaded handlers ─────────────
+function bootSidebarFooter() {
+  setupChatDOM();
+  jest.resetModules();
+  jest.spyOn(console, 'log').mockImplementation(() => {});
+  jest.spyOn(console, 'error').mockImplementation(() => {});
+  global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => [] });
+  const addEventListenerSpy = jest.spyOn(document, 'addEventListener');
+  require('../../backend/static/app.js');
+  addEventListenerSpy.mock.calls
+    .filter(([e]) => e === 'DOMContentLoaded')
+    .forEach(([, h]) => h());
+}
+
+describe('Chat UI — Sidebar footer 3-button switcher (TC-FE-CHAT-49 to 53)', () => {
+  test('TC-FE-CHAT-49: all three footer panels start hidden and buttons collapsed', () => {
+    bootSidebarFooter();
+
+    ['sidebarActionBlock', 'sidebarInfoBlock', 'sidebarGuideBlock'].forEach((id) => {
+      expect(document.getElementById(id).hidden).toBe(true);
+    });
+    ['actionsToggleBtn', 'infoToggleBtn', 'guideToggleBtn'].forEach((id) => {
+      expect(document.getElementById(id).getAttribute('aria-expanded')).toBe('false');
+    });
+  });
+
+  test('TC-FE-CHAT-50: clicking a footer button opens its panel', () => {
+    bootSidebarFooter();
+
+    document.getElementById('actionsToggleBtn').click();
+
+    expect(document.getElementById('sidebarActionBlock').hidden).toBe(false);
+    expect(document.getElementById('actionsToggleBtn').getAttribute('aria-expanded')).toBe('true');
+    // Other panels stay hidden
+    expect(document.getElementById('sidebarInfoBlock').hidden).toBe(true);
+    expect(document.getElementById('sidebarGuideBlock').hidden).toBe(true);
+  });
+
+  test('TC-FE-CHAT-51: clicking the active button again closes its panel', () => {
+    bootSidebarFooter();
+
+    const btn = document.getElementById('guideToggleBtn');
+    const block = document.getElementById('sidebarGuideBlock');
+
+    btn.click(); // open
+    expect(block.hidden).toBe(false);
+    expect(btn.getAttribute('aria-expanded')).toBe('true');
+
+    btn.click(); // close
+    expect(block.hidden).toBe(true);
+    expect(btn.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('TC-FE-CHAT-52: switching buttons closes the previous panel and opens the new one', () => {
+    bootSidebarFooter();
+
+    document.getElementById('actionsToggleBtn').click();
+    expect(document.getElementById('sidebarActionBlock').hidden).toBe(false);
+
+    // Now click info
+    document.getElementById('infoToggleBtn').click();
+    expect(document.getElementById('sidebarInfoBlock').hidden).toBe(false);
+    expect(document.getElementById('infoToggleBtn').getAttribute('aria-expanded')).toBe('true');
+    // Actions panel must now be closed
+    expect(document.getElementById('sidebarActionBlock').hidden).toBe(true);
+    expect(document.getElementById('actionsToggleBtn').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  test('TC-FE-CHAT-53: guide panel content is shown when guide button clicked', () => {
+    bootSidebarFooter();
+
+    document.getElementById('guideToggleBtn').click();
+
+    const guideContent = document.getElementById('sidebarGuideContent');
+    expect(guideContent.hidden).toBe(false);
+    expect(document.getElementById('sidebarGuideBlock').hidden).toBe(false);
+    expect(document.getElementById('guideToggleBtn').getAttribute('aria-expanded')).toBe('true');
   });
 });
 
