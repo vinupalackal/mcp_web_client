@@ -185,6 +185,29 @@ class TestGetMessagesForLLM:
 
     # --- Ollama format ---
 
+    def test_enterprise_tool_result_includes_tool_call_id(self, mgr):
+        """TC-FMT-07: Enterprise tool message keeps tool_call_id (gateway requires it)."""
+        sid = self._session_with(
+            mgr, ChatMessage(role="tool", content="5611.23 8841.99", tool_call_id="call_HKIrE8Ck")
+        )
+        msgs = mgr.get_messages_for_llm(sid, "enterprise")
+        assert msgs[0]["role"] == "tool"
+        assert msgs[0]["tool_call_id"] == "call_HKIrE8Ck"
+
+    def test_enterprise_tool_calls_included_in_assistant(self, mgr):
+        """TC-FMT-08: Enterprise assistant message with tool_calls serialized (OpenAI-compatible)."""
+        tc = ToolCall(
+            id="call_HKIrE8Ck",
+            type="function",
+            function=FunctionCall(name="map_api__get_system_uptime", arguments="{}"),
+        )
+        sid = self._session_with(
+            mgr, ChatMessage(role="assistant", content="", tool_calls=[tc])
+        )
+        msgs = mgr.get_messages_for_llm(sid, "enterprise")
+        assert "tool_calls" in msgs[0]
+        assert msgs[0]["tool_calls"][0]["id"] == "call_HKIrE8Ck"
+
     def test_ollama_tool_converted_to_user(self, mgr):
         """TC-FMT-04: Ollama converts tool role to user with prefix."""
         sid = self._session_with(

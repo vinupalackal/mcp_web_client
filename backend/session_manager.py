@@ -178,8 +178,9 @@ class SessionManager:
                         for tc in msg.tool_calls
                     ]
             
-            # Add tool_call_id only for OpenAI (Ollama doesn't use it)
-            if provider == "openai" and hasattr(msg, 'tool_call_id') and msg.tool_call_id:
+            # Add tool_call_id for OpenAI-compatible providers (not Ollama)
+            # Enterprise gateway is OpenAI-compatible and also requires tool_call_id
+            if provider != "ollama" and hasattr(msg, 'tool_call_id') and msg.tool_call_id:
                 msg_dict["tool_call_id"] = msg.tool_call_id
             
             llm_messages.append(msg_dict)
