@@ -63,10 +63,12 @@ python -m backend
 Or with uvicorn:
 
 ```bash
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Run both commands from the repository root (`mcp_client`).
+
+Using `python -m uvicorn` ensures the server starts with the same interpreter as the active virtual environment.
 
 ### Access the Application
 
@@ -215,6 +217,25 @@ python -c "import httpx; print(httpx.get('http://192.168.1.100:3000/health'))"
 **For local development only**, set `MCP_ALLOW_HTTP_INSECURE=true` in `.env` to allow HTTP MCP server URLs.
 
 ⚠️ **Security Warning**: Never enable this in production. Always use HTTPS for MCP servers in production environments.
+
+### Missing `sqlalchemy` or Other Python Modules
+
+If startup fails with `ModuleNotFoundError: No module named 'sqlalchemy'`, the active virtual environment does not have the project dependencies installed.
+
+```bash
+# From the repo root
+source venv/bin/activate
+python -m pip install -r requirements.txt
+
+# Verify the interpreter and package location
+which python
+python -m pip show sqlalchemy
+
+# Start the app with the same interpreter
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+If you already installed the requirements, double-check that `uvicorn` is not being launched from a different Python environment.
 
 ### Tool Discovery Issues
 

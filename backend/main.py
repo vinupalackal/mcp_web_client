@@ -54,8 +54,18 @@ from backend.models import (
 )
 
 # SSO imports (v0.4.0-sso-user-settings)
-from backend.database import init_db, upsert_user, get_user_by_id
-from backend.database import UserRow, SessionLocal
+try:
+    from backend.database import init_db, upsert_user, get_user_by_id
+    from backend.database import UserRow, SessionLocal
+except ModuleNotFoundError as exc:
+    if exc.name == "sqlalchemy":
+        raise RuntimeError(
+            "Missing required dependency 'sqlalchemy'. Activate the project's virtual "
+            "environment and install dependencies with 'python -m pip install -r requirements.txt'. "
+            "If you launch via uvicorn, prefer 'python -m uvicorn backend.main:app --reload'."
+        ) from exc
+    raise
+
 from backend.user_store import (
     UserScopedLLMConfigStore,
     UserScopedServerStore,
