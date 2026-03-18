@@ -1,0 +1,338 @@
+[
+  {
+    "tool_name": "server_info",
+    "prompt": "What version is the MCP server and what capabilities does it support?"
+  },
+  {
+    "tool_name": "get_uptime",
+    "prompt": "How long has this device been running without a reboot?"
+  },
+  {
+    "tool_name": "get_loadavg",
+    "prompt": "Is the CPU under stress right now?"
+  },
+  {
+    "tool_name": "get_meminfo",
+    "prompt": "How much free memory does the device have?"
+  },
+  {
+    "tool_name": "get_dmesg_tail",
+    "prompt": "Show me the last 100 kernel log lines to check for errors."
+  },
+  {
+    "tool_name": "list_top_processes",
+    "prompt": "Which process is consuming the most memory?"
+  },
+  {
+    "tool_name": "get_network_overview",
+    "prompt": "What network interfaces are active and what's the default gateway?"
+  },
+  {
+    "tool_name": "get_registry_summary",
+    "prompt": "How many tools are available and from which registries?"
+  },
+  {
+    "tool_name": "list_registries",
+    "prompt": "What JSON config files are loaded as tool registries?"
+  },
+  {
+    "tool_name": "get_registry_info",
+    "prompt": "What tools are available in the openwrt_tools_config registry?"
+  },
+  {
+    "tool_name": "listLogFiles",
+    "prompt": "What log files exist under /var/log?"
+  },
+  {
+    "tool_name": "readLogTail",
+    "prompt": "Show me the last 50 lines of /var/log/messages filtered for 'error'."
+  },
+  {
+    "tool_name": "searchLogs",
+    "prompt": "Search all logs for 'OOM' or 'out of memory'."
+  },
+  {
+    "tool_name": "readLogRange",
+    "prompt": "Show me /var/log/messages between 08:40 and 08:50 this morning."
+  },
+  {
+    "tool_name": "sampleLogMetadata",
+    "prompt": "What's the time range and size of /var/log/messages?"
+  },
+  {
+    "tool_name": "tr181_get_parameters",
+    "prompt": "What WiFi channel is Radio 1 on and what's the firmware version?"
+  },
+  {
+    "tool_name": "proc_memory_leak_detect",
+    "prompt": "Check if wpa_supplicant is leaking memory."
+  },
+  {
+    "tool_name": "proc_memory_growth_watch",
+    "prompt": "Watch PID 2201 memory for 10 seconds with rapid samples."
+  },
+  {
+    "tool_name": "proc_fd_leak_detect",
+    "prompt": "Check if xconf-client has a file descriptor leak."
+  },
+  {
+    "tool_name": "proc_fd_growth_watch",
+    "prompt": "Watch xconf-client FDs rapidly for 30 seconds."
+  },
+  {
+    "tool_name": "proc_memory_map_diagnose",
+    "prompt": "Show me the memory map breakdown for PID 2201."
+  },
+  {
+    "tool_name": "proc_thread_hang_diagnose",
+    "prompt": "CcspWifiAgent stopped responding \u2014 check for hung threads."
+  },
+  {
+    "tool_name": "proc_futex_wait_diagnose",
+    "prompt": "Is there a deadlock in process 3381?"
+  },
+  {
+    "tool_name": "proc_hung_thread_diagnose",
+    "prompt": "Process 4000 seems frozen \u2014 which threads are hung?"
+  },
+  {
+    "tool_name": "proc_cpu_spin_diagnose",
+    "prompt": "One CPU core is pegged at 100% by ccsppsmplugin \u2014 which thread?"
+  },
+  {
+    "tool_name": "proc_memory_pressure_diagnose",
+    "prompt": "Is the system under memory pressure? Who will get OOM-killed first?"
+  },
+  {
+    "tool_name": "get_system_info",
+    "prompt": "Give me a complete system snapshot \u2014 OS, kernel, CPU, and memory."
+  },
+  {
+    "tool_name": "get_system_uptime",
+    "prompt": "What does /proc/uptime show?"
+  },
+  {
+    "tool_name": "get_cpu_info",
+    "prompt": "What CPUs does this device have?"
+  },
+  {
+    "tool_name": "get_cpu_usage",
+    "prompt": "Show me current CPU usage and which processes are consuming it."
+  },
+  {
+    "tool_name": "get_memory_info",
+    "prompt": "Show me full /proc/meminfo."
+  },
+  {
+    "tool_name": "get_memory_usage",
+    "prompt": "Which processes use the most RAM right now?"
+  },
+  {
+    "tool_name": "get_load_average",
+    "prompt": "What is the system load average?"
+  },
+  {
+    "tool_name": "get_gateway_system_info",
+    "prompt": "What OpenWrt firmware version is installed on the gateway?"
+  },
+  {
+    "tool_name": "get_process_info",
+    "prompt": "Show me the status of PID 1842."
+  },
+  {
+    "tool_name": "list_processes",
+    "prompt": "List the top 20 running processes."
+  },
+  {
+    "tool_name": "list_zombie_processes",
+    "prompt": "Are there any zombie processes?"
+  },
+  {
+    "tool_name": "get_disk_usage",
+    "prompt": "How full are the disks?"
+  },
+  {
+    "tool_name": "check_disk_space",
+    "prompt": "How much space is left in /data?"
+  },
+  {
+    "tool_name": "find_large_files",
+    "prompt": "The root filesystem is 92% full. Find the biggest files."
+  },
+  {
+    "tool_name": "check_inode_usage",
+    "prompt": "Could inode exhaustion be causing file creation failures?"
+  },
+  {
+    "tool_name": "get_disk_stats",
+    "prompt": "Show me disk I/O statistics for mmcblk0."
+  },
+  {
+    "tool_name": "get_filesystem_mounts",
+    "prompt": "What filesystems are currently mounted?"
+  },
+  {
+    "tool_name": "get_interrupts",
+    "prompt": "Show interrupt statistics to check for interrupt storms."
+  },
+  {
+    "tool_name": "get_hardware_info",
+    "prompt": "What PCI and USB devices are present?"
+  },
+  {
+    "tool_name": "get_kernel_parameters",
+    "prompt": "Show me the current vm.* kernel tunables."
+  },
+  {
+    "tool_name": "list_loaded_modules",
+    "prompt": "What kernel modules are loaded?"
+  },
+  {
+    "tool_name": "get_network_stats",
+    "prompt": "How many bytes has eth0 transmitted and received?"
+  },
+  {
+    "tool_name": "get_network_interfaces",
+    "prompt": "List all network interfaces and their IP addresses."
+  },
+  {
+    "tool_name": "get_network_connections",
+    "prompt": "What network connections are currently open?"
+  },
+  {
+    "tool_name": "test_connectivity",
+    "prompt": "Can the device reach 8.8.8.8?"
+  },
+  {
+    "tool_name": "get_routing_table",
+    "prompt": "What is the routing table?"
+  },
+  {
+    "tool_name": "check_open_ports",
+    "prompt": "What ports are listening and which processes own them?"
+  },
+  {
+    "tool_name": "get_wan_ip_config",
+    "prompt": "What IP address is the WAN interface using?"
+  },
+  {
+    "tool_name": "get_lan_ip_config",
+    "prompt": "What is the gateway's LAN IP and subnet?"
+  },
+  {
+    "tool_name": "get_dhcp_leases",
+    "prompt": "Which devices are connected to the network via DHCP?"
+  },
+  {
+    "tool_name": "get_dns_config",
+    "prompt": "What DNS servers is the gateway using?"
+  },
+  {
+    "tool_name": "get_ntp_status",
+    "prompt": "Is the clock synced?"
+  },
+  {
+    "tool_name": "get_wireless_status",
+    "prompt": "Show me the WiFi status \u2014 channel, clients, signal strength."
+  },
+  {
+    "tool_name": "get_firewall_rules",
+    "prompt": "Show me the active firewall rules."
+  },
+  {
+    "tool_name": "get_wan_connection_status",
+    "prompt": "Is the WAN connection up?"
+  },
+  {
+    "tool_name": "get_connected_clients",
+    "prompt": "Show all devices currently connected to the gateway."
+  },
+  {
+    "tool_name": "get_nat_sessions",
+    "prompt": "Show me the active NAT sessions through the gateway."
+  },
+  {
+    "tool_name": "get_port_forwarding_rules",
+    "prompt": "What port forwarding rules are configured?"
+  },
+  {
+    "tool_name": "get_bandwidth_usage",
+    "prompt": "How much traffic has passed through the WAN interface?"
+  },
+  {
+    "tool_name": "get_static_dhcp_reservations",
+    "prompt": "Are there any static IP reservations configured?"
+  },
+  {
+    "tool_name": "get_qos_config",
+    "prompt": "Is QoS configured on the gateway?"
+  },
+  {
+    "tool_name": "get_ipv6_config",
+    "prompt": "What IPv6 addresses are configured?"
+  },
+  {
+    "tool_name": "get_upnp_status",
+    "prompt": "Is UPnP configured? Are there any dynamic port mappings?"
+  },
+  {
+    "tool_name": "discover_log_files",
+    "prompt": "What log files exist on this system?"
+  },
+  {
+    "tool_name": "search_log_issues",
+    "prompt": "Search /var/log/wifi.log for errors since 09:00 this morning."
+  },
+  {
+    "tool_name": "search_all_logs_for_issues",
+    "prompt": "Scan all logs for critical errors in the last 200 lines of each."
+  },
+  {
+    "tool_name": "get_recent_logs",
+    "prompt": "Show me the last 50 system log lines."
+  },
+  {
+    "tool_name": "search_error_logs",
+    "prompt": "Are there any error-priority log entries?"
+  },
+  {
+    "tool_name": "get_kernel_logs",
+    "prompt": "Show the full dmesg output with timestamps."
+  },
+  {
+    "tool_name": "get_system_logs",
+    "prompt": "Get the last 30 lines from the system log."
+  },
+  {
+    "tool_name": "list_systemd_services",
+    "prompt": "List all active systemd services."
+  },
+  {
+    "tool_name": "list_failed_services",
+    "prompt": "Are any systemd services in a failed state?"
+  },
+  {
+    "tool_name": "get_service_status",
+    "prompt": "What is the current status of wpa_supplicant?"
+  },
+  {
+    "tool_name": "get_service_logs",
+    "prompt": "Show me the last 30 journal entries for wpa_supplicant."
+  },
+  {
+    "tool_name": "get_systemd_units",
+    "prompt": "Show me all systemd timers."
+  },
+  {
+    "tool_name": "get_unit_dependencies",
+    "prompt": "What does rdkbrowserng.service depend on?"
+  },
+  {
+    "tool_name": "list_docker_containers",
+    "prompt": "What Docker containers are running?"
+  },
+  {
+    "tool_name": "get_container_logs",
+    "prompt": "What were the last log lines from the crashed app-worker container?"
+  }
+]
