@@ -4,7 +4,7 @@ Unit tests for Pydantic models (TR-MODEL-*)
 
 import pytest
 from pydantic import ValidationError
-from datetime import datetime
+from datetime import datetime, timezone
 
 from backend.models import (
     ServerConfig,
@@ -20,6 +20,11 @@ from backend.models import (
     ExecutionHintsSampling,
     RepeatedExecRunResult,
     RepeatedExecSummary,
+    UserProfile,
+    UserSettings,
+    UserSettingsPatch,
+    AdminUserPatch,
+    UserListResponse,
 )
 
 
@@ -685,3 +690,192 @@ class TestRepeatedExecSummary:
         )
         assert s.runs == []
         assert s.success_count == 0
+
+
+# ============================================================================
+# TR-MODEL-SSO: SSO / Auth models  (v0.4.0-sso-user-settings)
+# ============================================================================
+
+def _valid_profile_kwargs(**overrides):
+    base = {
+        "user_id": "550e8400-e29b-41d4-a716-446655440001",
+        "email": "alice@example.com",
+        "display_name": "Alice Smith",
+        "avatar_url": None,
+        "roles": ["user"],
+        "created_at": datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc),
+        "last_login_at": datetime(2026, 3, 18, 8, 45, tzinfo=timezone.utc),
+    }
+    base.update(overrides)
+    return base
+
+
+class TestUserProfile:
+
+    def test_valid_construction(self):
+        """TC-MODEL-SSO-01: Valid UserProfile constructs without error."""
+        p = UserProfile(**_valid_profile_kwargs())
+        assert p.email == "alice@example.com"
+        assert p.display_name == "Alice Smith"
+
+    def test_avatar_url_is_optional_none(self):
+        """TC-MODEL-SSO-02: avatar_url accepts None."""
+        p = UserProfile(**_valid_profile_kwargs(avatar_url=None))
+        assert p.avatar_url is None
+
+    def test_avatar_url_accepts_url_string(self):
+        """TC-MODEL-SSO-03: avatar_url accepts a non-null URL string."""
+        p = UserProfile(**_valid_profile_kwargs(avatar_url="https://cdn.example.com/pic.jpg"))
+        assert "cdn.example.com" in p.avatar_url
+
+    def test_roles_list_with_admin(self):
+        """TC-MODEL-SSO-04: roles list can contain both 'user' and 'admin'."""
+        p = UserProfile(**_valid_profile_kwargs(roles=["user", "admin"]))
+        assert "admin" in p.roles
+
+    def test_missing_user_id_raises(self):
+        """TC-MODEL-SSO-05: Missing user_id raises ValidationError."""
+        kwargs = _valid_profile_kwargs()
+        del kwargs["user_id"]
+        with pytest.raises(ValidationError):
+            UserProfile(**kwargs)
+
+    def test_missing_email_raises(self):
+        """TC-MODEL-SSO-06: Missing email raises ValidationError."""
+        kwargs = _valid_profile_kwargs()
+        del kwargs["email"]
+        with pytest.raises(ValidationError):
+            UserProfile(**kwargs)
+
+    def test_missing_created_at_raises(self):
+        """TC-MODEL-SSO-07: Missing created_at raises ValidationError."""
+        kwargs = _valid_profile_kwargs()
+        del kwargs["created_at"]
+        with pytest.raises(ValidationError):
+            UserProfile(**kwargs)
+
+    def test_missing_last_login_at_raises(self):
+        """TC-MODEL-SSO-08: Missing last_login_at raises ValidationError."""
+        kwargs = _valid_profile_kwargs()
+        del kwargs["last_login_at"]
+        with pytest.raises(ValidationError):
+            UserProfile(**kwargs)
+
+
+class TestUserSettings:
+
+    def test_default_theme_is_system(self):
+        """TC-MODEL-SSO-09: Default theme is 'system'."""
+        assert UserSettings().theme == "system"
+
+    def test_default_message_density_is_comfortable(self):
+        """TC-MODEL-SSO-10: Default message_density is 'comfortable'."""
+        assert UserSettings().message_density == "comfortable"
+
+    def test_default_tool_panel_visible_is_true(self):
+        """TC-MODEL-SSO-11: Default tool_panel_visible is True."""
+        assert UserSettings().tool_panel_visible is True
+
+    def test_default_sidebar_collapsed_is_false(self):
+        """TC-MODEL-SSO-12: Default sidebar_collapsed is False."""
+        assert UserSettings().sidebar_collapsed is False
+
+    def test_default_llm_model_is_none(self):
+        """TC-MODEL-SSO-13: Default default_llm_model is None."""
+        assert UserSettings().default_llm_model is None
+
+    def test_valid_theme_values(self):
+        """TC-MODEL-SSO-14: All three valid theme literals are accepted."""
+        for theme in ("light", "dark", "system"):
+            s = UserSettings(theme=theme)
+            assert s.theme == theme
+
+    def test_invalid_theme_raises(self):
+        """TC-MODEL-SSO-15: Unknown theme value raises ValidationError."""
+        with pytest.raises(ValidationError):
+            UserSettings(theme="solarized")
+
+    def test_valid_density_values(self):
+        """TC-MODEL-SSO-16: Both valid message_density literals are accepted."""
+        for density in ("compact", "comfortable"):
+            s = UserSettings(message_density=density)
+            assert s.message_density == density
+
+    def test_invalid_density_raises(self):
+        """TC-MODEL-SSO-17: Unknown message_density raises ValidationError."""
+        with pytest.raises(ValidationError):
+            UserSettings(message_density="wide")
+
+    def test_default_llm_model_accepts_string(self):
+        """TC-MODEL-SSO-18: default_llm_model accepts a non-null model string."""
+        s = UserSettings(default_llm_model="gpt-4o")
+        assert s.default_llm_model == "gpt-4o"
+
+
+class TestUserSettingsPatch:
+
+    def test_all_none_is_valid(self):
+        """TC-MODEL-SSO-19: UserSettingsPatch with all None fields is valid."""
+        p = UserSettingsPatch()
+        assert p.theme is None
+        assert p.message_density is None
+        assert p.tool_panel_visible is None
+        assert p.sidebar_collapsed is None
+        assert p.default_llm_model is None
+
+    def test_partial_patch_only_sets_supplied_fields(self):
+        """TC-MODEL-SSO-20: Supplying one field leaves others as None."""
+        p = UserSettingsPatch(theme="dark")
+        assert p.theme == "dark"
+        assert p.message_density is None
+
+    def test_invalid_theme_in_patch_raises(self):
+        """TC-MODEL-SSO-21: Invalid theme in UserSettingsPatch raises ValidationError."""
+        with pytest.raises(ValidationError):
+            UserSettingsPatch(theme="invalid-theme")
+
+    def test_invalid_density_in_patch_raises(self):
+        """TC-MODEL-SSO-22: Invalid message_density in UserSettingsPatch raises ValidationError."""
+        with pytest.raises(ValidationError):
+            UserSettingsPatch(message_density="ultra-wide")
+
+
+class TestAdminUserPatch:
+
+    def test_is_active_true(self):
+        """TC-MODEL-SSO-23: AdminUserPatch with is_active=True is valid."""
+        p = AdminUserPatch(is_active=True)
+        assert p.is_active is True
+
+    def test_is_active_false(self):
+        """TC-MODEL-SSO-24: AdminUserPatch with is_active=False is valid."""
+        p = AdminUserPatch(is_active=False)
+        assert p.is_active is False
+
+    def test_missing_is_active_raises(self):
+        """TC-MODEL-SSO-25: Omitting is_active raises ValidationError."""
+        with pytest.raises(ValidationError):
+            AdminUserPatch()
+
+
+class TestUserListResponse:
+
+    def test_valid_construction_empty_list(self):
+        """TC-MODEL-SSO-26: UserListResponse constructs with empty user list."""
+        r = UserListResponse(users=[], total=0, limit=50, offset=0)
+        assert r.total == 0
+        assert r.users == []
+
+    def test_pagination_fields_preserved(self):
+        """TC-MODEL-SSO-27: limit and offset values are preserved as provided."""
+        r = UserListResponse(users=[], total=100, limit=10, offset=20)
+        assert r.limit == 10
+        assert r.offset == 20
+        assert r.total == 100
+
+    def test_users_list_with_profiles(self):
+        """TC-MODEL-SSO-28: users list can contain UserProfile instances."""
+        profile = UserProfile(**_valid_profile_kwargs())
+        r = UserListResponse(users=[profile], total=1, limit=50, offset=0)
+        assert len(r.users) == 1
+        assert r.users[0].email == "alice@example.com"
