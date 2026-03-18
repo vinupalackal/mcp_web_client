@@ -416,3 +416,398 @@ class TestDiscoverAllTools:
         assert total == 1
         assert refreshed == 1
         assert len(errors) == 1
+
+
+# ============================================================================
+# TR-MCP-4: Virtual Tool (mcp_repeated_exec)
+# ============================================================================
+
+class TestVirtualRepeatedExecTool:
+
+    def test_virtual_tool_always_present_in_catalog(self, mgr):
+        """TC-MCP-25: get_tools_for_llm() always includes mcp_repeated_exec."""
+        tools = mgr.get_tools_for_llm()
+        names = [t["function"]["name"] for t in tools]
+        assert "mcp_repeated_exec" in names
+
+    def test_virtual_tool_present_with_no_real_tools(self, mgr):
+        """TC-MCP-26: Even with empty real tool registry, virtual tool is injected."""
+        assert len(mgr.tools) == 0
+        tools = mgr.get_tools_for_llm()
+        assert len(tools) == 1
+        assert tools[0]["function"]["name"] == "mcp_repeated_exec"
+
+    def test_virtual_tool_appended_after_real_tools(self, mgr, server_https):
+        """TC-MCP-27: Virtual tool is the last entry when real tools exist."""
+        mgr.tools["svc__ping"] = __import__(
+            "backend.models", fromlist=["ToolSchema"]
+        ).ToolSchema(
+            namespaced_id="svc__ping", server_alias="svc",
+            name="ping", description="Ping",
+        )
+        tools = mgr.get_tools_for_llm()
+        assert tools[-1]["function"]["name"] == "mcp_repeated_exec"
+        assert tools[0]["function"]["name"] == "svc__ping"
+
+    def test_virtual_tool_required_params(self, mgr):
+        """TC-MCP-28: Schema declares target_tool, repeat_count, interval_ms as required."""
+        tools = mgr.get_tools_for_llm()
+        vt = next(t for t in tools if t["function"]["name"] == "mcp_repeated_exec")
+        required = vt["function"]["parameters"]["required"]
+        assert "target_tool" in required
+        assert "repeat_count" in required
+        assert "interval_ms" in required
+
+    def test_virtual_tool_repeat_count_bounds(self, mgr):
+        """TC-MCP-29: repeat_count has minimum=1 and maximum=10 in schema."""
+        tools = mgr.get_tools_for_llm()
+        vt = next(t for t in tools if t["function"]["name"] == "mcp_repeated_exec")
+        rc = vt["function"]["parameters"]["properties"]["repeat_count"]
+        assert rc["minimum"] == 1
+        assert rc["maximum"] == 10
+
+    def test_virtual_tool_interval_ms_minimum_zero(self, mgr):
+        """TC-MCP-30: interval_ms has minimum=0 (back-to-back runs allowed)."""
+        tools = mgr.get_tools_for_llm()
+        vt = next(t for t in tools if t["function"]["name"] == "mcp_repeated_exec")
+        im = vt["function"]["parameters"]["properties"]["interval_ms"]
+        assert im["minimum"] == 0
+
+
+# ============================================================================
+# TR-MCP-5: _safe_name path-traversal sanitisation
+# ============================================================================
+
+class TestSafeName:
+
+    def test_plain_hostname_unchanged(self, mgr):
+        """TC-MCP-31: Normal hostname passes through unchanged."""
+        assert mgr._safe_name("myhost") == "myhost"
+
+    def test_spaces_replaced_with_underscore(self, mgr):
+        """TC-MCP-32: Spaces become underscores."""
+        assert mgr._safe_name("proc cpu spin") == "proc_cpu_spin"
+
+    def test_path_traversal_stripped(self, mgr):
+        """TC-MCP-33: Path traversal sequences are stripped (NFR-REP-006)."""
+        assert mgr._safe_name("../etc/passwd") == "etc_passwd"
+
+    def test_double_slash_collapsed(self, mgr):
+        """TC-MCP-34: Double slashes become a single underscore."""
+        assert mgr._safe_name("foo//bar") == "foo_bar"
+
+    def test_dotdot_stripped(self, mgr):
+        """TC-MCP-35: Double-dot sequences are removed."""
+        assert mgr._safe_name("a..b") == "a_b"
+
+    def test_empty_string_returns_unknown(self, mgr):
+        """TC-MCP-36: Empty input returns 'unknown' sentinel."""
+        assert mgr._safe_name("") == "unknown"
+
+    def test_only_special_chars_returns_unknown(self, mgr):
+        """TC-MCP-37: Input of only unsafe chars returns 'unknown'."""
+        assert mgr._safe_name("///") == "unknown"
+
+    def test_mixed_special_chars(self, mgr):
+        """TC-MCP-38: Mixed alphanumeric and special chars preserves alnum."""
+        result = mgr._safe_name("proc-fd_leak.detect")
+        # hyphens and underscores allowed; dots become underscores
+        assert "proc" in result
+        assert "fd" in result
+        assert "leak" in result
+        assert "detect" in result
+        assert "/" not in result
+        assert ".." not in result
+
+
+# ============================================================================
+# TR-MCP-6: execute_repeated
+# ============================================================================
+
+_EXEC_TOOL = {
+    "name": "monitor",
+    "description": "Monitor a target",
+    "inputSchema": {"type": "object", "properties": {}},
+}
+
+
+class TestExecuteRepeated:
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_all_runs_succeed(self, mgr, server_https, tmp_path, monkeypatch):
+        """TC-MCP-39: 3 successful runs → summary has success_count=3, failure_count=0."""
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+
+        # init + 3 tool executions
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                httpx.Response(200, json=_exec_ok({"val": 1})),
+                httpx.Response(200, json=_exec_ok({"val": 2})),
+                httpx.Response(200, json=_exec_ok({"val": 3})),
+            ]
+        )
+
+        summary, files = await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={},
+            repeat_count=3,
+            interval_ms=0,
+        )
+
+        assert summary.repeat_count == 3
+        assert summary.success_count == 3
+        assert summary.failure_count == 0
+        assert len(summary.runs) == 3
+        assert all(r.success for r in summary.runs)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_files_written_per_run(self, mgr, server_https, tmp_path, monkeypatch):
+        """TC-MCP-40: One file written per run in the configured output dir."""
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+        monkeypatch.setenv("MCP_DEVICE_ID", "testhost")
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                httpx.Response(200, json=_exec_ok({"v": 1})),
+                httpx.Response(200, json=_exec_ok({"v": 2})),
+            ]
+        )
+
+        summary, files = await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={},
+            repeat_count=2,
+            interval_ms=0,
+        )
+
+        # Files should exist on disk immediately after execute_repeated returns
+        # (caller deletes them — here we check they were created)
+        assert len(files) == 2
+        for f in files:
+            assert f.exists()
+            content = json.loads(f.read_text())
+            assert content["tool_name"] == "monitor"
+            assert content["device_id"] == "testhost"
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_file_names_contain_device_tool_index_timestamp(
+        self, mgr, server_https, tmp_path, monkeypatch
+    ):
+        """TC-MCP-41: File names follow <device>_<tool>_<idx>_<ts>.txt pattern."""
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+        monkeypatch.setenv("MCP_DEVICE_ID", "devA")
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                httpx.Response(200, json=_exec_ok({})),
+            ]
+        )
+
+        summary, files = await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={},
+            repeat_count=1,
+            interval_ms=0,
+        )
+
+        assert len(files) == 1
+        fname = files[0].name
+        assert fname.startswith("devA_monitor_")
+        assert fname.endswith(".txt")
+        # run index zero-padded to width of repeat_count (1 digit for count=1)
+        assert "_1_" in fname
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_partial_failure_continues_sequence(
+        self, mgr, server_https, tmp_path, monkeypatch
+    ):
+        """TC-MCP-42: One failing run does NOT abort the sequence (FR-REP-009)."""
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                httpx.Response(200, json=_exec_ok({"v": 1})),
+                httpx.Response(500, text="Server Error"),   # run 2 fails
+                httpx.Response(200, json=_exec_ok({"v": 3})),
+            ]
+        )
+
+        summary, files = await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={},
+            repeat_count=3,
+            interval_ms=0,
+        )
+
+        assert summary.success_count == 2
+        assert summary.failure_count == 1
+        assert len(summary.runs) == 3
+        assert summary.runs[1].success is False
+        assert summary.runs[0].success is True
+        assert summary.runs[2].success is True
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_all_runs_fail(self, mgr, server_https, tmp_path, monkeypatch):
+        """TC-MCP-43: All runs failing → failure_count=N, success_count=0."""
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                httpx.Response(500, text="err"),
+                httpx.Response(500, text="err"),
+            ]
+        )
+
+        summary, _ = await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={},
+            repeat_count=2,
+            interval_ms=0,
+        )
+
+        assert summary.success_count == 0
+        assert summary.failure_count == 2
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_run_index_zero_padded(self, mgr, server_https, tmp_path, monkeypatch):
+        """TC-MCP-44: Run index is zero-padded to match width of repeat_count."""
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+        monkeypatch.setenv("MCP_DEVICE_ID", "host")
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                *[httpx.Response(200, json=_exec_ok({})) for _ in range(10)],
+            ]
+        )
+
+        summary, files = await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={},
+            repeat_count=10,
+            interval_ms=0,
+        )
+
+        names = [f.name for f in files]
+        # run 1 → "01", run 10 → "10" (2-digit padding for count=10)
+        assert any("_01_" in n for n in names)
+        assert any("_10_" in n for n in names)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_summary_device_and_tool_name(self, mgr, server_https, tmp_path, monkeypatch):
+        """TC-MCP-45: Summary records correct device_id and bare tool_name."""
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+        monkeypatch.setenv("MCP_DEVICE_ID", "mydevice")
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                httpx.Response(200, json=_exec_ok({"ok": True})),
+            ]
+        )
+
+        summary, _ = await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={"pid": 123},
+            repeat_count=1,
+            interval_ms=0,
+        )
+
+        assert summary.device_id == "mydevice"
+        assert summary.tool_name == "monitor"
+        assert summary.target_tool == "svc__monitor"
+        assert summary.tool_arguments == {"pid": 123}
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_interval_not_applied_after_last_run(
+        self, mgr, server_https, tmp_path, monkeypatch
+    ):
+        """TC-MCP-46: asyncio.sleep is called N-1 times (not after last run, FR-REP-010)."""
+        import asyncio
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                httpx.Response(200, json=_exec_ok({})),
+                httpx.Response(200, json=_exec_ok({})),
+                httpx.Response(200, json=_exec_ok({})),
+            ]
+        )
+
+        sleep_calls = []
+        original_sleep = asyncio.sleep
+
+        async def mock_sleep(secs):
+            sleep_calls.append(secs)
+
+        monkeypatch.setattr(asyncio, "sleep", mock_sleep)
+
+        await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={},
+            repeat_count=3,
+            interval_ms=500,
+        )
+
+        # Should be called exactly repeat_count - 1 = 2 times
+        assert len(sleep_calls) == 2
+        assert all(s == 0.5 for s in sleep_calls)
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_file_json_schema_complete(self, mgr, server_https, tmp_path, monkeypatch):
+        """TC-MCP-47: Each run file contains all required JSON fields (FR-REP-015)."""
+        monkeypatch.setenv("MCP_REPEATED_EXEC_OUTPUT_DIR", str(tmp_path))
+        monkeypatch.setenv("MCP_DEVICE_ID", "host")
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json=_init_ok()),
+                httpx.Response(200, json=_exec_ok({"data": "x"})),
+            ]
+        )
+
+        _, files = await mgr.execute_repeated(
+            server=server_https,
+            tool_name="monitor",
+            tool_arguments={"pid": 1},
+            repeat_count=1,
+            interval_ms=0,
+        )
+
+        content = json.loads(files[0].read_text())
+        required_keys = {
+            "device_id", "target_tool", "tool_name", "tool_arguments",
+            "run_index", "repeat_count", "interval_ms", "timestamp_utc",
+            "duration_ms", "success", "result", "error",
+        }
+        assert required_keys.issubset(content.keys())
+        assert content["device_id"] == "host"
+        assert content["tool_name"] == "monitor"
+        assert content["run_index"] == 1
+        assert content["repeat_count"] == 1
+        assert content["success"] is True
+        assert content["result"] == {"data": "x"}
+        assert content["error"] is None

@@ -3,11 +3,67 @@ MCP Manager - JSON-RPC 2.0 Client for MCP Servers
 Handles server initialization, tool discovery, and tool execution
 """
 
+import asyncio
+import json
 import logging
 import os
+import re
+import socket
+import time
 import httpx
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Any
-from backend.models import ServerConfig, ToolSchema, ExecutionHints
+from backend.models import (
+    ServerConfig,
+    ToolSchema,
+    ExecutionHints,
+    RepeatedExecRunResult,
+    RepeatedExecSummary,
+)
+
+# ---------------------------------------------------------------------------
+# Virtual tool: mcp_repeated_exec
+# Injected into the LLM tool catalog on every get_tools_for_llm() call.
+# Intercepted by main.py BEFORE MCP dispatch; never sent to a real server.
+# ---------------------------------------------------------------------------
+VIRTUAL_REPEATED_EXEC_TOOL: Dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "mcp_repeated_exec",
+        "description": (
+            "Execute an MCP tool N times at a fixed interval for trend analysis and "
+            "longitudinal diagnostics. repeat_count and interval_ms are mandatory — "
+            "the tool will return an error if either is missing. "
+            "Results are saved to files and all runs are sent to the LLM for final synthesis."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["target_tool", "repeat_count", "interval_ms"],
+            "properties": {
+                "target_tool": {
+                    "type": "string",
+                    "description": "Namespaced MCP tool ID to repeat (server_alias__tool_name)",
+                },
+                "tool_arguments": {
+                    "type": "object",
+                    "description": "Arguments to pass to the target tool on every run (optional, defaults to {})",
+                },
+                "repeat_count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Number of times to execute the target tool (1\u201310)",
+                },
+                "interval_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Delay between consecutive runs in milliseconds (0 = back-to-back)",
+                },
+            },
+        },
+    },
+}
 
 logger_internal = logging.getLogger("mcp_client.internal")
 logger_external = logging.getLogger("mcp_client.external")
@@ -300,6 +356,193 @@ class MCPManager:
             logger_internal.error(f"Failed to execute tool {tool_name}: {e}")
             raise
     
+    async def execute_repeated(
+        self,
+        server: ServerConfig,
+        tool_name: str,
+        tool_arguments: Dict[str, Any],
+        repeat_count: int,
+        interval_ms: int,
+        execution_hints: Optional[ExecutionHints] = None,
+    ) -> RepeatedExecSummary:
+        """Execute a tool N times sequentially with a configurable interval.
+
+        Writes one JSON file per run immediately after each run completes.
+        Deletes all run files after the caller has built the synthesis prompt.
+        Returns a RepeatedExecSummary with all run results.
+
+        Args:
+            server:           Server to execute the tool on.
+            tool_name:        Bare tool name (no server alias prefix).
+            tool_arguments:   Arguments forwarded to the tool on every run.
+            repeat_count:     Number of runs (caller must validate 1-10).
+            interval_ms:      Sleep between runs in ms (0 = back-to-back).
+            execution_hints:  Advisory hints reused for per-call timeout.
+        """
+        device_id = self._safe_name(
+            os.getenv("MCP_DEVICE_ID", socket.gethostname())
+        )
+        safe_tool_name = self._safe_name(tool_name)
+        pad = len(str(repeat_count))  # zero-padding width
+
+        # Resolve output directory (never logged per NFR-REP-007)
+        output_dir_raw = os.getenv("MCP_REPEATED_EXEC_OUTPUT_DIR", "data/runs")
+        output_dir = Path(output_dir_raw)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        namespaced = f"{server.alias}__{tool_name}"
+        logger_internal.info(
+            f"Repeated exec starting: {namespaced} ×{repeat_count}, interval={interval_ms}ms"
+        )
+
+        # --- E2E budget advisory (FR-REP-022/023) ---
+        if execution_hints:
+            tool_budget_ms = execution_hints.recommended_wait_ms()
+        else:
+            tool_budget_ms = server.timeout_ms
+        # llm_timeout pulled from env; used here for logging only
+        llm_timeout_ms = int(os.getenv("MCP_LLM_TIMEOUT_MS", "180000"))
+        total_budget_ms = repeat_count * (tool_budget_ms + interval_ms) + llm_timeout_ms
+        logger_internal.info(
+            f"Repeated exec E2E budget: {repeat_count} runs × "
+            f"({tool_budget_ms / 1000:.0f}s tool + {interval_ms / 1000:.0f}s interval) "
+            f"+ LLM({llm_timeout_ms / 1000:.0f}s) = {total_budget_ms / 1000:.0f}s total. "
+            "Ensure upstream proxy/client timeouts exceed this value."
+        )
+
+        seq_start = time.time()
+        runs: List[RepeatedExecRunResult] = []
+        written_files: List[Path] = []
+
+        for run_idx in range(1, repeat_count + 1):
+            ts_dt = datetime.now(timezone.utc)
+            timestamp_utc = ts_dt.strftime("%Y%m%dT%H%M%SZ")
+            timestamp_iso = ts_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            logger_internal.info(
+                f"Run {run_idx}/{repeat_count}: {namespaced} started at {timestamp_iso}"
+            )
+
+            run_start = time.time()
+            result_payload: Optional[Dict[str, Any]] = None
+            error_msg: Optional[str] = None
+            run_success = False
+
+            try:
+                result_payload = await self.execute_tool(
+                    server=server,
+                    tool_name=tool_name,
+                    arguments=tool_arguments,
+                    execution_hints=execution_hints,
+                )
+                run_success = True
+            except Exception as exc:
+                error_msg = str(exc)
+                logger_internal.warning(
+                    f"Run {run_idx}/{repeat_count} failed: {error_msg}"
+                )
+
+            duration_ms = int((time.time() - run_start) * 1000)
+            logger_internal.info(
+                f"Run {run_idx}/{repeat_count} complete: {duration_ms}ms, success={run_success}"
+            )
+
+            # --- Write run file (FR-REP-011..016) ---
+            run_index_str = str(run_idx).zfill(pad)
+            file_name = f"{device_id}_{safe_tool_name}_{run_index_str}_{timestamp_utc}.txt"
+            file_path = output_dir / file_name
+            file_path_str: Optional[str] = None
+
+            file_payload = {
+                "device_id": device_id,
+                "target_tool": namespaced,
+                "tool_name": tool_name,
+                "tool_arguments": tool_arguments,
+                "run_index": run_idx,
+                "repeat_count": repeat_count,
+                "interval_ms": interval_ms,
+                "timestamp_utc": timestamp_iso,
+                "duration_ms": duration_ms,
+                "success": run_success,
+                "result": result_payload,
+                "error": error_msg,
+            }
+            try:
+                file_path.write_text(
+                    json.dumps(file_payload, indent=2, default=str),
+                    encoding="utf-8",
+                )
+                file_path_str = str(file_path)
+                written_files.append(file_path)
+                logger_internal.info(f"Run file written: {file_path}")
+            except Exception as write_exc:
+                logger_internal.warning(
+                    f"Failed to write run file: {file_path} — {write_exc}"
+                )
+
+            runs.append(
+                RepeatedExecRunResult(
+                    run_index=run_idx,
+                    timestamp_utc=timestamp_iso,
+                    duration_ms=duration_ms,
+                    success=run_success,
+                    result=result_payload,
+                    error=error_msg,
+                    file_path=file_path_str,
+                )
+            )
+
+            # Interval sleep between runs — not after the last run (FR-REP-010)
+            if run_idx < repeat_count and interval_ms > 0:
+                await asyncio.sleep(interval_ms / 1000.0)
+
+        total_duration_ms = int((time.time() - seq_start) * 1000)
+        success_count = sum(1 for r in runs if r.success)
+        failure_count = repeat_count - success_count
+
+        logger_internal.info(
+            f"Repeated exec complete: {repeat_count} runs, "
+            f"{success_count} success, {failure_count} failed, "
+            f"total={total_duration_ms / 1000:.1f}s"
+        )
+
+        summary = RepeatedExecSummary(
+            device_id=device_id,
+            target_tool=namespaced,
+            tool_name=tool_name,
+            tool_arguments=tool_arguments,
+            repeat_count=repeat_count,
+            interval_ms=interval_ms,
+            output_dir=str(output_dir),
+            runs=runs,
+            total_duration_ms=total_duration_ms,
+            success_count=success_count,
+            failure_count=failure_count,
+        )
+
+        return summary, written_files
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_name(value: str) -> str:
+        """Sanitise a string for use in a file name (NFR-REP-006).
+
+        Strips path-traversal characters, replaces spaces and remaining
+        non-alphanumeric chars with underscores, and collapses runs.
+        """
+        # Remove any path-separator or traversal sequences
+        value = re.sub(r'[\\/]+', '_', value)
+        value = re.sub(r'\.\.\.?', '_', value)
+        # Replace spaces
+        value = value.replace(' ', '_')
+        # Strip any remaining unsafe chars
+        value = re.sub(r'[^A-Za-z0-9_\-]', '_', value)
+        # Collapse repeated underscores
+        value = re.sub(r'_+', '_', value).strip('_')
+        return value or "unknown"
+
     def get_all_tools(self) -> List[ToolSchema]:
         """Get all discovered tools"""
         return list(self.tools.values())
@@ -307,11 +550,12 @@ class MCPManager:
     def get_tools_for_llm(self) -> List[Dict[str, Any]]:
         """
         Get tools in OpenAI function calling format for LLM.
-        
-        Returns list of tool definitions suitable for LLM providers.
+
+        Appends the client-side virtual tool `mcp_repeated_exec` so the LLM
+        can request repeated execution of any registered tool.
         """
         tools = []
-        
+
         for tool in self.tools.values():
             tools.append({
                 "type": "function",
@@ -321,7 +565,10 @@ class MCPManager:
                     "parameters": tool.parameters
                 }
             })
-        
+
+        # Always inject the virtual repeated-exec tool (intercepted in main.py)
+        tools.append(VIRTUAL_REPEATED_EXEC_TOOL)
+
         return tools
     
     def _build_headers(self, server: ServerConfig) -> Dict[str, str]:

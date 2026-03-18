@@ -385,6 +385,88 @@ class ChatMessage(BaseModel):
     )
 
 
+class RepeatedExecRunResult(BaseModel):
+    """Result of a single run within a repeated tool execution sequence."""
+
+    run_index: int = Field(
+        ...,
+        description="1-based index of this run within the sequence"
+    )
+    timestamp_utc: str = Field(
+        ...,
+        description="ISO 8601 compact UTC timestamp when this run started (YYYYMMDDTHHmmssZ)"
+    )
+    duration_ms: int = Field(
+        ...,
+        description="Wall-clock duration of this run in milliseconds"
+    )
+    success: bool = Field(
+        ...,
+        description="Whether this run completed without error"
+    )
+    result: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Tool result payload (None on failure)"
+    )
+    error: Optional[str] = Field(
+        None,
+        description="Error message (None on success)"
+    )
+    file_path: Optional[str] = Field(
+        None,
+        description="Path of the run output file written to disk (None if file write failed)"
+    )
+
+
+class RepeatedExecSummary(BaseModel):
+    """Aggregated result of a full repeated tool execution sequence."""
+
+    device_id: str = Field(
+        ...,
+        description="Device identifier used as file name prefix"
+    )
+    target_tool: str = Field(
+        ...,
+        description="Namespaced MCP tool ID that was repeated (server_alias__tool_name)"
+    )
+    tool_name: str = Field(
+        ...,
+        description="Bare tool name without server alias prefix"
+    )
+    tool_arguments: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Arguments passed to the target tool on every run"
+    )
+    repeat_count: int = Field(
+        ...,
+        description="Total number of runs requested"
+    )
+    interval_ms: int = Field(
+        ...,
+        description="Configured interval between runs in milliseconds"
+    )
+    output_dir: str = Field(
+        ...,
+        description="Directory where per-run files were written"
+    )
+    runs: List["RepeatedExecRunResult"] = Field(
+        default_factory=list,
+        description="Per-run results in execution order"
+    )
+    total_duration_ms: int = Field(
+        ...,
+        description="Total wall-clock duration covering all runs and intervals in milliseconds"
+    )
+    success_count: int = Field(
+        ...,
+        description="Number of runs that completed successfully"
+    )
+    failure_count: int = Field(
+        ...,
+        description="Number of runs that failed"
+    )
+
+
 class ExecutionHintsSampling(BaseModel):
     """Sampling sub-object within executionHints"""
 

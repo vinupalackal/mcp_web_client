@@ -44,6 +44,7 @@ from backend.models import (
     DeleteResponse,
     ErrorResponse,
     HealthResponse,
+    RepeatedExecSummary,
 )
 
 # Load environment variables from .env file
@@ -1225,6 +1226,212 @@ Always aim to make technical information accessible and actionable."""
                         session_manager.add_message(session_id, tool_msg_obj)
                         continue
                     
+                    # ---------------------------------------------------------
+                    # mcp_repeated_exec intercept (virtual client-side tool)
+                    # Must be checked BEFORE the __-split guard below.
+                    # ---------------------------------------------------------
+                    if namespaced_tool_name == "mcp_repeated_exec":
+                        logger_internal.info("Intercepted mcp_repeated_exec virtual tool call")
+
+                        # --- Parameter validation (FR-REP-001..005) ---
+                        target_tool = arguments.get("target_tool", "") if isinstance(arguments, dict) else ""
+                        repeat_count_raw = arguments.get("repeat_count") if isinstance(arguments, dict) else None
+                        interval_ms_raw = arguments.get("interval_ms") if isinstance(arguments, dict) else None
+                        tool_arguments_raw = arguments.get("tool_arguments", {}) if isinstance(arguments, dict) else {}
+                        if not isinstance(tool_arguments_raw, dict):
+                            tool_arguments_raw = {}
+
+                        validation_error: Optional[str] = None
+
+                        if repeat_count_raw is None or interval_ms_raw is None:
+                            validation_error = (
+                                "`mcp_repeated_exec` requires both `repeat_count` (integer 1\u201310) "
+                                "and `interval_ms` (integer \u2265 0). "
+                                "Please ask the user to re-send the request with both values specified."
+                            )
+                        elif not isinstance(repeat_count_raw, int) or not isinstance(interval_ms_raw, int):
+                            validation_error = (
+                                "`mcp_repeated_exec` requires both `repeat_count` (integer 1\u201310) "
+                                "and `interval_ms` (integer \u2265 0). "
+                                "Please ask the user to re-send the request with both values specified."
+                            )
+                        elif repeat_count_raw < 1 or repeat_count_raw > 10:
+                            validation_error = (
+                                f"`repeat_count` must be between 1 and 10. "
+                                f"Value `{repeat_count_raw}` is not allowed."
+                            )
+                        elif interval_ms_raw < 0:
+                            validation_error = (
+                                "`interval_ms` must be a non-negative integer (\u2265 0)."
+                            )
+                        elif not target_tool or target_tool not in mcp_manager.tools:
+                            validation_error = (
+                                f"Target tool `{target_tool}` is not registered. "
+                                "Please refresh tools and try again."
+                            )
+
+                        if validation_error:
+                            logger_internal.warning(
+                                f"mcp_repeated_exec: validation failed \u2014 {validation_error}"
+                            )
+                            result_content = validation_error
+
+                            tool_result_msg = llm_client.format_tool_result(
+                                tool_call_id=tool_id,
+                                content=result_content
+                            )
+                            messages_for_llm.append(tool_result_msg)
+                            tool_msg_obj = ChatMessage(role="tool", content=result_content)
+                            if "tool_call_id" in tool_result_msg:
+                                tool_msg_obj.tool_call_id = tool_result_msg["tool_call_id"]
+                            session_manager.add_message(session_id, tool_msg_obj)
+                            continue
+
+                        # --- Resolve server for target tool ---
+                        repeat_count: int = repeat_count_raw
+                        interval_ms: int = interval_ms_raw
+                        target_server_alias = target_tool.split("__", 1)[0]
+                        target_tool_name = target_tool.split("__", 1)[1]
+                        target_server = next(
+                            (s for s in servers_storage.values() if s.alias == target_server_alias),
+                            None
+                        )
+                        if not target_server:
+                            validation_error = (
+                                f"Server `{target_server_alias}` for tool `{target_tool}` "
+                                "is not registered. Please check your server configuration."
+                            )
+                            logger_internal.warning(f"mcp_repeated_exec: {validation_error}")
+                            result_content = validation_error
+                            tool_result_msg = llm_client.format_tool_result(
+                                tool_call_id=tool_id, content=result_content
+                            )
+                            messages_for_llm.append(tool_result_msg)
+                            tool_msg_obj = ChatMessage(role="tool", content=result_content)
+                            if "tool_call_id" in tool_result_msg:
+                                tool_msg_obj.tool_call_id = tool_result_msg["tool_call_id"]
+                            session_manager.add_message(session_id, tool_msg_obj)
+                            continue
+
+                        target_hints = mcp_manager.tools[target_tool].execution_hints
+
+                        # --- Execute repeated runs ---
+                        import time as _time
+                        rep_start = _time.time()
+                        summary: RepeatedExecSummary
+                        written_files: list
+                        summary, written_files = await mcp_manager.execute_repeated(
+                            server=target_server,
+                            tool_name=target_tool_name,
+                            tool_arguments=tool_arguments_raw,
+                            repeat_count=repeat_count,
+                            interval_ms=interval_ms,
+                            execution_hints=target_hints,
+                        )
+                        rep_duration_ms = int((_time.time() - rep_start) * 1000)
+
+                        # --- Build synthesis prompt (FR-REP-018/019/020) ---
+                        max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "12000"))
+                        header = (
+                            f"Repeated execution of `{target_tool_name}` complete.\n"
+                            f"Runs: {repeat_count} | "
+                            f"Interval: {interval_ms / 1000:.1f}s | "
+                            f"Successful: {summary.success_count} | "
+                            f"Failed: {summary.failure_count}\n"
+                            "Intermediate files written and deleted after aggregation.\n\n"
+                        )
+                        instruction = (
+                            f"\nPlease analyse trends, anomalies, and changes across these "
+                            f"{repeat_count} runs. Identify patterns, note any failed runs, "
+                            "and provide a diagnostic conclusion."
+                        )
+
+                        # Budget chars for run blocks (header + instruction are protected)
+                        reserved = len(header) + len(instruction)
+                        budget_for_runs = max(0, max_chars - reserved)
+
+                        run_blocks = []
+                        for run in summary.runs:
+                            status = "SUCCESS" if run.success else "FAILED"
+                            result_str = json.dumps(run.result, default=str) if run.result else ""
+                            err_str = run.error or ""
+                            block = (
+                                f"--- Run {run.run_index} ({run.timestamp_utc}, "
+                                f"{run.duration_ms / 1000:.1f}s, {status}) ---\n"
+                                + (result_str if run.success else f"Error: {err_str}")
+                                + "\n\n"
+                            )
+                            run_blocks.append(block)
+
+                        # Truncate run blocks proportionally if needed
+                        total_run_chars = sum(len(b) for b in run_blocks)
+                        if total_run_chars > budget_for_runs and run_blocks:
+                            ratio = budget_for_runs / total_run_chars
+                            run_blocks = [
+                                b[: max(80, int(len(b) * ratio))] + "... [truncated]\n\n"
+                                for b in run_blocks
+                            ]
+                            logger_internal.info(
+                                f"Synthesis prompt truncated: "
+                                f"{total_run_chars} -> ~{budget_for_runs} chars "
+                                f"(limit {max_chars})"
+                            )
+                        else:
+                            logger_internal.info(
+                                f"Synthesis prompt: "
+                                f"{total_run_chars + reserved} chars (limit {max_chars}), "
+                                "no truncation needed"
+                            )
+
+                        result_content = header + "".join(run_blocks) + instruction
+
+                        # --- Delete run files (FR-REP-017) ---
+                        for fpath in written_files:
+                            try:
+                                fpath.unlink()
+                                logger_internal.info(f"Run file deleted: {fpath}")
+                            except Exception as del_exc:
+                                logger_internal.warning(
+                                    f"Failed to delete run file: {fpath} \u2014 {del_exc}"
+                                )
+
+                        # --- Track in tool_executions & session trace (FR-REP-021) ---
+                        tool_executions.append({
+                            "tool": "mcp_repeated_exec",
+                            "arguments": arguments,
+                            "result": summary.model_dump(),
+                            "success": summary.success_count > 0,
+                            "duration_ms": rep_duration_ms,
+                        })
+                        session_manager.add_tool_trace(
+                            session_id=session_id,
+                            tool_name="mcp_repeated_exec",
+                            arguments=arguments,
+                            result=summary.model_dump(),
+                            success=summary.success_count > 0,
+                        )
+
+                        # --- Inject synthesis as tool result message ---
+                        tool_result_msg = llm_client.format_tool_result(
+                            tool_call_id=tool_id,
+                            content=result_content
+                        )
+                        logger_internal.info(
+                            "mcp_repeated_exec synthesis injected: "
+                            f"{len(result_content)} chars, "
+                            f"{repeat_count} runs, "
+                            f"{summary.success_count} success / {summary.failure_count} failed"
+                        )
+                        messages_for_llm.append(tool_result_msg)
+                        tool_msg_obj = ChatMessage(role="tool", content=result_content)
+                        if "tool_call_id" in tool_result_msg:
+                            tool_msg_obj.tool_call_id = tool_result_msg["tool_call_id"]
+                        session_manager.add_message(session_id, tool_msg_obj)
+                        continue
+                    # ---------------------------------------------------------
+                    # END mcp_repeated_exec intercept
+                    # ---------------------------------------------------------
+
                     # Parse namespaced tool name (server_alias__tool_name)
                     if not namespaced_tool_name or "__" not in namespaced_tool_name:
                         logger_internal.error(f"Invalid tool name format: {namespaced_tool_name}")

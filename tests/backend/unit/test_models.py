@@ -16,6 +16,10 @@ from backend.models import (
     EnterpriseTokenRequest,
     EnterpriseTokenResponse,
     EnterpriseTokenStatusResponse,
+    ExecutionHints,
+    ExecutionHintsSampling,
+    RepeatedExecRunResult,
+    RepeatedExecSummary,
 )
 
 
@@ -449,3 +453,235 @@ class TestEnterpriseTokenStatusResponse:
         assert status.token_cached is True
         assert status.cached_at == ts
         assert status.expires_in == 3600
+
+
+# ============================================================================
+# TR-MODEL-8: ExecutionHints + ExecutionHintsSampling
+# ============================================================================
+
+class TestExecutionHints:
+
+    def test_fully_populated_hints(self):
+        """TC-MODEL-26: All fields parse correctly."""
+        hints = ExecutionHints(
+            defaultTimeoutMs=30000,
+            maxTimeoutMs=120000,
+            estimatedRuntimeMs=11000,
+            clientWaitMarginMs=5000,
+            mode="sampling",
+            sampling=ExecutionHintsSampling(
+                defaultSampleCount=6,
+                defaultIntervalMs=2000,
+            ),
+        )
+        assert hints.mode == "sampling"
+        assert hints.sampling.defaultSampleCount == 6
+        assert hints.sampling.defaultIntervalMs == 2000
+
+    def test_all_fields_optional_except_sampling_count(self):
+        """TC-MODEL-27: ExecutionHints with no fields except mode=oneShot is valid."""
+        hints = ExecutionHints(mode="oneShot")
+        assert hints.defaultTimeoutMs is None
+        assert hints.sampling is None
+
+    def test_recommended_wait_ms_full(self):
+        """TC-MODEL-28: recommended_wait_ms = max(default,estimated) + margin."""
+        hints = ExecutionHints(
+            defaultTimeoutMs=30000,
+            estimatedRuntimeMs=11000,
+            clientWaitMarginMs=5000,
+        )
+        # max(30000, 11000) + 5000 = 35000
+        assert hints.recommended_wait_ms() == 35000
+
+    def test_recommended_wait_ms_estimated_wins(self):
+        """TC-MODEL-29: estimated > default → estimated used as base."""
+        hints = ExecutionHints(
+            defaultTimeoutMs=10000,
+            estimatedRuntimeMs=50000,
+            clientWaitMarginMs=2000,
+        )
+        assert hints.recommended_wait_ms() == 52000
+
+    def test_recommended_wait_ms_all_none(self):
+        """TC-MODEL-30: All fields absent → recommended_wait_ms() returns 0."""
+        hints = ExecutionHints()
+        assert hints.recommended_wait_ms() == 0
+
+    def test_recommended_wait_ms_no_margin(self):
+        """TC-MODEL-31: Missing clientWaitMarginMs treated as 0."""
+        hints = ExecutionHints(defaultTimeoutMs=20000, estimatedRuntimeMs=5000)
+        assert hints.recommended_wait_ms() == 20000
+
+    def test_unknown_fields_ignored(self):
+        """TC-MODEL-32: Unknown fields inside executionHints are silently ignored (CR-EXEC-003)."""
+        hints = ExecutionHints.model_validate({
+            "defaultTimeoutMs": 30000,
+            "unknownFutureField": "value",
+            "anotherUnknown": {"nested": True},
+        })
+        assert hints.defaultTimeoutMs == 30000
+        assert not hasattr(hints, "unknownFutureField")
+
+    def test_mode_invalid_value_rejected(self):
+        """TC-MODEL-33: mode must be 'sampling' or 'oneShot'."""
+        with pytest.raises(ValidationError):
+            ExecutionHints(mode="streaming")
+
+    def test_sampling_default_interval_ms_optional(self):
+        """TC-MODEL-34: defaultIntervalMs absent for oneShot tools is valid."""
+        s = ExecutionHintsSampling(defaultSampleCount=1)
+        assert s.defaultIntervalMs is None
+
+    def test_tool_schema_with_hints(self):
+        """TC-MODEL-35: ToolSchema accepts execution_hints without error."""
+        tool = ToolSchema(
+            namespaced_id="debug__proc_cpu_spin_diagnose",
+            server_alias="debug",
+            name="proc_cpu_spin_diagnose",
+            description="Detect CPU spin",
+            execution_hints=ExecutionHints(
+                defaultTimeoutMs=30000,
+                estimatedRuntimeMs=11000,
+                clientWaitMarginMs=5000,
+                mode="sampling",
+            ),
+        )
+        assert tool.execution_hints.mode == "sampling"
+        assert tool.execution_hints.recommended_wait_ms() == 35000
+
+    def test_tool_schema_without_hints_still_valid(self):
+        """TC-MODEL-36: ToolSchema with no execution_hints is fully backward-compatible."""
+        tool = ToolSchema(
+            namespaced_id="weather__get_weather",
+            server_alias="weather",
+            name="get_weather",
+            description="Get weather",
+        )
+        assert tool.execution_hints is None
+
+
+# ============================================================================
+# TR-MODEL-9: RepeatedExecRunResult
+# ============================================================================
+
+class TestRepeatedExecRunResult:
+
+    def test_successful_run(self):
+        """TC-MODEL-37: Successful run stores result and no error."""
+        r = RepeatedExecRunResult(
+            run_index=1,
+            timestamp_utc="2026-03-17T14:32:01Z",
+            duration_ms=11432,
+            success=True,
+            result={"threads": []},
+            error=None,
+            file_path="/tmp/run1.txt",
+        )
+        assert r.success is True
+        assert r.result == {"threads": []}
+        assert r.error is None
+        assert r.file_path == "/tmp/run1.txt"
+
+    def test_failed_run(self):
+        """TC-MODEL-38: Failed run stores error and null result."""
+        r = RepeatedExecRunResult(
+            run_index=2,
+            timestamp_utc="2026-03-17T14:32:13Z",
+            duration_ms=100,
+            success=False,
+            result=None,
+            error="Timeout executing proc_cpu_spin_diagnose",
+            file_path=None,
+        )
+        assert r.success is False
+        assert r.result is None
+        assert "Timeout" in r.error
+        assert r.file_path is None
+
+    def test_run_index_required(self):
+        """TC-MODEL-39: Missing run_index raises ValidationError."""
+        with pytest.raises(ValidationError):
+            RepeatedExecRunResult(
+                timestamp_utc="2026-03-17T14:32:01Z",
+                duration_ms=1000,
+                success=True,
+            )
+
+    def test_serialises_to_dict(self):
+        """TC-MODEL-40: model_dump() returns expected keys for file persistence."""
+        r = RepeatedExecRunResult(
+            run_index=1, timestamp_utc="2026-03-17T14:32:01Z",
+            duration_ms=5000, success=True, result={"x": 1},
+            error=None, file_path="/tmp/f.txt",
+        )
+        d = r.model_dump()
+        for key in ("run_index", "timestamp_utc", "duration_ms",
+                    "success", "result", "error", "file_path"):
+            assert key in d
+
+
+# ============================================================================
+# TR-MODEL-10: RepeatedExecSummary
+# ============================================================================
+
+class TestRepeatedExecSummary:
+
+    def _run(self, idx, success=True):
+        return RepeatedExecRunResult(
+            run_index=idx,
+            timestamp_utc="2026-03-17T14:32:01Z",
+            duration_ms=1000,
+            success=success,
+            result={"ok": True} if success else None,
+            error=None if success else "err",
+            file_path=None,
+        )
+
+    def test_summary_counts(self):
+        """TC-MODEL-41: success_count and failure_count reflect run outcomes."""
+        runs = [self._run(1, True), self._run(2, False), self._run(3, True)]
+        s = RepeatedExecSummary(
+            device_id="host", target_tool="srv__tool", tool_name="tool",
+            tool_arguments={}, repeat_count=3, interval_ms=1000,
+            output_dir="data/runs", runs=runs,
+            total_duration_ms=5000, success_count=2, failure_count=1,
+        )
+        assert s.success_count == 2
+        assert s.failure_count == 1
+
+    def test_summary_runs_ordered(self):
+        """TC-MODEL-42: runs list preserves insertion order."""
+        runs = [self._run(i) for i in range(1, 6)]
+        s = RepeatedExecSummary(
+            device_id="host", target_tool="srv__tool", tool_name="tool",
+            tool_arguments={}, repeat_count=5, interval_ms=500,
+            output_dir="data/runs", runs=runs,
+            total_duration_ms=10000, success_count=5, failure_count=0,
+        )
+        assert [r.run_index for r in s.runs] == [1, 2, 3, 4, 5]
+
+    def test_summary_serialises_to_json(self):
+        """TC-MODEL-43: model_dump() produces JSON-serialisable structure for session trace."""
+        import json
+        runs = [self._run(1)]
+        s = RepeatedExecSummary(
+            device_id="host", target_tool="srv__t", tool_name="t",
+            tool_arguments={}, repeat_count=1, interval_ms=0,
+            output_dir="data/runs", runs=runs,
+            total_duration_ms=1000, success_count=1, failure_count=0,
+        )
+        dumped = s.model_dump()
+        # Should round-trip through json without error
+        json.dumps(dumped, default=str)
+
+    def test_empty_runs_list(self):
+        """TC-MODEL-44: Summary with no runs is valid (edge case: all skipped)."""
+        s = RepeatedExecSummary(
+            device_id="host", target_tool="srv__t", tool_name="t",
+            tool_arguments={}, repeat_count=0, interval_ms=0,
+            output_dir="data/runs", runs=[],
+            total_duration_ms=0, success_count=0, failure_count=0,
+        )
+        assert s.runs == []
+        assert s.success_count == 0
