@@ -21,4 +21,11 @@ beforeEach(() => {
     global._localStorageMock.removeItem.mockImplementation(() => {});
     global._localStorageMock.clear.mockImplementation(() => {});
   }
+
+  if (global._sessionStorageMock) {
+    global._sessionStorageMock.getItem.mockImplementation(() => null);
+    global._sessionStorageMock.setItem.mockImplementation(() => {});
+    global._sessionStorageMock.removeItem.mockImplementation(() => {});
+    global._sessionStorageMock.clear.mockImplementation(() => {});
+  }
 });

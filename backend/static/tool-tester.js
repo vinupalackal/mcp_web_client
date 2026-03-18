@@ -2,6 +2,8 @@ console.log('🧪 Tool tester initializing...');
 
 const TOOL_TEST_PROMPTS_ENDPOINT = '/api/tools/test-prompts';
 const CHAT_PREFERENCE_STORAGE_KEY = 'includeHistory';
+const TOOL_TEST_DEVICE_IDENTIFIER_STORAGE_KEY = 'toolTesterDeviceIdentifier';
+const TOOL_TEST_DEVICE_IDENTIFIER_DEFAULT_TYPE = 'ip';
 
 let currentSessionId = null;
 let isProcessing = false;
@@ -14,6 +16,8 @@ const testAllBtn = document.getElementById('toolTesterTestAllBtn');
 const newSessionBtn = document.getElementById('toolTesterNewSessionBtn');
 const clearResultsBtn = document.getElementById('toolTesterClearResultsBtn');
 const searchInput = document.getElementById('toolTesterSearchInput');
+const deviceIdentifierTypeSelect = document.getElementById('toolTesterDeviceIdentifierType');
+const deviceIdentifierValueInput = document.getElementById('toolTesterDeviceIdentifierValue');
 const statusEl = document.getElementById('toolTesterStatus');
 const toolsListEl = document.getElementById('toolTesterToolsList');
 const resultsEl = document.getElementById('toolTesterResults');
@@ -33,8 +37,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     clearResultsBtn?.addEventListener('click', clearResults);
     searchInput?.addEventListener('input', renderToolsList);
+    deviceIdentifierTypeSelect?.addEventListener('change', handleDeviceIdentifierTypeChange);
+    deviceIdentifierValueInput?.addEventListener('input', handleDeviceIdentifierValueInput);
 
     startClock();
+    restoreDeviceIdentifierSelection();
     loadToolsAndPrompts();
 });
 
@@ -71,6 +78,89 @@ function setStatus(message, tone = 'neutral') {
 function getPromptForTool(tool) {
     if (!tool) return '';
     return promptExamples.get(tool.name) || promptExamples.get(tool.namespaced_id) || '';
+}
+
+function getDecoratedPromptForTool(tool) {
+    const prompt = getPromptForTool(tool);
+    if (!prompt) return '';
+
+    const deviceContext = getSelectedDeviceIdentifierContext();
+    if (!deviceContext) {
+        return prompt;
+    }
+
+    return `${prompt} Focus on the device with ${deviceContext.label} ${deviceContext.value}.`;
+}
+
+function getSelectedDeviceIdentifierContext() {
+    const identifierType = deviceIdentifierTypeSelect?.value || '';
+    const identifierValue = (deviceIdentifierValueInput?.value || '').trim();
+
+    if (!identifierValue) {
+        return null;
+    }
+
+    return {
+        type: identifierType,
+        label: identifierType === 'mac'
+            ? 'MAC address'
+            : identifierType === 'ip'
+                ? 'IP address'
+                : 'device information',
+        value: identifierValue,
+    };
+}
+
+function restoreDeviceIdentifierSelection() {
+    const rawValue = sessionStorage.getItem(TOOL_TEST_DEVICE_IDENTIFIER_STORAGE_KEY);
+    if (rawValue) {
+        try {
+            const parsedValue = JSON.parse(rawValue);
+            if (deviceIdentifierTypeSelect && typeof parsedValue?.type === 'string' && parsedValue.type) {
+                deviceIdentifierTypeSelect.value = parsedValue.type;
+            }
+            if (deviceIdentifierValueInput && typeof parsedValue?.value === 'string') {
+                deviceIdentifierValueInput.value = parsedValue.value;
+            }
+        } catch (error) {
+            console.warn('🧪 Failed to restore tool tester device identifier', error);
+        }
+    }
+
+    if (deviceIdentifierTypeSelect && !deviceIdentifierTypeSelect.value) {
+        deviceIdentifierTypeSelect.value = TOOL_TEST_DEVICE_IDENTIFIER_DEFAULT_TYPE;
+    }
+
+    syncDeviceIdentifierControls();
+}
+
+function persistDeviceIdentifierSelection() {
+    sessionStorage.setItem(TOOL_TEST_DEVICE_IDENTIFIER_STORAGE_KEY, JSON.stringify({
+        type: deviceIdentifierTypeSelect?.value || '',
+        value: deviceIdentifierValueInput?.value || '',
+    }));
+}
+
+function syncDeviceIdentifierControls() {
+    if (!deviceIdentifierTypeSelect || !deviceIdentifierValueInput) return;
+
+    const identifierType = deviceIdentifierTypeSelect.value;
+    const hasIdentifierType = Boolean(identifierType);
+
+    deviceIdentifierValueInput.placeholder = hasIdentifierType
+        ? `Enter device ${identifierType === 'mac' ? 'MAC address' : 'IP address'}`
+        : 'Enter device IP address or MAC address';
+}
+
+function handleDeviceIdentifierTypeChange() {
+    syncDeviceIdentifierControls();
+    persistDeviceIdentifierSelection();
+    renderToolsList();
+}
+
+function handleDeviceIdentifierValueInput() {
+    persistDeviceIdentifierSelection();
+    renderToolsList();
 }
 
 function getTestableTools() {
@@ -185,8 +275,9 @@ function renderToolsList() {
             </header>
             <div class="tool-tester-server-tools">
                 ${serverTools.map((tool) => {
-                    const prompt = getPromptForTool(tool);
-                    const hasPrompt = Boolean(prompt);
+                    const basePrompt = getPromptForTool(tool);
+                    const prompt = getDecoratedPromptForTool(tool);
+                    const hasPrompt = Boolean(basePrompt);
                     const params = tool.parameters?.properties ? Object.keys(tool.parameters.properties) : [];
                     return `
                         <article class="tool-tester-card">
@@ -304,7 +395,7 @@ async function sendPrompt(prompt) {
 }
 
 async function runToolTest(tool) {
-    const prompt = getPromptForTool(tool);
+    const prompt = getDecoratedPromptForTool(tool);
     if (!prompt) {
         appendErrorResult(`No usage example found for ${tool.name}.`);
         return false;

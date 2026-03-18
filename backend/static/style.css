@@ -2360,6 +2360,14 @@ body:has(.tool-tester-page) {
     flex: 1;
 }
 
+.tool-tester-field-label {
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
 .tool-tester-layout {
     display: grid;
     grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);

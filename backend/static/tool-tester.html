@@ -42,6 +42,17 @@
                     <input type="text" id="toolTesterSearchInput" class="tool-search-input" placeholder="🔍 Search tools, servers, or descriptions...">
                     <button id="toolTesterNewSessionBtn" class="btn btn-secondary">➕ New Test Session</button>
                 </div>
+                <div class="tool-tester-toolbar-row">
+                    <label for="toolTesterDeviceIdentifierType" class="tool-tester-field-label">Device Information</label>
+                </div>
+                <div class="tool-tester-toolbar-row">
+                    <select id="toolTesterDeviceIdentifierType" class="tool-search-input" aria-label="Device identifier type">
+                        <option value="">No device identifier</option>
+                        <option value="ip" selected>IP address</option>
+                        <option value="mac">MAC address</option>
+                    </select>
+                    <input type="text" id="toolTesterDeviceIdentifierValue" class="tool-search-input" placeholder="Enter device IP address or MAC address" aria-label="Device identifier value">
+                </div>
                 <div id="toolTesterStatus" class="tool-test-status">Loading tools and prompt examples…</div>
             </section>
 
@@ -68,6 +79,6 @@
         </main>
     </div>
 
-    <script src="/static/tool-tester.js?v=1"></script>
+    <script src="/static/tool-tester.js?v=2"></script>
 </body>
 </html>

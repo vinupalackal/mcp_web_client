@@ -44,6 +44,14 @@ function setupToolTesterDOM() {
             <input type="text" id="toolTesterSearchInput" class="tool-search-input">
             <button id="toolTesterNewSessionBtn" class="btn btn-secondary">➕ New Test Session</button>
           </div>
+          <div class="tool-tester-toolbar-row">
+            <select id="toolTesterDeviceIdentifierType" class="tool-search-input">
+              <option value="">No device identifier</option>
+              <option value="ip" selected>IP address</option>
+              <option value="mac">MAC address</option>
+            </select>
+            <input type="text" id="toolTesterDeviceIdentifierValue" class="tool-search-input">
+          </div>
           <div id="toolTesterStatus">Loading tools and prompt examples…</div>
         </section>
 
@@ -213,6 +221,8 @@ describe('Tool Tester Page — DOM structure', () => {
     expect(document.getElementById('toolTesterNewSessionBtn')).not.toBeNull();
     expect(document.getElementById('toolTesterClearResultsBtn')).not.toBeNull();
     expect(document.getElementById('toolTesterSearchInput')).not.toBeNull();
+    expect(document.getElementById('toolTesterDeviceIdentifierType')).not.toBeNull();
+    expect(document.getElementById('toolTesterDeviceIdentifierValue')).not.toBeNull();
   });
 
   test('Test All button is initially disabled', () => {
@@ -349,6 +359,56 @@ describe('Tool Tester Page — tool loading', () => {
     expect(toolsList.innerHTML).toContain('What version is the MCP server');
     expect(toolsList.innerHTML).toContain('How long has this device been running');
   });
+
+  test('device identifier defaults to IP address', async () => {
+    await flushPromises(30);
+
+    const typeSelect = document.getElementById('toolTesterDeviceIdentifierType');
+    expect(typeSelect.value).toBe('ip');
+  });
+
+  test('prompt text includes selected device IP address', async () => {
+    await flushPromises(30);
+
+    const typeSelect = document.getElementById('toolTesterDeviceIdentifierType');
+    const valueInput = document.getElementById('toolTesterDeviceIdentifierValue');
+    typeSelect.value = 'ip';
+    typeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    valueInput.value = '192.168.1.10';
+    valueInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await flushPromises(5);
+
+    const toolsList = document.getElementById('toolTesterToolsList');
+    expect(toolsList.innerHTML).toContain('IP address 192.168.1.10');
+  });
+
+  test('prompt text includes device information value even without type selected', async () => {
+    await flushPromises(30);
+
+    const typeSelect = document.getElementById('toolTesterDeviceIdentifierType');
+    const valueInput = document.getElementById('toolTesterDeviceIdentifierValue');
+    typeSelect.value = '';
+    typeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    valueInput.value = 'router-lab-01';
+    valueInput.dispatchEvent(new Event('input', { bubbles: true }));
+    await flushPromises(5);
+
+    const toolsList = document.getElementById('toolTesterToolsList');
+    expect(toolsList.innerHTML).toContain('device information router-lab-01');
+  });
+
+  test('device information value is cached for the browser session', async () => {
+    await flushPromises(30);
+
+    const valueInput = document.getElementById('toolTesterDeviceIdentifierValue');
+    valueInput.value = '10.0.0.25';
+    valueInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    expect(sessionStorage.setItem).toHaveBeenCalledWith(
+      'toolTesterDeviceIdentifier',
+      JSON.stringify({ type: 'ip', value: '10.0.0.25' })
+    );
+  });
 });
 
 describe('Tool Tester Page — search/filter', () => {
@@ -420,6 +480,52 @@ describe('Tool Tester Page — individual tool test', () => {
 
     expect(sessionCall).toBeDefined();
     expect(messageCall).toBeDefined();
+  });
+
+  test('selected MAC address is included in submitted chat prompt', async () => {
+    await flushPromises(30);
+
+    const typeSelect = document.getElementById('toolTesterDeviceIdentifierType');
+    const valueInput = document.getElementById('toolTesterDeviceIdentifierValue');
+    typeSelect.value = 'mac';
+    typeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    valueInput.value = 'AA:BB:CC:DD:EE:FF';
+    valueInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const toolsList = document.getElementById('toolTesterToolsList');
+    const testBtns = toolsList.querySelectorAll('.tool-tester-test-btn:not([disabled])');
+    testBtns[0].click();
+    await flushPromises(30);
+
+    const messageCall = global.fetch.mock.calls.find(([url, opts]) => url?.includes('/messages') && opts?.method === 'POST');
+    expect(messageCall).toBeDefined();
+
+    const [, options] = messageCall;
+    const payload = JSON.parse(options.body);
+    expect(payload.content).toContain('MAC address AA:BB:CC:DD:EE:FF');
+  });
+
+  test('device information value is included in submitted chat prompt without type selected', async () => {
+    await flushPromises(30);
+
+    const typeSelect = document.getElementById('toolTesterDeviceIdentifierType');
+    const valueInput = document.getElementById('toolTesterDeviceIdentifierValue');
+    typeSelect.value = '';
+    typeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    valueInput.value = '192.168.50.5';
+    valueInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const toolsList = document.getElementById('toolTesterToolsList');
+    const testBtns = toolsList.querySelectorAll('.tool-tester-test-btn:not([disabled])');
+    testBtns[0].click();
+    await flushPromises(30);
+
+    const messageCall = global.fetch.mock.calls.find(([url, opts]) => url?.includes('/messages') && opts?.method === 'POST');
+    expect(messageCall).toBeDefined();
+
+    const [, options] = messageCall;
+    const payload = JSON.parse(options.body);
+    expect(payload.content).toContain('device information 192.168.50.5');
   });
 
   test('result card appears in results panel after test', async () => {

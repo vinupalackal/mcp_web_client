@@ -26,6 +26,25 @@ Object.defineProperty(global, 'localStorage', {
 // Expose the mock so setup.js can reference it in beforeEach
 global._localStorageMock = localStorageMock;
 
+// ── sessionStorage mock ─────────────────────────────────────────────────────
+const sessionStorageMock = (() => {
+  let store = {};
+  return {
+    getItem: jest.fn((key) => store[key] ?? null),
+    setItem: jest.fn((key, value) => { store[key] = String(value); }),
+    removeItem: jest.fn((key) => { delete store[key]; }),
+    clear: jest.fn(() => { store = {}; }),
+    get length() { return Object.keys(store).length; },
+  };
+})();
+
+Object.defineProperty(global, 'sessionStorage', {
+  value: sessionStorageMock,
+  writable: true,
+});
+
+global._sessionStorageMock = sessionStorageMock;
+
 // ── window.confirm / alert ───────────────────────────────────────────────────
 global.confirm = jest.fn(() => true);
 global.alert = jest.fn();
