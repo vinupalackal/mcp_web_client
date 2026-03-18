@@ -41,6 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
     searchInput?.addEventListener('input', renderToolsList);
     deviceIdentifierTypeSelect?.addEventListener('change', handleDeviceIdentifierTypeChange);
     deviceIdentifierValueInput?.addEventListener('input', handleDeviceIdentifierValueInput);
+    resultsEl?.addEventListener('click', handleResultCardToggle);
 
     startClock();
     restoreDeviceIdentifierSelection();
@@ -533,7 +534,29 @@ async function syncResultsOutputFile() {
 function collapsePreviousResults() {
     resultsEl.querySelectorAll('.tool-tester-result-card').forEach((card) => {
         card.classList.add('tool-tester-result-collapsed');
+        syncResultCardToggleState(card);
     });
+}
+
+function syncResultCardToggleState(card) {
+    if (!card) return;
+    const toggleBtn = card.querySelector('.tool-tester-result-toggle');
+    if (!toggleBtn) return;
+
+    const isCollapsed = card.classList.contains('tool-tester-result-collapsed');
+    toggleBtn.textContent = isCollapsed ? 'Expand' : 'Minimize';
+    toggleBtn.setAttribute('aria-expanded', String(!isCollapsed));
+}
+
+function handleResultCardToggle(event) {
+    const toggleBtn = event.target.closest('.tool-tester-result-toggle');
+    if (!toggleBtn) return;
+
+    const card = toggleBtn.closest('.tool-tester-result-card');
+    if (!card) return;
+
+    card.classList.toggle('tool-tester-result-collapsed');
+    syncResultCardToggleState(card);
 }
 
 function removePendingResult(tool) {
@@ -546,7 +569,10 @@ function removePendingResult(tool) {
 function appendSystemResult(message) {
     prependResult(`
         <article class="tool-tester-result-card tool-tester-result-system">
-            <div class="tool-tester-result-meta">System</div>
+            <div class="tool-tester-result-header">
+                <div class="tool-tester-result-meta">System</div>
+                <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+            </div>
             <div class="tool-tester-result-body">${escapeHtml(message)}</div>
         </article>
     `);
@@ -555,7 +581,10 @@ function appendSystemResult(message) {
 function appendErrorResult(message) {
     prependResult(`
         <article class="tool-tester-result-card tool-tester-result-error">
-            <div class="tool-tester-result-meta">Error</div>
+            <div class="tool-tester-result-header">
+                <div class="tool-tester-result-meta">Error</div>
+                <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+            </div>
             <div class="tool-tester-result-body">${escapeHtml(message)}</div>
         </article>
     `);
@@ -565,7 +594,10 @@ function appendPendingResult(tool, prompt) {
     removePendingResult(tool);
     prependResult(`
         <article class="tool-tester-result-card tool-tester-result-pending" data-tool-id="${escapeHtml(tool.namespaced_id)}">
-            <div class="tool-tester-result-meta">Running ${escapeHtml(tool.name)}</div>
+            <div class="tool-tester-result-header">
+                <div class="tool-tester-result-meta">Running ${escapeHtml(tool.name)}</div>
+                <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+            </div>
             <div class="tool-tester-result-body">
                 <p><strong>Prompt</strong></p>
                 <p>${escapeHtml(prompt)}</p>
@@ -611,7 +643,10 @@ function appendResultCard(tool, prompt, data) {
 
     prependResult(`
         <article class="tool-tester-result-card">
-            <div class="tool-tester-result-meta">${escapeHtml(tool.server_alias)} · ${escapeHtml(tool.name)}</div>
+            <div class="tool-tester-result-header">
+                <div class="tool-tester-result-meta">${escapeHtml(tool.server_alias)} · ${escapeHtml(tool.name)}</div>
+                <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+            </div>
             <div class="tool-tester-result-body">
                 <p><strong>Prompt</strong></p>
                 <p>${escapeHtml(prompt)}</p>
@@ -646,5 +681,6 @@ function prependResult(html) {
     if (empty) empty.remove();
     collapsePreviousResults();
     resultsEl.insertAdjacentHTML('afterbegin', html);
+    syncResultCardToggleState(resultsEl.firstElementChild);
     syncResultsOutputFile();
 }

@@ -2453,6 +2453,21 @@ body:has(.tool-tester-page) {
     box-shadow: var(--shadow-sm);
 }
 
+.tool-tester-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 0.45rem;
+}
+
+.tool-tester-result-toggle {
+    flex-shrink: 0;
+    min-width: 5.5rem;
+    padding: 0.32rem 0.7rem;
+    font-size: 0.72rem;
+}
+
 .tool-tester-results-progress {
     margin: 0 1rem 0.75rem;
     padding: 0.8rem 0.95rem;
@@ -2493,6 +2508,10 @@ body:has(.tool-tester-page) {
     margin-bottom: 0;
 }
 
+.tool-tester-result-collapsed .tool-tester-result-header {
+    margin-bottom: 0;
+}
+
 .tool-tester-result-system {
     border-left-color: var(--success-color);
 }
@@ -2511,7 +2530,6 @@ body:has(.tool-tester-page) {
     color: var(--accent-color);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    margin-bottom: 0.45rem;
 }
 
 .tool-tester-result-body {

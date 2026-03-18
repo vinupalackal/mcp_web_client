@@ -603,6 +603,33 @@ describe('Tool Tester Page — individual tool test', () => {
     expect(cards[1].classList.contains('tool-tester-result-collapsed')).toBe(true);
   });
 
+  test('collapsed result can be expanded again manually', async () => {
+    await flushPromises(30);
+
+    const toolsList = document.getElementById('toolTesterToolsList');
+    const testBtns = toolsList.querySelectorAll('.tool-tester-test-btn:not([disabled])');
+
+    testBtns[0].click();
+    await flushPromises(30);
+    testBtns[1].click();
+    await flushPromises(10);
+
+    const results = document.getElementById('toolTesterResults');
+    const cards = results.querySelectorAll('.tool-tester-result-card');
+    const olderCard = cards[1];
+    const expandBtn = olderCard.querySelector('.tool-tester-result-toggle');
+
+    expect(olderCard.classList.contains('tool-tester-result-collapsed')).toBe(true);
+    expect(expandBtn.textContent).toContain('Expand');
+
+    expandBtn.click();
+    await flushPromises(2);
+
+    expect(olderCard.classList.contains('tool-tester-result-collapsed')).toBe(false);
+    expect(expandBtn.textContent).toContain('Minimize');
+    expect(expandBtn.getAttribute('aria-expanded')).toBe('true');
+  });
+
   test('tool execution details appear in result card', async () => {
     await flushPromises(30);
 
