@@ -2388,6 +2388,10 @@ body:has(.tool-tester-page) {
     margin-bottom: 0.9rem;
 }
 
+.tool-tester-results-panel .tool-tester-panel-header {
+    margin-bottom: 1.35rem;
+}
+
 .tool-tester-panel-header-actions {
     display: flex;
     align-items: center;
