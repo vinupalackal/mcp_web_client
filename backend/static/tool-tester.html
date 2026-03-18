@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP Tool Tester</title>
+    <link rel="stylesheet" href="/static/style.css?v=17">
+</head>
+<body>
+    <div class="tool-tester-page">
+        <header class="app-header tool-tester-header">
+            <div class="header-left">
+                <h1 class="app-title">MCP Tool Tester</h1>
+            </div>
+            <div class="header-center">
+                <div class="live-clock">
+                    <span id="clockDate"></span>
+                    <span class="clock-sep">|</span>
+                    <span id="clockTime"></span>
+                </div>
+            </div>
+            <div class="header-right">
+                <a href="/" class="btn btn-secondary">💬 Back to Chat</a>
+                <button id="toolTesterDarkModeBtn" class="btn btn-secondary" title="Switch to dark mode">🌙</button>
+            </div>
+        </header>
+
+        <main class="tool-tester-main">
+            <section class="tool-tester-hero">
+                <div>
+                    <h2>Test MCP tools with documented chat prompts</h2>
+                    <p>Each test sends the example user prompt from USAGE-EXAMPLES.md through the normal chat workflow.</p>
+                </div>
+                <div class="tool-tester-hero-actions">
+                    <button id="toolTesterRefreshBtn" class="btn btn-secondary">🔄 Refresh Tools</button>
+                    <button id="toolTesterTestAllBtn" class="btn btn-primary" disabled>🧪 Test All</button>
+                </div>
+            </section>
+
+            <section class="tool-tester-toolbar-card">
+                <div class="tool-tester-toolbar-row">
+                    <input type="text" id="toolTesterSearchInput" class="tool-search-input" placeholder="🔍 Search tools, servers, or descriptions...">
+                    <button id="toolTesterNewSessionBtn" class="btn btn-secondary">➕ New Test Session</button>
+                </div>
+                <div id="toolTesterStatus" class="tool-test-status">Loading tools and prompt examples…</div>
+            </section>
+
+            <section class="tool-tester-layout">
+                <section class="tool-tester-tools-panel">
+                    <div class="tool-tester-panel-header">
+                        <h3>Available Tools <span id="toolTesterCountBadge" class="tools-count-badge" style="display:none;"></span></h3>
+                    </div>
+                    <div id="toolTesterToolsList" class="tool-tester-tools-list">
+                        <p class="empty-state">Loading tools…</p>
+                    </div>
+                </section>
+
+                <section class="tool-tester-results-panel">
+                    <div class="tool-tester-panel-header">
+                        <h3>Test Results</h3>
+                        <button id="toolTesterClearResultsBtn" class="btn btn-secondary btn-sm">Clear</button>
+                    </div>
+                    <div id="toolTesterResults" class="tool-tester-results">
+                        <p class="empty-state">Run a tool test to see prompts, tool executions, and assistant output here.</p>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/tool-tester.js?v=1"></script>
+</body>
+</html>

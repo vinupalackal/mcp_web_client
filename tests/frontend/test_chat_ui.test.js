@@ -294,9 +294,19 @@ describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
 
   test('TC-FE-CHAT-42: loading spinner shown while tools request is pending', async () => {
     let resolveTools;
-    global.fetch = jest.fn().mockImplementation(() => new Promise((resolve) => {
-      resolveTools = resolve;
-    }));
+    global.fetch = jest.fn().mockImplementation((url) => {
+      if (url === '/api/tools') {
+        return new Promise((resolve) => {
+          resolveTools = resolve;
+        });
+      }
+
+      if (url === '/api/tools/test-prompts') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+
+      return Promise.resolve({ ok: true, json: async () => [] });
+    });
 
     const loadPromise = window.loadToolsSidebar();
 
@@ -439,6 +449,7 @@ describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
     );
     expect(toolsCalls.length).toBeGreaterThan(0);
   });
+
 });
 
 
@@ -633,5 +644,50 @@ describe('Chat UI — addMessage renders content (TC-FE-CHAT-27 to 29)', () => {
     expect(lastAssistant.querySelector('.message-content').textContent).toContain('Hello there!');
     expect(lastAssistant.querySelector('.assistant-meta-summary').textContent).toContain('Initial LLM suggestion');
     expect(lastAssistant.querySelector('.assistant-meta-body').textContent).toContain('Let me inspect that server for you.');
+  });
+
+  test('TC-FE-CHAT-30: blank final answer falls back to tool output instead of initial suggestion', async () => {
+    global.fetch.mockImplementation((url, opts) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({ provider: 'mock', model: 'm', base_url: 'http://x' }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url.includes('/api/sessions') && opts?.method === 'POST' && !url.includes('/messages')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ session_id: 'sess-1', created_at: new Date().toISOString() }),
+        });
+      }
+      if (url.includes('/messages')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            session_id: 'sess-1',
+            message: { role: 'assistant', content: '' },
+            tool_executions: [{ tool: 'svc__ping', success: true, result: 'pong' }],
+            initial_llm_response: 'Try one of these alternative queries.',
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => [] });
+    });
+
+    const input = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+
+    input.value = 'hello';
+    input.dispatchEvent(new Event('input'));
+    sendBtn.click();
+
+    await new Promise(r => setTimeout(r, 50));
+
+    const chatMessages = document.getElementById('chatMessages');
+    const assistantMessages = chatMessages.querySelectorAll('.message-wrapper.assistant');
+    const lastAssistant = assistantMessages[assistantMessages.length - 1];
+
+    expect(lastAssistant.querySelector('.message-content').textContent).toContain('svc__ping returned');
+    expect(lastAssistant.querySelector('.message-content').textContent).toContain('pong');
   });
 });

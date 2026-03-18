@@ -385,6 +385,70 @@ class ChatMessage(BaseModel):
     )
 
 
+class ExecutionHintsSampling(BaseModel):
+    """Sampling sub-object within executionHints"""
+
+    defaultSampleCount: int = Field(
+        ...,
+        description="Default number of samples collected by the tool"
+    )
+    defaultIntervalMs: Optional[int] = Field(
+        None,
+        description="Default delay between samples in milliseconds (absent for one-shot tools)"
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class ExecutionHints(BaseModel):
+    """Advisory runtime metadata published by the MCP server on proc tool entries.
+
+    Used by the client to compute appropriate wait budgets and UX messaging.
+    MUST NOT be treated as a replacement for inputSchema validation.
+    """
+
+    defaultTimeoutMs: Optional[int] = Field(
+        None,
+        description="Default server-side timeout budget (ms) when no override argument is supplied"
+    )
+    maxTimeoutMs: Optional[int] = Field(
+        None,
+        description="Maximum server-side timeout cap accepted for the tool (ms)"
+    )
+    estimatedRuntimeMs: Optional[int] = Field(
+        None,
+        description="Approximate expected runtime under default sampling behaviour (ms, advisory only)"
+    )
+    clientWaitMarginMs: Optional[int] = Field(
+        None,
+        description="Recommended extra client-side wait slack for transport and scheduling overhead (ms)"
+    )
+    mode: Optional[Literal["sampling", "oneShot"]] = Field(
+        None,
+        description="Execution pattern: 'sampling' collects multiple samples over time, 'oneShot' is a single bounded pass"
+    )
+    sampling: Optional[ExecutionHintsSampling] = Field(
+        None,
+        description="Sampling configuration details"
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+    def recommended_wait_ms(self) -> int:
+        """Compute recommended client-side MCP request wait budget (ms).
+
+        Formula (CR-EXEC-005):
+            recommendedWaitMs = max(defaultTimeoutMs, estimatedRuntimeMs) + clientWaitMarginMs
+        Falls back gracefully when individual fields are absent.
+        """
+        base = max(
+            self.defaultTimeoutMs or 0,
+            self.estimatedRuntimeMs or 0
+        )
+        margin = self.clientWaitMarginMs or 0
+        return base + margin
+
+
 class ToolSchema(BaseModel):
     """MCP tool schema with server context"""
     
@@ -407,6 +471,10 @@ class ToolSchema(BaseModel):
     parameters: Dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema for tool parameters"
+    )
+    execution_hints: Optional[ExecutionHints] = Field(
+        None,
+        description="Advisory runtime metadata from executionHints in tools/list (absent for non-proc tools)"
     )
     
     model_config = ConfigDict(
@@ -432,6 +500,49 @@ class ToolSchema(BaseModel):
                         },
                         "required": ["city"]
                     }
+                },
+                {
+                    "namespaced_id": "debug_server__proc_cpu_spin_diagnose",
+                    "server_alias": "debug_server",
+                    "name": "proc_cpu_spin_diagnose",
+                    "description": "Detect likely CPU spin threads for a process",
+                    "parameters": {"type": "object", "properties": {}},
+                    "execution_hints": {
+                        "defaultTimeoutMs": 30000,
+                        "maxTimeoutMs": 120000,
+                        "estimatedRuntimeMs": 11000,
+                        "clientWaitMarginMs": 5000,
+                        "mode": "sampling",
+                        "sampling": {
+                            "defaultSampleCount": 6,
+                            "defaultIntervalMs": 2000
+                        }
+                    }
+                }
+            ]
+        }
+    )
+
+
+class ToolTestPrompt(BaseModel):
+    """Example chat prompt used to exercise a documented MCP tool."""
+
+    tool_name: str = Field(
+        ...,
+        description="Tool name as documented in USAGE-EXAMPLES.md"
+    )
+    prompt: str = Field(
+        ...,
+        min_length=1,
+        description="User prompt example to send through chat for tool testing"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "tool_name": "server_info",
+                    "prompt": "What version is the MCP server and what capabilities does it support?"
                 }
             ]
         }

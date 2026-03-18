@@ -7,7 +7,7 @@ import logging
 import os
 import httpx
 from typing import Dict, List, Optional, Any
-from backend.models import ServerConfig, ToolSchema
+from backend.models import ServerConfig, ToolSchema, ExecutionHints
 
 logger_internal = logging.getLogger("mcp_client.internal")
 logger_external = logging.getLogger("mcp_client.external")
@@ -208,16 +208,20 @@ class MCPManager:
         self,
         server: ServerConfig,
         tool_name: str,
-        arguments: Dict[str, Any]
+        arguments: Dict[str, Any],
+        execution_hints: Optional[ExecutionHints] = None
     ) -> Dict[str, Any]:
         """
         Execute a tool on MCP server via tools/call method.
-        
+
         Args:
             server: Server configuration
             tool_name: Original tool name (not namespaced)
             arguments: Tool arguments
-        
+            execution_hints: Advisory runtime metadata from executionHints in tools/list.
+                Used to compute a per-call read timeout (CR-EXEC-005/008).
+                Does NOT affect the tool argument contract (CR-EXEC-006/013).
+
         Returns:
             Tool execution result
         """
@@ -242,12 +246,18 @@ class MCPManager:
         
         headers = self._build_headers(server)
         
+        call_timeout = self._compute_tool_timeout(execution_hints)
+
         try:
             logger_external.info(f"→ MCP Server Request: POST {rpc_url} (tools/call: {tool_name})")
             logger_internal.info(f"JSON-RPC Payload to MCP Server: {payload}")
             logger_internal.info(f"Request headers: {headers}")
-            
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            logger_internal.info(
+                f"MCP call timeout: read={call_timeout.read:.1f}s "
+                f"({'hints-derived' if execution_hints else 'global default'})"
+            )
+
+            async with httpx.AsyncClient(timeout=call_timeout) as client:
                 response = await client.post(
                     rpc_url,
                     json=payload,
@@ -330,26 +340,79 @@ class MCPManager:
     def _parse_tools(self, server_alias: str, tools_data: List[Dict]) -> List[ToolSchema]:
         """
         Parse JSON-RPC tools response into ToolSchema objects.
-        
-        Adds namespace prefix to tool names: server_alias__tool_name
+
+        Adds namespace prefix to tool names: server_alias__tool_name.
+        Parses optional executionHints into ExecutionHints model (CR-EXEC-001..004).
         """
         tools = []
-        
+
         for tool_data in tools_data:
             tool_name = tool_data.get("name", "")
             namespaced_id = f"{server_alias}__{tool_name}"
-            
+
+            # Parse executionHints — optional, tolerate absence and unknown fields
+            execution_hints: Optional[ExecutionHints] = None
+            raw_hints = tool_data.get("executionHints")
+            if raw_hints and isinstance(raw_hints, dict):
+                try:
+                    execution_hints = ExecutionHints.model_validate(raw_hints)
+                    logger_internal.debug(
+                        f"Parsed executionHints for {namespaced_id}: "
+                        f"mode={execution_hints.mode}, "
+                        f"estimatedRuntimeMs={execution_hints.estimatedRuntimeMs}, "
+                        f"recommendedWaitMs={execution_hints.recommended_wait_ms()}"
+                    )
+                except Exception as e:
+                    logger_internal.warning(
+                        f"Failed to parse executionHints for {namespaced_id}, ignoring: {e}"
+                    )
+
             tool = ToolSchema(
                 namespaced_id=namespaced_id,
                 server_alias=server_alias,
                 name=tool_name,
                 description=tool_data.get("description", ""),
-                parameters=tool_data.get("inputSchema", {})
+                parameters=tool_data.get("inputSchema", {}),
+                execution_hints=execution_hints
             )
-            
+
             tools.append(tool)
-        
+
         return tools
+
+    def _compute_tool_timeout(self, execution_hints: Optional[ExecutionHints]) -> httpx.Timeout:
+        """Build a per-call httpx.Timeout driven by executionHints.
+
+        When executionHints is present the read timeout is set to the
+        recommended client-side wait budget (CR-EXEC-005/008):
+
+            recommendedWaitMs = max(defaultTimeoutMs, estimatedRuntimeMs) + clientWaitMarginMs
+
+        The computed read timeout is always at least as large as the global
+        default so short hints never *reduce* patience.
+        The global self.timeout is never mutated.
+        """
+        if execution_hints is None:
+            return self.timeout
+
+        recommended_s = execution_hints.recommended_wait_ms() / 1000.0
+        # Never be less patient than the global default
+        read_s = max(self.timeout.read, recommended_s)
+
+        if read_s > self.timeout.read:
+            logger_internal.info(
+                f"Per-call read timeout extended to {read_s:.1f}s "
+                f"(global default {self.timeout.read:.1f}s) "
+                f"based on executionHints (mode={execution_hints.mode}, "
+                f"recommendedWaitMs={execution_hints.recommended_wait_ms()})"
+            )
+
+        return httpx.Timeout(
+            connect=self.timeout.connect,
+            read=read_s,
+            write=self.timeout.write,
+            pool=self.timeout.pool
+        )
 
 
 # Global instance

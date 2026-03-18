@@ -6,6 +6,7 @@ LibreChat-inspired interface for MCP server communication via JSON-RPC 2.0
 import logging
 import os
 import json
+import re
 import sys
 import httpx
 from pathlib import Path as PathLib
@@ -37,6 +38,7 @@ from backend.models import (
     SessionResponse,
     MessageListResponse,
     ToolSchema,
+    ToolTestPrompt,
     ToolRefreshResponse,
     ServerHealthRefreshResponse,
     DeleteResponse,
@@ -72,6 +74,62 @@ enterprise_token_cache: dict[str, object] = {}
 
 # Persistent storage directory (credentials live here, not in the browser)
 MCP_DATA_DIR = PathLib(os.getenv("MCP_DATA_DIR", "./data"))
+USAGE_EXAMPLES_PATH = PROJECT_ROOT / "USAGE-EXAMPLES.md"
+
+
+def _load_tool_test_prompts() -> List[ToolTestPrompt]:
+    """Parse documented example user prompts from USAGE-EXAMPLES.md."""
+    if not USAGE_EXAMPLES_PATH.exists():
+        logger_internal.warning("Usage examples file not found: %s", USAGE_EXAMPLES_PATH)
+        return []
+
+    try:
+        lines = USAGE_EXAMPLES_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        logger_internal.error("Failed to read usage examples file: %s", exc)
+        return []
+
+    prompts: List[ToolTestPrompt] = []
+    seen_tool_names: set[str] = set()
+    current_tool_name: Optional[str] = None
+    heading_pattern = re.compile(r"^##+\s+.*`([^`]+)`\s*$")
+
+    line_index = 0
+    while line_index < len(lines):
+        stripped_line = lines[line_index].strip()
+        heading_match = heading_pattern.match(stripped_line)
+        if heading_match:
+            current_tool_name = heading_match.group(1).strip()
+            line_index += 1
+            continue
+
+        if stripped_line == "**User prompt**" and current_tool_name:
+            prompt_start = line_index + 1
+            while prompt_start < len(lines) and not lines[prompt_start].lstrip().startswith(">"):
+                if lines[prompt_start].strip() and not lines[prompt_start].lstrip().startswith(">"):
+                    break
+                prompt_start += 1
+
+            prompt_lines: List[str] = []
+            while prompt_start < len(lines):
+                prompt_line = lines[prompt_start].lstrip()
+                if not prompt_line.startswith(">"):
+                    break
+                prompt_lines.append(prompt_line[1:].lstrip())
+                prompt_start += 1
+
+            prompt_text = "\n".join(prompt_lines).strip()
+            if prompt_text and current_tool_name not in seen_tool_names:
+                prompts.append(ToolTestPrompt(tool_name=current_tool_name, prompt=prompt_text))
+                seen_tool_names.add(current_tool_name)
+
+            current_tool_name = None
+            line_index = prompt_start
+            continue
+
+        line_index += 1
+
+    return prompts
 
 
 def _save_llm_config_to_disk(config: LLMConfig) -> None:
@@ -532,6 +590,24 @@ async def list_tools() -> List[ToolSchema]:
     tools = mcp_manager.get_all_tools()
     logger_external.info(f"← 200 OK (found {len(tools)} tools)")
     return tools
+
+
+@app.get(
+    "/api/tools/test-prompts",
+    response_model=List[ToolTestPrompt],
+    tags=["Tools"],
+    summary="List documented tool test prompts",
+    description="Get example user prompts parsed from USAGE-EXAMPLES.md for MCP tool testing via chat",
+    responses={
+        200: {"description": "List of documented tool test prompts"}
+    }
+)
+async def list_tool_test_prompts() -> List[ToolTestPrompt]:
+    """Return example chat prompts for MCP tool testing."""
+    logger_external.info("→ GET /api/tools/test-prompts")
+    prompts = _load_tool_test_prompts()
+    logger_external.info(f"← 200 OK (found {len(prompts)} prompts)")
+    return prompts
 
 
 # ============================================================================
@@ -1067,7 +1143,44 @@ Always aim to make technical information accessible and actionable."""
                     tool_calls=tool_calls_models
                 )
                 session_manager.add_message(session_id, assistant_message_obj)
-                
+
+                # --- E2E turn budget advisory ---
+                # Compute the worst-case wall-clock budget for this entire turn:
+                #   totalTurnBudgetMs = llm_call_1 + sum(tool_budgets) + llm_call_2
+                # This is purely advisory: logged so operators can size upstream
+                # proxy / nginx / client-side fetch timeouts accordingly.
+                llm_timeout_ms = llm_config_storage.llm_timeout_ms
+                tool_budget_parts = []
+                for tc in normalized_tool_calls:
+                    tc_name = tc["function"].get("name", "")
+                    stored_tool = mcp_manager.tools.get(tc_name)
+                    hints = stored_tool.execution_hints if stored_tool else None
+                    if hints:
+                        budget_ms = hints.recommended_wait_ms()
+                    else:
+                        # Fall back to the server-level timeout_ms for this tool's server
+                        tc_server_alias = tc_name.split("__", 1)[0] if "__" in tc_name else ""
+                        fallback_server = next(
+                            (s for s in servers_storage.values() if s.alias == tc_server_alias), None
+                        )
+                        budget_ms = fallback_server.timeout_ms if fallback_server else int(
+                            os.getenv("MCP_REQUEST_TIMEOUT_MS", "20000")
+                        )
+                    tool_budget_parts.append((tc_name, budget_ms))
+
+                total_tool_budget_ms = sum(b for _, b in tool_budget_parts)
+                # Two LLM calls: the one that produced these tool_calls + the follow-up synthesis call
+                total_turn_budget_ms = (2 * llm_timeout_ms) + total_tool_budget_ms
+                tool_budget_str = ", ".join(
+                    f"{name.split('__', 1)[-1]}({b / 1000:.0f}s)" for name, b in tool_budget_parts
+                )
+                logger_internal.info(
+                    "E2E turn budget advisory: "
+                    f"2×LLM({llm_timeout_ms / 1000:.0f}s) + tools[{tool_budget_str}] "
+                    f"= {total_turn_budget_ms / 1000:.0f}s total. "
+                    "Ensure upstream proxy/client timeouts exceed this value."
+                )
+
                 # Execute tool calls
                 for idx, tool_call in enumerate(normalized_tool_calls, 1):
                     tool_id = tool_call["id"]
@@ -1130,15 +1243,40 @@ Always aim to make technical information accessible and actionable."""
                         logger_internal.error(f"Server not found: {server_alias}")
                         result_content = f"Error: Server '{server_alias}' not found"
                     else:
+                        # Look up advisory executionHints for this tool (CR-EXEC-001..014)
+                        stored_tool = mcp_manager.tools.get(namespaced_tool_name)
+                        execution_hints = stored_tool.execution_hints if stored_tool else None
+
+                        # UX trace: warn when tool is long-running (CR-EXEC-009/010)
+                        if execution_hints:
+                            est_ms = execution_hints.estimatedRuntimeMs or 0
+                            recommended_ms = execution_hints.recommended_wait_ms()
+                            if execution_hints.mode == "sampling" or est_ms >= 5000:
+                                logger_internal.info(
+                                    f"Long-running diagnostic tool: {namespaced_tool_name} | "
+                                    f"mode={execution_hints.mode}, "
+                                    f"estimatedRuntime={est_ms / 1000:.1f}s, "
+                                    f"clientWaitBudget={recommended_ms / 1000:.1f}s. "
+                                    "This diagnostic samples data over time — client timeout extended accordingly."
+                                )
+                            else:
+                                logger_internal.info(
+                                    f"One-shot diagnostic tool: {namespaced_tool_name} | "
+                                    f"mode={execution_hints.mode}, "
+                                    f"estimatedRuntime={est_ms / 1000:.1f}s. "
+                                    "Collecting snapshot."
+                                )
+
                         # Execute tool
                         try:
                             import time
                             start_time = time.time()
-                            
+
                             tool_result = await mcp_manager.execute_tool(
                                 server=server,
                                 tool_name=actual_tool_name,
-                                arguments=arguments
+                                arguments=arguments,
+                                execution_hints=execution_hints
                             )
                             
                             duration_ms = int((time.time() - start_time) * 1000)
@@ -1364,6 +1502,18 @@ async def serve_frontend():
         return FileResponse(index_path)
     else:
         return {"message": "MCP Client Web API - Frontend not yet deployed. Access API docs at /docs"}
+
+
+@app.get("/tool-tester", include_in_schema=False)
+async def serve_tool_tester():
+    """Serve the dedicated MCP tool tester page."""
+    tool_tester_path = os.path.join(static_dir, "tool-tester.html")
+    if os.path.exists(tool_tester_path):
+        return FileResponse(tool_tester_path)
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Tool tester page not found"
+    )
 
 
 if __name__ == "__main__":

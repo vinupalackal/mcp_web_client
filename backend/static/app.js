@@ -28,9 +28,8 @@ function initializeChat() {
     messageInput.addEventListener('input', () => {
         messageInput.style.height = 'auto';
         messageInput.style.height = messageInput.scrollHeight + 'px';
-        
-        // Enable/disable send button
-        sendBtn.disabled = !messageInput.value.trim() || isProcessing;
+
+        updateSendButtonState();
     });
 
     // Send on Enter (Shift+Enter for new line)
@@ -57,6 +56,12 @@ function initializeChat() {
     });
 
     console.log('💬 Chat: Initialized');
+}
+
+function updateSendButtonState() {
+    if (sendBtn) {
+        sendBtn.disabled = !messageInput.value.trim() || isProcessing;
+    }
 }
 
 async function createNewSession() {
@@ -120,23 +125,33 @@ async function sendMessage() {
     const content = messageInput.value.trim();
     if (!content || isProcessing) return;
 
-    console.log(`💬 Chat: Sending message: ${content.substring(0, 50)}...`);
-
-    // Create session if needed
-    if (!currentSessionId) {
-        await createNewSession();
-        if (!currentSessionId) return;
-    }
-
-    // Add user message to UI
-    const querySentAt = new Date();
-    addMessage('user', content, [], '', querySentAt);
     messageInput.value = '';
     messageInput.style.height = 'auto';
-    sendBtn.disabled = true;
-    isProcessing = true;
+    updateSendButtonState();
 
-    // Show loading
+    await submitChatPrompt(content);
+}
+
+async function submitChatPrompt(content) {
+    const trimmedContent = (content || '').trim();
+    if (!trimmedContent || isProcessing) {
+        return { ok: false };
+    }
+
+    console.log(`💬 Chat: Sending message: ${trimmedContent.substring(0, 50)}...`);
+
+    if (!currentSessionId) {
+        await createNewSession();
+        if (!currentSessionId) {
+            return { ok: false };
+        }
+    }
+
+    const querySentAt = new Date();
+    addMessage('user', trimmedContent, [], '', querySentAt);
+    isProcessing = true;
+    updateSendButtonState();
+
     const loadingId = addLoadingMessage();
 
     try {
@@ -145,7 +160,7 @@ async function sendMessage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 role: 'user',
-                content: content
+                content: trimmedContent
             })
         });
 
@@ -154,26 +169,25 @@ async function sendMessage() {
         }
 
         const data = await response.json();
-        
-        // Remove loading
+
         removeMessage(loadingId);
-        
-        // Add assistant response
         addMessage('assistant', data.message.content, data.tool_executions, data.initial_llm_response, new Date());
-        
-        // Log final LLM message
+
         console.log('💬 Final LLM Response:', data.message.content);
         if (data.tool_executions && data.tool_executions.length > 0) {
-            console.log(`🔧 Tools executed (${data.tool_executions.length}):`, 
+            console.log(`🔧 Tools executed (${data.tool_executions.length}):`,
                 data.tool_executions.map(t => `${t.tool} (${t.success ? 'success' : 'failed'})`).join(', '));
         }
+
+        return { ok: true, data };
     } catch (error) {
         console.error('💬 Chat: Send failed', error);
         removeMessage(loadingId);
         showError('Failed to send message: ' + error.message);
+        return { ok: false, error };
     } finally {
         isProcessing = false;
-        sendBtn.disabled = !messageInput.value.trim();
+        updateSendButtonState();
     }
 }
 
@@ -183,15 +197,14 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
 
     const messageContent = document.createElement('div');
     messageContent.classList.add('message-content');
-    
-    // Format content with line breaks and preserve formatting
-    const primaryContent = content || initialLlmResponse || '';
+
+    const toolExecutionSummary = summarizeToolExecutions(toolExecutions);
+    const primaryContent = content || toolExecutionSummary || initialLlmResponse || '';
     const formattedContent = formatMessageContent(primaryContent);
     messageContent.innerHTML = formattedContent;
 
     messageWrapper.appendChild(messageContent);
 
-    // Timestamp
     if (timestamp) {
         const ts = document.createElement('div');
         ts.classList.add('message-timestamp');
@@ -219,7 +232,6 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
         messageWrapper.appendChild(suggestionDetails);
     }
 
-    // Collapsible tool execution cards
     if (toolExecutions && toolExecutions.length > 0) {
         const section = document.createElement('div');
         section.classList.add('tool-executions-section');
@@ -264,6 +276,37 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
 
     chatMessages.appendChild(messageWrapper);
     scrollToBottom();
+}
+
+function summarizeToolExecutions(toolExecutions = []) {
+    if (!Array.isArray(toolExecutions) || toolExecutions.length === 0) {
+        return '';
+    }
+
+    const lines = toolExecutions.map((execution, index) => {
+        const label = execution?.tool || `tool ${index + 1}`;
+        const status = execution?.success === false ? 'failed' : 'returned';
+        const result = execution?.result;
+
+        let resultText = '';
+        if (typeof result === 'string') {
+            resultText = result.trim();
+        } else if (result != null) {
+            try {
+                resultText = JSON.stringify(result, null, 2);
+            } catch (error) {
+                resultText = String(result);
+            }
+        }
+
+        if (!resultText) {
+            return `${label} ${status}.`;
+        }
+
+        return `${label} ${status}:\n${resultText}`;
+    });
+
+    return lines.join('\n\n');
 }
 
 function formatMessageContent(content) {

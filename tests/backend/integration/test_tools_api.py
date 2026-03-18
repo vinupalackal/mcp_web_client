@@ -73,6 +73,17 @@ class TestGetTools:
         tools = client.get("/api/tools").json()
         assert tools[0]["namespaced_id"] == "mysvc__do_thing"
 
+    def test_tool_test_prompts_returns_usage_examples(self, client):
+        """TC-TOOL-14: GET /api/tools/test-prompts exposes documented chat prompts."""
+        r = client.get("/api/tools/test-prompts")
+        assert r.status_code == 200
+        prompts = r.json()
+        assert any(
+            prompt["tool_name"] == "server_info"
+            and "What version is the MCP server" in prompt["prompt"]
+            for prompt in prompts
+        )
+
 
 class TestRefreshTools:
 
