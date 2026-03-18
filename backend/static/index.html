@@ -163,6 +163,7 @@
             
             <!-- Tabs -->
             <div class="tabs">
+                <button class="tab-button" data-tab="account" id="accountTabBtn" style="display:none;">My Account</button>
                 <button class="tab-button active" data-tab="servers">MCP Servers</button>
                 <button class="tab-button" data-tab="llm">LLM Config</button>
                 <button class="tab-button" data-tab="tools">Tools</button>
@@ -170,6 +171,13 @@
 
             <!-- Tab Content -->
             <div class="modal-body">
+                <!-- My Account Tab (shown when SSO is active) -->
+                <div id="accountTab" class="tab-content">
+                    <div id="accountTabContent">
+                        <p class="empty-state">Loading…</p>
+                    </div>
+                </div>
+
                 <!-- MCP Servers Tab -->
                 <div id="serversTab" class="tab-content active">
                     <h3>Add MCP Server</h3>
@@ -367,7 +375,21 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=16"></script>
-    <script src="/static/settings.js?v=7"></script>
+    <script src="/static/app.js?v=17"></script>
+    <script src="/static/settings.js?v=8"></script>
+    <script>
+    // Show My Account tab when SSO user is present
+    document.addEventListener('DOMContentLoaded', () => {
+        fetch('/api/users/me', { credentials: 'include' })
+            .then(r => r.ok ? r.json() : null)
+            .then(user => {
+                if (user) {
+                    const btn = document.getElementById('accountTabBtn');
+                    if (btn) btn.style.display = '';
+                }
+            })
+            .catch(() => {});
+    });
+    </script>
 </body>
 </html>

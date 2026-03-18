@@ -9,6 +9,96 @@ from datetime import datetime
 import uuid
 
 
+# ---------------------------------------------------------------------------
+# SSO / Auth models  (v0.4.0-sso-user-settings)
+# ---------------------------------------------------------------------------
+
+class UserProfile(BaseModel):
+    """Authenticated user's public profile (returned by GET /api/users/me)."""
+
+    user_id: str = Field(..., description="Immutable UUID")
+    email: str = Field(..., description="Primary email address")
+    display_name: str = Field(..., description="Full name from IdP")
+    avatar_url: Optional[str] = Field(None, description="Profile picture URL from IdP")
+    roles: List[str] = Field(..., description="List of assigned roles, e.g. ['user'] or ['user','admin']")
+    created_at: datetime = Field(..., description="Timestamp of first login")
+    last_login_at: datetime = Field(..., description="Timestamp of most recent login")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "user_id": "550e8400-e29b-41d4-a716-446655440001",
+                "email": "alice@example.com",
+                "display_name": "Alice Smith",
+                "avatar_url": "https://lh3.googleusercontent.com/a/...",
+                "roles": ["user"],
+                "created_at": "2026-03-01T09:00:00Z",
+                "last_login_at": "2026-03-18T08:45:00Z",
+            }
+        }
+    )
+
+
+class UserSettings(BaseModel):
+    """Per-user UI and application preferences."""
+
+    theme: Literal["light", "dark", "system"] = Field(
+        default="system", description="Colour scheme preference"
+    )
+    message_density: Literal["compact", "comfortable"] = Field(
+        default="comfortable", description="Chat bubble spacing"
+    )
+    tool_panel_visible: bool = Field(
+        default=True, description="Show the tool execution panel in the chat UI"
+    )
+    sidebar_collapsed: bool = Field(
+        default=False, description="Collapse the left sidebar"
+    )
+    default_llm_model: Optional[str] = Field(
+        default=None, description="Quick-start model override (null = no override)"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "theme": "dark",
+                "message_density": "comfortable",
+                "tool_panel_visible": True,
+                "sidebar_collapsed": False,
+                "default_llm_model": None,
+            }
+        }
+    )
+
+
+class UserSettingsPatch(BaseModel):
+    """Partial update payload for PATCH /api/users/me/settings.
+
+    Only supplied (non-null) keys are updated; omitted keys are left unchanged.
+    """
+
+    theme: Optional[Literal["light", "dark", "system"]] = None
+    message_density: Optional[Literal["compact", "comfortable"]] = None
+    tool_panel_visible: Optional[bool] = None
+    sidebar_collapsed: Optional[bool] = None
+    default_llm_model: Optional[str] = None
+
+
+class AdminUserPatch(BaseModel):
+    """Payload for PATCH /api/admin/users/{user_id} — toggle is_active."""
+
+    is_active: bool = Field(..., description="Set to false to disable the user")
+
+
+class UserListResponse(BaseModel):
+    """Paginated user list for GET /api/admin/users."""
+
+    users: List[UserProfile]
+    total: int
+    limit: int
+    offset: int
+
+
 class ServerConfig(BaseModel):
     """MCP server configuration"""
     

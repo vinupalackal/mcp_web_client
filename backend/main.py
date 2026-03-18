@@ -12,11 +12,12 @@ import httpx
 from pathlib import Path as PathLib
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Path, Body, status
+from fastapi import FastAPI, HTTPException, Path, Body, status, Request, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 
 
@@ -45,7 +46,64 @@ from backend.models import (
     ErrorResponse,
     HealthResponse,
     RepeatedExecSummary,
+    UserProfile,
+    UserSettings,
+    UserSettingsPatch,
+    AdminUserPatch,
+    UserListResponse,
 )
+
+# SSO imports (v0.4.0-sso-user-settings)
+from backend.database import init_db, upsert_user, get_user_by_id
+from backend.database import UserRow, SessionLocal
+from backend.user_store import (
+    UserScopedLLMConfigStore,
+    UserScopedServerStore,
+    UserSettingsStore,
+)
+from backend.auth.jwt_utils import issue_app_token, verify_app_token
+from backend.auth.pkce import generate_pkce_pair, generate_state_token
+
+# Conditionally import SSO providers (only if configured)
+_sso_providers: Dict[str, object] = {}
+
+def _load_sso_providers() -> None:
+    """Load whichever OIDC providers have all required env vars configured."""
+    try:
+        from backend.auth.azure_ad import AzureADProvider
+        if AzureADProvider.is_configured():
+            _sso_providers["azure_ad"] = AzureADProvider()
+            logger_internal.info("SSO: Azure AD provider loaded")
+    except Exception as exc:
+        logger_internal.debug(f"Azure AD provider not loaded: {exc}")
+
+    try:
+        from backend.auth.google import GoogleProvider
+        if GoogleProvider.is_configured():
+            _sso_providers["google"] = GoogleProvider()
+            logger_internal.info("SSO: Google provider loaded")
+    except Exception as exc:
+        logger_internal.debug(f"Google provider not loaded: {exc}")
+
+
+def _sso_enabled() -> bool:
+    """Return True when SSO is fully configured (SECRET_KEY + at least one IdP)."""
+    return bool(os.getenv("SECRET_KEY")) and bool(_sso_providers)
+
+
+# Per-user store singletons (used when SSO is active)
+_llm_store = UserScopedLLMConfigStore()
+_server_store = UserScopedServerStore()
+_settings_store = UserSettingsStore()
+
+# In-memory PKCE state store: state_token → {nonce, code_verifier, provider}
+# (per-process; cleared on restart — PKCE flows are short-lived)
+_pkce_state: Dict[str, dict] = {}
+
+# Admin emails allowlist (comma-separated in env)
+def _get_admin_emails() -> list:
+    raw = os.getenv("SSO_ADMIN_EMAILS", "")
+    return [e.strip().lower() for e in raw.split(",") if e.strip()]
 
 # Load environment variables from .env file
 env_path = PathLib(__file__).parent.parent / '.env'
@@ -223,6 +281,21 @@ async def lifespan(app: FastAPI):
     logger_internal.info(f"Environment: MCP_ALLOW_HTTP_INSECURE={os.getenv('MCP_ALLOW_HTTP_INSECURE', 'false')}")
     logger_internal.info(f"Data directory: {MCP_DATA_DIR.resolve()}")
 
+    # Initialise DB schema (creates tables if not present)
+    try:
+        init_db()
+    except Exception as exc:
+        logger_internal.error(f"DB init failed: {exc}")
+
+    # Load SSO providers
+    _load_sso_providers()
+    if _sso_enabled():
+        logger_internal.info(
+            f"SSO enabled with providers: {list(_sso_providers.keys())}"
+        )
+    else:
+        logger_internal.info("SSO not configured — running in single-user mode")
+
     # Load persisted credentials and configs from server-side disk
     loaded_config = _load_llm_config_from_disk()
     if loaded_config:
@@ -254,6 +327,431 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Auth middleware — validates app_token cookie on /api/* routes when SSO is on
+# ---------------------------------------------------------------------------
+
+_SSO_SKIP_PREFIXES = (
+    "/auth/",
+    "/static/",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/health",
+    "/login",
+    "/api/health",
+)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Attach current_user to request.state when SSO is active."""
+    if not _sso_enabled():
+        request.state.current_user = None
+        return await call_next(request)
+
+    path = request.url.path
+    if any(path.startswith(p) for p in _SSO_SKIP_PREFIXES):
+        request.state.current_user = None
+        return await call_next(request)
+
+    token = request.cookies.get("app_token")
+    if not token:
+        if path.startswith("/api/"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+            )
+        return RedirectResponse(url="/login", status_code=302)
+
+    import jwt as _jwt
+    try:
+        claims = verify_app_token(token)
+    except _jwt.ExpiredSignatureError:
+        if path.startswith("/api/"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Session expired"},
+            )
+        return RedirectResponse(url="/login?reason=session_expired", status_code=302)
+    except _jwt.InvalidTokenError:
+        if path.startswith("/api/"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+            )
+        return RedirectResponse(url="/login", status_code=302)
+
+    user = get_user_by_id(claims["sub"])
+    if user is None or not user.is_active:
+        if path.startswith("/api/"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Account disabled"},
+            )
+        return RedirectResponse(url="/login", status_code=302)
+
+    request.state.current_user = user
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------------
+# FastAPI dependency helpers
+# ---------------------------------------------------------------------------
+
+def _get_current_user(request: Request) -> Optional[UserRow]:
+    """Return current_user or None (no-op in single-user mode)."""
+    return getattr(request.state, "current_user", None)
+
+
+def _require_user(request: Request) -> UserRow:
+    """Raise 401 if not authenticated (only enforced when SSO is enabled)."""
+    user = getattr(request.state, "current_user", None)
+    if _sso_enabled() and user is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return user  # type: ignore[return-value]
+
+
+def _require_admin(request: Request) -> UserRow:
+    """Raise 403 if user is not an admin."""
+    user = _require_user(request)
+    if user is not None:
+        import json as _json
+        roles = _json.loads(user.roles) if isinstance(user.roles, str) else (user.roles or [])
+        if "admin" not in roles:
+            raise HTTPException(status_code=403, detail="Admin role required")
+    return user  # type: ignore[return-value]
+
+
+def _user_id_or_none(request: Request) -> Optional[str]:
+    user = getattr(request.state, "current_user", None)
+    return user.user_id if user else None
+
+
+def _make_user_profile(row: UserRow) -> UserProfile:
+    import json as _json
+    roles = _json.loads(row.roles) if isinstance(row.roles, str) else (row.roles or ["user"])
+    return UserProfile(
+        user_id=row.user_id,
+        email=row.email,
+        display_name=row.display_name,
+        avatar_url=row.avatar_url,
+        roles=roles,
+        created_at=row.created_at,
+        last_login_at=row.last_login_at,
+    )
+
+
+# Helper: resolve servers — per-user when SSO, global dict otherwise
+def _get_user_servers(user_id: Optional[str]) -> List[ServerConfig]:
+    if user_id:
+        return _server_store.list(user_id)
+    return list(servers_storage.values())
+
+
+def _get_user_llm_config(user_id: Optional[str]) -> Optional[LLMConfig]:
+    if user_id:
+        return _llm_store.get_full(user_id)
+    return llm_config_storage
+
+
+# ============================================================================
+# Login page route
+# ============================================================================
+
+@app.get("/login", include_in_schema=False)
+async def login_page():
+    """Serve the SSO login page."""
+    login_html = PathLib(__file__).parent / "static" / "login.html"
+    if login_html.exists():
+        return FileResponse(str(login_html))
+    return HTMLResponse("<h1>SSO not configured</h1>", status_code=503)
+
+
+# ============================================================================
+# Auth endpoints (OIDC flow)
+# ============================================================================
+
+@app.get("/auth/login/{provider}", tags=["Auth"], summary="Initiate OIDC login")
+async def auth_login(provider: str) -> RedirectResponse:
+    """Build OIDC authorisation URL and redirect the browser to the IdP."""
+    p = _sso_providers.get(provider)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"SSO provider '{provider}' not configured")
+
+    from backend.auth.pkce import generate_pkce_pair, generate_state_token
+    code_verifier, code_challenge = generate_pkce_pair()
+    state = generate_state_token()
+    nonce = generate_state_token()
+
+    _pkce_state[state] = {
+        "nonce": nonce,
+        "code_verifier": code_verifier,
+        "provider": provider,
+    }
+
+    auth_url = p.build_authorisation_url(state=state, nonce=nonce, code_challenge=code_challenge)
+    return RedirectResponse(url=auth_url, status_code=302)
+
+
+@app.get("/auth/callback/{provider}", tags=["Auth"], summary="Handle OIDC redirect callback")
+async def auth_callback(
+    provider: str,
+    request: Request,
+    response: Response,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+) -> RedirectResponse:
+    """Exchange authorisation code for tokens; issue app session cookie."""
+    if error:
+        return RedirectResponse(url=f"/login?reason={error}", status_code=302)
+
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state parameter")
+
+    pkce = _pkce_state.pop(state, None)
+    if pkce is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired state — possible CSRF")
+
+    if pkce["provider"] != provider:
+        raise HTTPException(status_code=401, detail="Provider mismatch")
+
+    p = _sso_providers.get(provider)
+    if p is None:
+        raise HTTPException(status_code=404, detail=f"SSO provider '{provider}' not configured")
+
+    try:
+        token_response = await p.exchange_code(code=code, code_verifier=pkce["code_verifier"])
+        id_token = token_response.get("id_token")
+        if not id_token:
+            raise ValueError("No id_token in token response")
+        user_info = await p.validate_id_token(id_token=id_token, nonce=pkce["nonce"])
+    except Exception as exc:
+        logger_internal.warning(f"OIDC callback failed ({provider}): {exc}")
+        return RedirectResponse(url="/login?reason=auth_failed", status_code=302)
+
+    user_row = upsert_user(
+        provider=provider,
+        provider_sub=user_info.sub,
+        email=user_info.email,
+        display_name=user_info.display_name,
+        avatar_url=user_info.avatar_url,
+        admin_emails=_get_admin_emails(),
+    )
+
+    import json as _json
+    roles = _json.loads(user_row.roles) if isinstance(user_row.roles, str) else (user_row.roles or ["user"])
+    ttl = int(os.getenv("SSO_SESSION_TTL_HOURS", "8"))
+    app_token = issue_app_token(
+        user_id=user_row.user_id,
+        email=user_row.email,
+        roles=roles,
+        ttl_hours=ttl,
+    )
+
+    redirect = RedirectResponse(url="/?sso=ok", status_code=302)
+    redirect.set_cookie(
+        key="app_token",
+        value=app_token,
+        httponly=True,
+        samesite="strict",
+        max_age=ttl * 3600,
+        path="/",
+    )
+    logger_internal.info(f"SSO login success: {user_row.email} ({provider})")
+    return redirect
+
+
+@app.post("/auth/logout", tags=["Auth"], summary="Log out and clear session cookie")
+async def auth_logout() -> RedirectResponse:
+    """Clear the app_token session cookie and redirect to login."""
+    response = RedirectResponse(url="/login", status_code=302)
+    response.delete_cookie(key="app_token", path="/")
+    return response
+
+
+@app.get("/auth/providers", tags=["Auth"], summary="List configured SSO providers", include_in_schema=False)
+async def auth_providers():
+    """Return the list of configured provider keys for the login page."""
+    from fastapi.responses import JSONResponse
+    return JSONResponse({"providers": list(_sso_providers.keys())})
+
+
+# ============================================================================
+# User endpoints
+# ============================================================================
+
+@app.get(
+    "/api/users/me",
+    response_model=UserProfile,
+    tags=["Users"],
+    summary="Get current user profile",
+    responses={
+        200: {"description": "User profile"},
+        401: {"description": "Unauthorized"},
+    },
+)
+async def get_me(request: Request) -> UserProfile:
+    """Return the authenticated user's profile."""
+    user = _require_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return _make_user_profile(user)
+
+
+@app.get(
+    "/api/users/me/settings",
+    response_model=UserSettings,
+    tags=["Users"],
+    summary="Get current user UI preferences",
+    responses={
+        200: {"description": "User settings"},
+        401: {"description": "Unauthorized"},
+    },
+)
+async def get_my_settings(request: Request) -> UserSettings:
+    user = _require_user(request)
+    if user is None:
+        return UserSettings()
+    return _settings_store.get(user.user_id)
+
+
+@app.patch(
+    "/api/users/me/settings",
+    response_model=UserSettings,
+    tags=["Users"],
+    summary="Partial update current user UI preferences",
+    responses={
+        200: {"description": "Updated settings"},
+        401: {"description": "Unauthorized"},
+    },
+)
+async def patch_my_settings(
+    request: Request,
+    updates: UserSettingsPatch = Body(...),
+) -> UserSettings:
+    user = _require_user(request)
+    if user is None:
+        return UserSettings()
+    return _settings_store.patch(user.user_id, updates)
+
+
+# ============================================================================
+# Admin endpoints
+# ============================================================================
+
+@app.get(
+    "/api/admin/users",
+    response_model=UserListResponse,
+    tags=["Admin"],
+    summary="List all users (admin only)",
+    responses={
+        200: {"description": "Paginated user list"},
+        403: {"description": "Admin role required"},
+    },
+)
+async def admin_list_users(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+) -> UserListResponse:
+    _require_admin(request)
+    from sqlalchemy import select, func
+    with SessionLocal() as db:
+        from backend.database import UserRow as _UserRow
+        total_result = db.execute(select(func.count()).select_from(_UserRow))
+        total = total_result.scalar_one()
+        rows = db.execute(
+            select(_UserRow).order_by(_UserRow.created_at.desc()).limit(limit).offset(offset)
+        ).scalars().all()
+    return UserListResponse(
+        users=[_make_user_profile(r) for r in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get(
+    "/api/admin/users/{user_id}",
+    response_model=UserProfile,
+    tags=["Admin"],
+    summary="Get user profile (admin only)",
+    responses={
+        200: {"description": "User profile"},
+        403: {"description": "Admin role required"},
+        404: {"description": "User not found"},
+    },
+)
+async def admin_get_user(
+    request: Request,
+    user_id: str = Path(..., description="Target user UUID"),
+) -> UserProfile:
+    _require_admin(request)
+    row = get_user_by_id(user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _make_user_profile(row)
+
+
+@app.patch(
+    "/api/admin/users/{user_id}",
+    response_model=UserProfile,
+    tags=["Admin"],
+    summary="Enable or disable a user (admin only)",
+    responses={
+        200: {"description": "Updated user profile"},
+        403: {"description": "Admin role required"},
+        404: {"description": "User not found"},
+    },
+)
+async def admin_patch_user(
+    request: Request,
+    user_id: str = Path(..., description="Target user UUID"),
+    patch: AdminUserPatch = Body(...),
+) -> UserProfile:
+    _require_admin(request)
+    from sqlalchemy import select
+    with SessionLocal() as db:
+        from backend.database import UserRow as _UserRow
+        row = db.get(_UserRow, user_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        row.is_active = patch.is_active
+        db.commit()
+        db.refresh(row)
+    return _make_user_profile(row)
+
+
+@app.delete(
+    "/api/admin/users/{user_id}/settings",
+    response_model=DeleteResponse,
+    tags=["Admin"],
+    summary="Reset user LLM config and preferences (admin only)",
+    responses={
+        200: {"description": "Settings reset"},
+        403: {"description": "Admin role required"},
+        404: {"description": "User not found"},
+    },
+)
+async def admin_reset_user_settings(
+    request: Request,
+    user_id: str = Path(..., description="Target user UUID"),
+) -> DeleteResponse:
+    _require_admin(request)
+    row = get_user_by_id(user_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    _llm_store.delete(user_id)
+    _settings_store.reset(user_id)
+    return DeleteResponse(success=True, message=f"Settings reset for user {user_id}")
 
 
 # ============================================================================
@@ -291,10 +789,11 @@ async def health_check() -> HealthResponse:
         500: {"model": ErrorResponse, "description": "Internal server error"}
     }
 )
-async def list_servers() -> List[ServerConfig]:
+async def list_servers(request: Request) -> List[ServerConfig]:
     """Get all configured MCP servers"""
     logger_external.info("→ GET /api/servers")
-    servers = list(servers_storage.values())
+    user_id = _user_id_or_none(request)
+    servers = _get_user_servers(user_id)
     logger_external.info(f"← 200 OK (found {len(servers)} servers)")
     return servers
 
@@ -313,6 +812,7 @@ async def list_servers() -> List[ServerConfig]:
     }
 )
 async def create_server(
+    request: Request,
     server: ServerConfig = Body(
         ...,
         description="MCP server configuration",
@@ -341,29 +841,31 @@ async def create_server(
 ) -> ServerConfig:
     """
     Register a new MCP server for tool discovery and execution.
-    
+
     The server will be initialized via JSON-RPC handshake and tools
     will be discovered automatically.
     """
     logger_external.info(f"→ POST /api/servers (alias={server.alias})")
-    
+    user_id = _user_id_or_none(request)
+    existing_servers = _get_user_servers(user_id)
+
     # Check for duplicate server_id (for sync from localStorage)
-    if server.server_id and server.server_id in servers_storage:
+    if server.server_id and any(s.server_id == server.server_id for s in existing_servers):
         logger_internal.info(f"Server already exists: {server.alias} ({server.server_id})")
         logger_external.info(f"← 409 Conflict (already exists)")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Server '{server.server_id}' already exists"
         )
-    
+
     # Check for duplicate alias
-    if any(s.alias == server.alias for s in servers_storage.values()):
+    if any(s.alias == server.alias for s in existing_servers):
         logger_internal.warning(f"Duplicate alias rejected: {server.alias}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Server with alias '{server.alias}' already exists"
         )
-    
+
     # Validate HTTPS in production
     if not server.base_url.startswith("https://"):
         if os.getenv("MCP_ALLOW_HTTP_INSECURE", "false").lower() != "true":
@@ -372,16 +874,16 @@ async def create_server(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="HTTP URLs not allowed in production. Set MCP_ALLOW_HTTP_INSECURE=true for development."
             )
-    
+
     # Store server
-    servers_storage[server.server_id] = server
+    if user_id:
+        _server_store.create(user_id, server)
+    else:
+        servers_storage[server.server_id] = server
+        _save_servers_to_disk()
+
     logger_internal.info(f"Server registered: {server.alias} ({server.server_id})")
     logger_external.info(f"← 201 Created")
-    _save_servers_to_disk()
-    
-    # TODO: Initialize MCP server connection
-    # await mcp_manager.initialize_server(server)
-    
     return server
 
 
@@ -397,25 +899,28 @@ async def create_server(
     }
 )
 async def update_server(
+    request: Request,
     server_id: str = Path(..., description="Server UUID to update"),
     server: ServerConfig = Body(..., description="Updated server configuration")
 ) -> ServerConfig:
     """Update an existing MCP server configuration"""
     logger_external.info(f"→ PUT /api/servers/{server_id}")
-    
-    if server_id not in servers_storage:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Server {server_id} not found"
-        )
-    
-    # Preserve server_id from path
-    server.server_id = server_id
-    servers_storage[server_id] = server
+    user_id = _user_id_or_none(request)
+
+    if user_id:
+        if not _server_store.owns(user_id, server_id):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        server.server_id = server_id
+        _server_store.update(user_id, server_id, server)
+    else:
+        if server_id not in servers_storage:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Server {server_id} not found")
+        server.server_id = server_id
+        servers_storage[server_id] = server
+        _save_servers_to_disk()
+
     logger_internal.info(f"Server updated: {server.alias} ({server_id})")
     logger_external.info(f"← 200 OK")
-    _save_servers_to_disk()
-    
     return server
 
 
@@ -431,20 +936,24 @@ async def update_server(
     }
 )
 async def delete_server(
+    request: Request,
     server_id: str = Path(..., description="Server UUID to delete")
 ) -> DeleteResponse:
     """Delete an MCP server configuration and its associated tools"""
     logger_external.info(f"→ DELETE /api/servers/{server_id}")
-    
-    if server_id not in servers_storage:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Server {server_id} not found"
-        )
-    
-    server = servers_storage.pop(server_id)
-    logger_internal.info(f"Server deleted: {server.alias} ({server_id})")
-    
+    user_id = _user_id_or_none(request)
+
+    if user_id:
+        server = _server_store.get(user_id, server_id)
+        if server is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        _server_store.delete(user_id, server_id)
+    else:
+        if server_id not in servers_storage:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Server {server_id} not found")
+        server = servers_storage.pop(server_id)
+        _save_servers_to_disk()
+
     # Remove associated tools from mcp_manager
     tools_to_remove = [
         tool_id for tool_id, tool in mcp_manager.tools.items()
@@ -453,9 +962,8 @@ async def delete_server(
     for tool_id in tools_to_remove:
         del mcp_manager.tools[tool_id]
     logger_internal.info(f"Removed {len(tools_to_remove)} tools for {server.alias}")
-    
+
     logger_external.info(f"← 200 OK")
-    _save_servers_to_disk()
     return DeleteResponse(
         success=True,
         message=f"Server '{server.alias}' deleted successfully"
@@ -473,11 +981,11 @@ async def delete_server(
         500: {"model": ErrorResponse, "description": "Refresh failed"}
     }
 )
-async def refresh_tools() -> ToolRefreshResponse:
+async def refresh_tools(request: Request) -> ToolRefreshResponse:
     """Discover tools from all configured MCP servers"""
     logger_external.info("→ POST /api/servers/refresh-tools")
-    
-    servers = list(servers_storage.values())
+    user_id = _user_id_or_none(request)
+    servers = _get_user_servers(user_id)
     
     if not servers:
         logger_internal.warning("No servers configured for tool refresh")
@@ -501,7 +1009,8 @@ async def refresh_tools() -> ToolRefreshResponse:
     for server in servers:
         server.last_health_check = checked_at
         server.health_status = "unhealthy" if server.alias in error_aliases else "healthy"
-    _save_servers_to_disk()
+    if not _user_id_or_none(request):
+        _save_servers_to_disk()
     
     logger_internal.info(
         f"Tool refresh complete: {total_tools} tools from {servers_refreshed}/{len(servers)} servers"
@@ -526,11 +1035,11 @@ async def refresh_tools() -> ToolRefreshResponse:
         500: {"model": ErrorResponse, "description": "Health refresh failed"}
     }
 )
-async def refresh_server_health() -> ServerHealthRefreshResponse:
+async def refresh_server_health(request: Request) -> ServerHealthRefreshResponse:
     """Refresh health status for all configured MCP servers."""
     logger_external.info("→ POST /api/servers/refresh-health")
-
-    servers = list(servers_storage.values())
+    user_id = _user_id_or_none(request)
+    servers = _get_user_servers(user_id)
 
     if not servers:
         logger_internal.warning("No servers configured for health refresh")
@@ -554,7 +1063,8 @@ async def refresh_server_health() -> ServerHealthRefreshResponse:
         server.last_health_check = checked_at
         server.health_status = "unhealthy" if server.alias in error_aliases else "healthy"
 
-    _save_servers_to_disk()
+    if not _user_id_or_none(request):
+        _save_servers_to_disk()
     unhealthy_servers = checked_count - healthy_servers
 
     logger_internal.info(
@@ -625,18 +1135,24 @@ async def list_tool_test_prompts() -> List[ToolTestPrompt]:
         404: {"model": ErrorResponse, "description": "No configuration set"}
     }
 )
-async def get_llm_config() -> LLMConfig:
+async def get_llm_config(request: Request) -> LLMConfig:
     """Get current LLM provider configuration"""
     logger_external.info("→ GET /api/llm/config")
-    
-    if llm_config_storage is None:
+    user_id = _user_id_or_none(request)
+
+    if user_id:
+        cfg = _llm_store.get_masked(user_id)
+    else:
+        cfg = llm_config_storage
+
+    if cfg is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="LLM configuration not set"
         )
-    
-    logger_external.info(f"← 200 OK (provider={llm_config_storage.provider})")
-    return llm_config_storage
+
+    logger_external.info(f"← 200 OK (provider={cfg.provider})")
+    return cfg
 
 
 @app.post(
@@ -651,13 +1167,20 @@ async def get_llm_config() -> LLMConfig:
     }
 )
 async def save_llm_config(
+    request: Request,
     config: LLMConfig = Body(..., description="LLM provider configuration")
 ) -> LLMConfig:
     """Save LLM provider configuration"""
     global llm_config_storage
-    
+
     logger_external.info(f"→ POST /api/llm/config (provider={config.provider})")
     logger_internal.info(f"LLM config saved: {config.provider} / {config.model}")
+
+    user_id = _user_id_or_none(request)
+    if user_id:
+        _llm_store.set(user_id, config)
+        logger_external.info(f"← 200 OK")
+        return _llm_store.get_masked(user_id) or config
 
     if config.provider == "enterprise":
         previous_enterprise = llm_config_storage if llm_config_storage and llm_config_storage.provider == "enterprise" else None
@@ -668,11 +1191,10 @@ async def save_llm_config(
         ):
             enterprise_token_cache.clear()
             logger_internal.info("Cleared enterprise token cache due to configuration change")
-    
+
     llm_config_storage = config
     logger_external.info(f"← 200 OK")
     _save_llm_config_to_disk(config)
-    
     return config
 
 
@@ -806,14 +1328,16 @@ async def delete_enterprise_token() -> DeleteResponse:
     }
 )
 async def create_session(
+    request: Request,
     config: Optional[SessionConfig] = Body(None, description="Session configuration (optional)")
 ) -> SessionResponse:
     """Create a new chat session"""
     logger_external.info("→ POST /api/sessions")
-    
-    # Create session via SessionManager
+    user_id = _user_id_or_none(request)
+
     session = session_manager.create_session(
-        config=config.model_dump() if config else {"include_history": True, "enabled_servers": []}
+        config=config.model_dump() if config else {"include_history": True, "enabled_servers": []},
+        user_id=user_id,
     )
     
     logger_internal.info(f"Session created: {session.session_id}")
@@ -838,12 +1362,21 @@ async def create_session(
     }
 )
 async def send_message(
+    request: Request,
     session_id: str = Path(..., description="Session UUID"),
     message: ChatMessage = Body(..., description="User message")
 ) -> ChatResponse:
     """Process user message through LLM with tool execution"""
     logger_external.info(f"→ POST /api/sessions/{session_id}/messages")
     logger_internal.info(f"Processing message in session {session_id}: {message.content[:50] if message.content else ''}...")
+
+    user_id = _user_id_or_none(request)
+
+    # Ownership check when SSO is active
+    if user_id and _sso_enabled():
+        sess = session_manager.get_session(session_id)
+        if sess and sess.user_id and sess.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Forbidden")
 
     if not message.content.strip():
         logger_internal.warning("Rejected empty message content")
@@ -857,7 +1390,8 @@ async def send_message(
     session_manager.add_message(session_id, message)
     
     # Check LLM config
-    if not llm_config_storage:
+    active_llm_config = _get_user_llm_config(user_id)
+    if not active_llm_config:
         logger_internal.warning("No LLM config found")
         response_message = ChatMessage(
             role="assistant",
@@ -874,7 +1408,7 @@ async def send_message(
     try:
         # Create LLM client
         enterprise_access_token = None
-        if llm_config_storage.provider == "enterprise":
+        if active_llm_config.provider == "enterprise":
             enterprise_access_token = _get_cached_enterprise_token()
             if not enterprise_access_token:
                 logger_internal.warning("Enterprise provider selected without cached token")
@@ -891,7 +1425,7 @@ async def send_message(
                 )
 
         llm_client = LLMClientFactory.create(
-            llm_config_storage,
+            active_llm_config,
             enterprise_access_token=enterprise_access_token
         )
         

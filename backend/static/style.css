@@ -2538,3 +2538,245 @@ body:has(.tool-tester-page) {
         padding: 1rem;
     }
 }
+
+/* ============================================================
+   User Avatar & Dropdown Menu  (v0.4.0-sso)
+   ============================================================ */
+
+.user-menu-wrapper {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.user-avatar-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.125rem;
+    height: 2.125rem;
+    border-radius: 50%;
+    border: 2px solid var(--border-color);
+    background: var(--bg-accent-soft);
+    cursor: pointer;
+    padding: 0;
+    overflow: hidden;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.user-avatar-btn:hover,
+.user-avatar-btn:focus-visible {
+    border-color: var(--accent-color);
+    box-shadow: var(--ring-focus);
+    outline: none;
+}
+
+.user-avatar-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.user-avatar-initials {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    color: var(--accent-color);
+    background: var(--bg-accent-soft);
+    letter-spacing: 0.02em;
+}
+
+.user-dropdown {
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    right: 0;
+    z-index: 1000;
+    min-width: 13rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    padding: 0.25rem 0;
+}
+
+.user-dropdown-header {
+    padding: 0.625rem 0.875rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.user-dropdown-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.user-dropdown-email {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.user-dropdown-divider {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 0.25rem 0;
+}
+
+.user-dropdown-item {
+    display: block;
+    width: 100%;
+    padding: 0.5rem 0.875rem;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+    transition: background 0.12s;
+    border-radius: 0;
+}
+
+.user-dropdown-item:hover {
+    background: var(--bg-accent-soft);
+}
+
+.user-dropdown-signout {
+    color: var(--danger-color);
+}
+
+.user-dropdown-signout:hover {
+    background: rgba(220, 38, 38, 0.06);
+}
+
+/* ============================================================
+   My Account Tab — Settings Modal  (v0.4.0-sso)
+   ============================================================ */
+
+.account-profile-card {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    margin-bottom: 1rem;
+}
+
+.account-avatar-wrap {
+    flex-shrink: 0;
+    width: 3rem;
+    height: 3rem;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 2px solid var(--border-color);
+}
+
+.account-avatar {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.account-avatar-initials {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--accent-color);
+    background: var(--bg-accent-soft);
+}
+
+.account-identity {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 0;
+}
+
+.account-name {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.account-email {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.account-meta {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.account-badge {
+    display: inline-block;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 0.1rem 0.45rem;
+    border-radius: 999px;
+    margin-top: 0.15rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.account-badge.admin {
+    background: rgba(37, 99, 235, 0.12);
+    color: var(--accent-color);
+    border: 1px solid rgba(37, 99, 235, 0.2);
+}
+
+.account-divider {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 1rem 0;
+}
+
+.account-section-title {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    margin: 0 0 0.75rem;
+}
+
+.radio-group {
+    display: flex;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+}
+
+.btn-danger {
+    background: var(--danger-color);
+    color: #fff;
+    border-color: var(--danger-color);
+}
+
+.btn-danger:hover {
+    background: #b91c1c;
+    border-color: #b91c1c;
+}
+
+.btn-sm {
+    padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem;
+}

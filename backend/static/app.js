@@ -10,6 +10,159 @@ let currentSessionId = null;
 let isProcessing = false;
 const CHAT_PREFERENCE_STORAGE_KEY = 'includeHistory';
 
+// Current authenticated user (null in single-user / unauthenticated mode)
+let currentUser = null;
+
+// ---------------------------------------------------------------------------
+// Global fetch wrapper — intercepts 401 and redirects to login
+// ---------------------------------------------------------------------------
+
+async function apiFetch(url, options = {}) {
+    const res = await fetch(url, { credentials: 'include', ...options });
+    if (res.status === 401) {
+        console.warn('💬 401 Unauthorized — redirecting to login');
+        window.location.href = '/login?reason=session_expired';
+        return null;
+    }
+    return res;
+}
+
+// ---------------------------------------------------------------------------
+// User context loading
+// ---------------------------------------------------------------------------
+
+async function loadCurrentUser() {
+    try {
+        const res = await fetch('/api/users/me', { credentials: 'include' });
+        if (res.status === 401) return;  // SSO not enabled or not logged in
+        if (!res.ok) return;
+        currentUser = await res.json();
+        renderUserMenu();
+        await loadUserSettings();
+        console.log(`💬 Logged in as: ${currentUser.email}`);
+    } catch (e) {
+        console.debug('💬 /api/users/me not available (single-user mode)');
+    }
+}
+
+async function loadUserSettings() {
+    if (!currentUser) return;
+    try {
+        const res = await fetch('/api/users/me/settings', { credentials: 'include' });
+        if (!res.ok) return;
+        const settings = await res.json();
+        applyUserSettings(settings);
+        // Hydrate localStorage for fast next-load access
+        const key = `user:${currentUser.user_id}:settings`;
+        localStorage.setItem(key, JSON.stringify(settings));
+    } catch (e) { /* ignore */ }
+}
+
+function applyUserSettings(settings) {
+    if (settings.theme) {
+        applyTheme(settings.theme === 'dark');
+    }
+}
+
+// Debounced settings patch
+let _settingsPatchTimer = null;
+function patchUserSettings(updates) {
+    if (!currentUser) return;
+    clearTimeout(_settingsPatchTimer);
+    _settingsPatchTimer = setTimeout(async () => {
+        try {
+            await apiFetch('/api/users/me/settings', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updates),
+            });
+        } catch (e) { /* ignore */ }
+    }, 500);
+}
+
+// ---------------------------------------------------------------------------
+// User avatar / dropdown menu
+// ---------------------------------------------------------------------------
+
+function _getInitials(name) {
+    if (!name) return '?';
+    return name.split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2);
+}
+
+function renderUserMenu() {
+    const headerRight = document.querySelector('.header-right');
+    if (!headerRight || !currentUser) return;
+
+    // Replace gear / settings button with avatar menu
+    const existingBtn = document.getElementById('settingsBtn');
+    if (existingBtn) existingBtn.style.display = 'none';
+
+    // Build avatar element
+    const menuWrapper = document.createElement('div');
+    menuWrapper.className = 'user-menu-wrapper';
+    menuWrapper.id = 'userMenuWrapper';
+    menuWrapper.innerHTML = `
+        <button class="user-avatar-btn" id="userAvatarBtn" title="${currentUser.display_name || currentUser.email}" aria-haspopup="true" aria-expanded="false">
+            ${currentUser.avatar_url
+                ? `<img class="user-avatar-img" src="${currentUser.avatar_url}" alt="${currentUser.display_name}" onerror="this.style.display='none';this.nextSibling.style.display='flex';">
+                   <span class="user-avatar-initials" style="display:none;">${_getInitials(currentUser.display_name)}</span>`
+                : `<span class="user-avatar-initials">${_getInitials(currentUser.display_name)}</span>`
+            }
+        </button>
+        <div class="user-dropdown" id="userDropdown" role="menu" hidden>
+            <div class="user-dropdown-header">
+                <span class="user-dropdown-name">${currentUser.display_name || 'User'}</span>
+                <span class="user-dropdown-email">${currentUser.email}</span>
+            </div>
+            <hr class="user-dropdown-divider">
+            <button class="user-dropdown-item" id="menuMySettings">⚙️ My Settings</button>
+            <button class="user-dropdown-item user-dropdown-signout" id="menuSignOut">↩ Sign Out</button>
+        </div>
+    `;
+
+    // Insert before newChatBtn
+    const newChatBtn = document.getElementById('newChatBtn');
+    headerRight.insertBefore(menuWrapper, newChatBtn);
+
+    // Toggle dropdown
+    const avatarBtn = document.getElementById('userAvatarBtn');
+    const dropdown = document.getElementById('userDropdown');
+    avatarBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isOpen = !dropdown.hidden;
+        dropdown.hidden = isOpen;
+        avatarBtn.setAttribute('aria-expanded', String(!isOpen));
+    });
+
+    // Close on outside click or Escape
+    document.addEventListener('click', () => { dropdown.hidden = true; avatarBtn.setAttribute('aria-expanded', 'false'); });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { dropdown.hidden = true; avatarBtn.setAttribute('aria-expanded', 'false'); }
+    });
+
+    // Menu actions
+    document.getElementById('menuMySettings')?.addEventListener('click', () => {
+        dropdown.hidden = true;
+        const settingsModal = document.getElementById('settingsModal');
+        if (settingsModal) {
+            settingsModal.classList.add('active');
+            // Switch to My Account tab
+            if (typeof window.switchSettingsTab === 'function') {
+                window.switchSettingsTab('account');
+            }
+        }
+    });
+
+    document.getElementById('menuSignOut')?.addEventListener('click', async () => {
+        dropdown.hidden = true;
+        try {
+            await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+        } finally {
+            window.location.href = '/login';
+        }
+    });
+}
+
 // DOM Elements
 const chatMessages = document.getElementById('chatMessages');
 const messageInput = document.getElementById('messageInput');
@@ -20,6 +173,7 @@ const darkModeBtn = document.getElementById('darkModeBtn');
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     console.log('💬 Chat: DOM loaded');
+    loadCurrentUser();
     initializeChat();
 });
 
@@ -119,6 +273,10 @@ function applyTheme(dark) {
         darkModeBtn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
     }
     localStorage.setItem('theme', dark ? 'dark' : 'light');
+    // Persist to backend when SSO is active
+    if (currentUser) {
+        patchUserSettings({ theme: dark ? 'dark' : 'light' });
+    }
 }
 
 async function sendMessage() {

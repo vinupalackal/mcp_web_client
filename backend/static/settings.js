@@ -153,7 +153,140 @@ function switchTab(tabName) {
         activeTab.classList.add('active');
     }
 
+    if (tabName === 'account') {
+        loadMyAccountTab();
+    }
+
     console.log(`⚙️ Settings: Switched to ${tabName} tab`);
+}
+
+// Expose for app.js user menu
+window.switchSettingsTab = switchTab;
+
+// ============================================================================
+// My Account tab
+// ============================================================================
+
+async function loadMyAccountTab() {
+    const container = document.getElementById('accountTabContent');
+    if (!container) return;
+
+    container.innerHTML = '<p class="empty-state">Loading profile…</p>';
+    try {
+        const [profileRes, settingsRes] = await Promise.all([
+            fetch('/api/users/me', { credentials: 'include' }),
+            fetch('/api/users/me/settings', { credentials: 'include' }),
+        ]);
+
+        if (!profileRes.ok) {
+            container.innerHTML = '<p class="empty-state">SSO not active in this deployment.</p>';
+            return;
+        }
+
+        const profile = await profileRes.json();
+        const settings = settingsRes.ok ? await settingsRes.json() : {};
+
+        const memberSince = profile.created_at
+            ? new Date(profile.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
+            : '—';
+
+        const providerLabel = { azure_ad: 'Microsoft', google: 'Google' };
+        const provider = profile.roles?.includes('admin') ? 'admin' : '';
+
+        const initials = (profile.display_name || profile.email || '?')
+            .split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2);
+
+        container.innerHTML = `
+            <div class="account-profile-card">
+                <div class="account-avatar-wrap">
+                    ${profile.avatar_url
+                        ? `<img class="account-avatar" src="${profile.avatar_url}" alt="${profile.display_name}"
+                               onerror="this.style.display='none';this.nextSibling.style.display='flex';">
+                           <span class="account-avatar-initials" style="display:none;">${initials}</span>`
+                        : `<span class="account-avatar-initials">${initials}</span>`
+                    }
+                </div>
+                <div class="account-identity">
+                    <span class="account-name">${profile.display_name || '—'}</span>
+                    <span class="account-email">${profile.email}</span>
+                    <span class="account-meta">Member since ${memberSince}</span>
+                    ${profile.roles?.includes('admin') ? '<span class="account-badge admin">Admin</span>' : ''}
+                </div>
+            </div>
+
+            <hr class="account-divider">
+
+            <h4 class="account-section-title">Appearance</h4>
+            <div class="form-group">
+                <label>Theme</label>
+                <div class="radio-group">
+                    <label class="radio-option"><input type="radio" name="accountTheme" value="light" ${settings.theme === 'light' ? 'checked' : ''}><span>Light</span></label>
+                    <label class="radio-option"><input type="radio" name="accountTheme" value="dark" ${settings.theme === 'dark' ? 'checked' : ''}><span>Dark</span></label>
+                    <label class="radio-option"><input type="radio" name="accountTheme" value="system" ${(!settings.theme || settings.theme === 'system') ? 'checked' : ''}><span>System</span></label>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Message Density</label>
+                <div class="radio-group">
+                    <label class="radio-option"><input type="radio" name="accountDensity" value="comfortable" ${(!settings.message_density || settings.message_density === 'comfortable') ? 'checked' : ''}><span>Comfortable</span></label>
+                    <label class="radio-option"><input type="radio" name="accountDensity" value="compact" ${settings.message_density === 'compact' ? 'checked' : ''}><span>Compact</span></label>
+                </div>
+            </div>
+
+            <hr class="account-divider">
+
+            <h4 class="account-section-title">Chat Defaults</h4>
+            <div class="form-group">
+                <label class="switch-toggle" for="accountToolPanel">
+                    <input type="checkbox" id="accountToolPanel" ${settings.tool_panel_visible !== false ? 'checked' : ''}>
+                    <span class="switch-slider"></span>
+                    <span class="switch-label">Show tool execution panel</span>
+                </label>
+            </div>
+
+            <hr class="account-divider">
+            <button class="btn btn-danger btn-sm" id="accountSignOutBtn">↩ Sign Out</button>
+        `;
+
+        // Wire up setting changes
+        container.querySelectorAll('input[name="accountTheme"]').forEach(input => {
+            input.addEventListener('change', async (e) => {
+                const theme = e.target.value;
+                const dark = theme === 'dark';
+                if (typeof applyTheme === 'function') applyTheme(dark);
+                await _patchSettings({ theme });
+            });
+        });
+
+        container.querySelectorAll('input[name="accountDensity"]').forEach(input => {
+            input.addEventListener('change', async (e) => {
+                await _patchSettings({ message_density: e.target.value });
+            });
+        });
+
+        document.getElementById('accountToolPanel')?.addEventListener('change', async (e) => {
+            await _patchSettings({ tool_panel_visible: e.target.checked });
+        });
+
+        document.getElementById('accountSignOutBtn')?.addEventListener('click', async () => {
+            await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+            window.location.href = '/login';
+        });
+
+    } catch (err) {
+        container.innerHTML = `<p class="empty-state">Failed to load profile: ${err.message}</p>`;
+    }
+}
+
+async function _patchSettings(updates) {
+    try {
+        await fetch('/api/users/me/settings', {
+            method: 'PATCH',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updates),
+        });
+    } catch (e) { /* ignore */ }
 }
 
 function updateServerAuthUI() {

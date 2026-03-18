@@ -20,6 +20,7 @@ class SimpleSession:
     created_at: datetime = field(default_factory=datetime.now)
     title: str = "New Conversation"
     config: Dict[str, Any] = field(default_factory=dict)
+    user_id: Optional[str] = None  # SSO: owning user (None = unauthenticated / legacy)
 
 
 class SessionManager:
@@ -32,7 +33,7 @@ class SessionManager:
         
         logger_internal.info("SessionManager initialized")
     
-    def create_session(self, session_id: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> SimpleSession:
+    def create_session(self, session_id: Optional[str] = None, config: Optional[Dict[str, Any]] = None, user_id: Optional[str] = None) -> SimpleSession:
         """Create new chat session"""
         
         if session_id is None:
@@ -42,7 +43,8 @@ class SessionManager:
             session_id=session_id,
             created_at=datetime.now(),
             title="New Conversation",
-            config=config or {}
+            config=config or {},
+            user_id=user_id,
         )
         
         self.sessions[session_id] = session
