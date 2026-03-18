@@ -76,10 +76,10 @@ function setupToolTesterDOM() {
                 <button id="toolTesterToggleResultsPanelBtn" class="btn btn-secondary btn-sm tool-tester-panel-toggle" aria-expanded="true" aria-controls="toolTesterResults">Collapse</button>
               </div>
             </div>
-            <div id="toolTesterResultsProgress" data-tone="neutral">Loading tools and prompt examples…</div>
             <div id="toolTesterResults" class="tool-tester-results">
               <p class="empty-state">Run a tool test to see results here.</p>
             </div>
+            <div id="toolTesterResultsProgress" data-tone="neutral">Loading tools and prompt examples…</div>
           </section>
         </section>
       </main>
@@ -241,6 +241,13 @@ describe('Tool Tester Page — DOM structure', () => {
     expect(document.getElementById('toolTesterSearchInput')).not.toBeNull();
     expect(document.getElementById('toolTesterDeviceIdentifierType')).not.toBeNull();
     expect(document.getElementById('toolTesterDeviceIdentifierValue')).not.toBeNull();
+  });
+
+  test('results progress is rendered below the results list', () => {
+    const results = document.getElementById('toolTesterResults');
+    const progress = document.getElementById('toolTesterResultsProgress');
+
+    expect(results.nextElementSibling).toBe(progress);
   });
 
   test('Test All button is initially disabled', () => {
@@ -615,6 +622,21 @@ describe('Tool Tester Page — individual tool test', () => {
     expect(results.innerHTML).toContain('Server version 1.0.0');
   });
 
+  test('successful result card shows green SUCCESS status', async () => {
+    await flushPromises(30);
+
+    const toolsList = document.getElementById('toolTesterToolsList');
+    const testBtns = toolsList.querySelectorAll('.tool-tester-test-btn:not([disabled])');
+    testBtns[0].click();
+    await flushPromises(30);
+
+    const results = document.getElementById('toolTesterResults');
+    const statusBadge = results.querySelector('.tool-tester-result-status.success');
+
+    expect(statusBadge).not.toBeNull();
+    expect(statusBadge.textContent).toContain('SUCCESS');
+  });
+
   test('tool test execution syncs results to output.txt', async () => {
     await flushPromises(30);
 
@@ -789,6 +811,24 @@ describe('Tool Tester Page — error handling', () => {
     const testAllBtn = document.getElementById('toolTesterTestAllBtn');
     // With no prompts, no testable tools → button should stay disabled
     expect(testAllBtn.disabled).toBe(true);
+  });
+
+  test('failed query run shows red FAILED status in results', async () => {
+    setupToolTesterDOM();
+    global.fetch = buildFetchMock({ messageOk: false });
+    loadModule();
+
+    await flushPromises(30);
+
+    const testBtn = document.querySelector('.tool-tester-test-btn:not([disabled])');
+    testBtn.click();
+    await flushPromises(30);
+
+    const results = document.getElementById('toolTesterResults');
+    const statusBadge = results.querySelector('.tool-tester-result-status.failure');
+
+    expect(statusBadge).not.toBeNull();
+    expect(statusBadge.textContent).toContain('FAILED');
   });
 });
 

@@ -630,12 +630,18 @@ function removePendingResult(tool) {
     resultsEl.querySelectorAll(selector).forEach((card) => card.remove());
 }
 
+function buildResultStatusBadge(status, tone) {
+    return `<button type="button" class="btn btn-secondary btn-sm tool-tester-result-status ${escapeHtml(tone)}" disabled>${escapeHtml(status)}</button>`;
+}
+
 function appendSystemResult(message) {
     appendResult(`
         <article class="tool-tester-result-card tool-tester-result-system">
             <div class="tool-tester-result-header">
                 <div class="tool-tester-result-meta">System</div>
-                <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+                <div class="tool-tester-result-header-actions">
+                    <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+                </div>
             </div>
             <div class="tool-tester-result-body">${escapeHtml(message)}</div>
         </article>
@@ -647,7 +653,10 @@ function appendErrorResult(message) {
         <article class="tool-tester-result-card tool-tester-result-error">
             <div class="tool-tester-result-header">
                 <div class="tool-tester-result-meta">Error</div>
-                <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+                <div class="tool-tester-result-header-actions">
+                    ${buildResultStatusBadge('FAILED', 'failure')}
+                    <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+                </div>
             </div>
             <div class="tool-tester-result-body">${escapeHtml(message)}</div>
         </article>
@@ -660,7 +669,10 @@ function appendPendingResult(tool, prompt) {
         <article class="tool-tester-result-card tool-tester-result-pending" data-tool-id="${escapeHtml(tool.namespaced_id)}">
             <div class="tool-tester-result-header">
                 <div class="tool-tester-result-meta">Running ${escapeHtml(tool.name)}</div>
-                <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+                <div class="tool-tester-result-header-actions">
+                    ${buildResultStatusBadge('RUNNING', 'pending')}
+                    <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+                </div>
             </div>
             <div class="tool-tester-result-body">
                 <p><strong>Prompt</strong></p>
@@ -674,6 +686,11 @@ function appendResultCard(tool, prompt, data) {
     removePendingResult(tool);
     const toolExecutions = Array.isArray(data.tool_executions) ? data.tool_executions : [];
     const assistantResponse = (data.message?.content || '').trim() || summarizeToolExecutions(toolExecutions);
+    const runSucceeded = toolExecutions.length > 0
+        ? toolExecutions.every((execution) => execution?.success !== false)
+        : Boolean(assistantResponse);
+    const runStatusLabel = runSucceeded ? 'SUCCESS' : 'FAILED';
+    const runStatusTone = runSucceeded ? 'success' : 'failure';
     const executionsHtml = toolExecutions.length
         ? toolExecutions.map((execution) => {
             const statusClass = execution.success ? 'success' : 'error';
@@ -706,10 +723,13 @@ function appendResultCard(tool, prompt, data) {
         : '<p class="tool-tester-muted">No tool executions were returned for this prompt.</p>';
 
     appendResult(`
-        <article class="tool-tester-result-card">
+        <article class="tool-tester-result-card tool-tester-result-${runStatusTone}">
             <div class="tool-tester-result-header">
                 <div class="tool-tester-result-meta">${escapeHtml(tool.server_alias)} · ${escapeHtml(tool.name)}</div>
-                <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+                <div class="tool-tester-result-header-actions">
+                    ${buildResultStatusBadge(runStatusLabel, runStatusTone)}
+                    <button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button>
+                </div>
             </div>
             <div class="tool-tester-result-body">
                 <p><strong>Prompt</strong></p>

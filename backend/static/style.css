@@ -2372,12 +2372,15 @@ body:has(.tool-tester-page) {
     display: grid;
     grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
     gap: 1.25rem;
-    align-items: start;
+    align-items: stretch;
 }
 
 .tool-tester-tools-panel,
 .tool-tester-results-panel {
     padding: 1rem 1.1rem;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 .tool-tester-panel-header {
@@ -2420,6 +2423,16 @@ body:has(.tool-tester-page) {
     display: flex;
     flex-direction: column;
     gap: 0.9rem;
+}
+
+.tool-tester-tools-list {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.tool-tester-results {
+    flex: 1 1 auto;
+    min-height: 22rem;
 }
 
 .tool-tester-server-group {
@@ -2515,6 +2528,48 @@ body:has(.tool-tester-page) {
     margin-bottom: 0.45rem;
 }
 
+.tool-tester-result-header-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.55rem;
+    flex-shrink: 0;
+}
+
+.tool-tester-result-status {
+    min-width: 6rem;
+    justify-content: center;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: default;
+    opacity: 1;
+    box-shadow: none;
+}
+
+.tool-tester-result-status:disabled {
+    opacity: 1;
+    cursor: default;
+}
+
+.tool-tester-result-status.success {
+    background: rgba(5, 150, 105, 0.14);
+    border-color: rgba(5, 150, 105, 0.32);
+    color: var(--success-color);
+}
+
+.tool-tester-result-status.failure {
+    background: rgba(220, 38, 38, 0.12);
+    border-color: rgba(220, 38, 38, 0.28);
+    color: var(--danger-color);
+}
+
+.tool-tester-result-status.pending {
+    background: rgba(245, 158, 11, 0.14);
+    border-color: rgba(245, 158, 11, 0.3);
+    color: #b45309;
+}
+
 .tool-tester-result-toggle {
     flex-shrink: 0;
     min-width: 5.5rem;
@@ -2523,7 +2578,7 @@ body:has(.tool-tester-page) {
 }
 
 .tool-tester-results-progress {
-    margin: 0 1rem 0.75rem;
+    margin-top: 0.9rem;
     padding: 0.8rem 0.95rem;
     border: 1px solid rgba(219, 227, 239, 0.95);
     border-left: 4px solid var(--accent-color);
@@ -2572,6 +2627,14 @@ body:has(.tool-tester-page) {
 
 .tool-tester-result-error {
     border-left-color: var(--danger-color);
+}
+
+.tool-tester-result-failure {
+    border-left-color: var(--danger-color);
+}
+
+.tool-tester-result-success {
+    border-left-color: var(--success-color);
 }
 
 .tool-tester-result-pending {
@@ -2631,6 +2694,24 @@ body:has(.tool-tester-page) {
     color: var(--text-secondary);
 }
 
+[data-theme="dark"] .tool-tester-result-status.success {
+    background: rgba(16, 185, 129, 0.2);
+    border-color: rgba(16, 185, 129, 0.4);
+    color: #6ee7b7;
+}
+
+[data-theme="dark"] .tool-tester-result-status.failure {
+    background: rgba(248, 113, 113, 0.16);
+    border-color: rgba(248, 113, 113, 0.36);
+    color: #fca5a5;
+}
+
+[data-theme="dark"] .tool-tester-result-status.pending {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.34);
+    color: #fbbf24;
+}
+
 [data-theme="dark"] .tool-test-status[data-tone="ready"],
 [data-theme="dark"] .tool-test-status[data-tone="success"] {
     color: #93c5fd;
@@ -2641,7 +2722,7 @@ body:has(.tool-tester-page) {
     color: #fbbf24;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 768px) {
     .tool-tester-layout {
         grid-template-columns: 1fr;
     }
