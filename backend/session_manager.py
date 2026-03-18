@@ -159,11 +159,14 @@ class SessionManager:
             
             # Add tool calls if present (for assistant messages)
             if msg.tool_calls:
-                # For Ollama, skip tool_calls in history - it causes parsing errors
-                # Just keep the content if any
+                # For Ollama, tool_calls in history cause parsing errors.
                 if provider == "ollama":
-                    # Skip this message entirely if it has no content
                     if not content:
+                        # Emit a brief synthetic assistant turn so the following
+                        # tool-result user message doesn't land as a consecutive
+                        # user message, which breaks conversation alternation and
+                        # causes Ollama models to stop calling tools on later turns.
+                        llm_messages.append({"role": "assistant", "content": "Let me check that using available tools."})
                         continue
                     # Otherwise just use the content without tool_calls
                 else:

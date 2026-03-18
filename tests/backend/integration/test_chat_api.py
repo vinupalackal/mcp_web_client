@@ -94,6 +94,28 @@ _MOCK_LLM_TEXT_TOOL_CALL = {
     "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
 }
 
+_MOCK_LLM_EMBEDDED_TEXT_TOOL_CALL = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "To answer this question, I will call the `svc__ping` function.\n\nHere is the function call:\n{\"name\": \"svc__ping\", \"parameters\": {\"host\": \"1.2.3.4\"}}",
+        },
+        "finish_reason": "stop",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+}
+
+_MOCK_LLM_EMBEDDED_BARE_NAME_TOOL_CALL = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "To answer this question, I will call the `get_system_uptime` function.\n\n{\"name\": \"get_system_uptime\", \"parameters\": {}}",
+        },
+        "finish_reason": "stop",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+}
+
 _MOCK_LLM_SUMMARY_AFTER_TOOL = {
     "choices": [{
         "message": {
@@ -512,6 +534,94 @@ class TestToolCallingFlow:
         data = r.json()
         assert data["message"]["content"] == "The host responded successfully with pong."
         assert len(data["tool_executions"]) == 1
+        assert len(mcp_route.calls) == 2
+
+    @respx.mock
+    def test_embedded_json_tool_call_content_is_recovered(self, client, llm_openai, monkeypatch):
+        """Tool call JSON embedded inside prose is recovered and executed."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_EMBEDDED_TEXT_TOOL_CALL),
+                httpx.Response(200, json=_MOCK_LLM_SUMMARY_AFTER_TOOL),
+            ]
+        )
+        mcp_route = respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"output": "pong"}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["message"]["content"] == "The host responded successfully with pong."
+        assert len(data["tool_executions"]) == 1
+        assert data["tool_executions"][0]["tool"] == "svc__ping"
+        assert len(mcp_route.calls) == 2
+
+    @respx.mock
+    def test_embedded_json_bare_tool_name_is_resolved_to_namespaced_tool(self, client, llm_openai, monkeypatch):
+        """A bare tool name embedded in assistant prose is resolved when it maps uniquely to one discovered tool."""
+        monkeypatch.setenv("MCP_ALLOW_HTTP_INSECURE", "true")
+        client.post("/api/servers", json={
+            "alias": "home_mcp_server",
+            "base_url": "https://mcp.example.com",
+            "auth_type": "none",
+        })
+        from backend.models import ToolSchema
+        main_module.mcp_manager.tools["home_mcp_server__get_system_uptime"] = ToolSchema(
+            namespaced_id="home_mcp_server__get_system_uptime",
+            server_alias="home_mcp_server",
+            name="get_system_uptime",
+            description="Get system uptime",
+        )
+
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_EMBEDDED_BARE_NAME_TOOL_CALL),
+                httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "The system has been up for 6 days.",
+                        },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+                }),
+            ]
+        )
+        mcp_route = respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3, "result": {"uptime": "6d"}
+                }),
+            ]
+        )
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "uptime?"})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["message"]["content"] == "The system has been up for 6 days."
+        assert len(data["tool_executions"]) == 1
+        assert data["tool_executions"][0]["tool"] == "home_mcp_server__get_system_uptime"
         assert len(mcp_route.calls) == 2
 
     @respx.mock

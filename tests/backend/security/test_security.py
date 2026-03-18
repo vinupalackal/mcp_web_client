@@ -7,6 +7,10 @@ import logging
 import backend.main as main_module
 
 
+def _set_auth_cookie(client, token: str) -> None:
+    client.cookies.set("app_token", token)
+
+
 class TestHTTPSEnforcement:
 
     def test_http_url_blocked_by_default(self, client, server_payload_http):
@@ -177,7 +181,8 @@ class TestSSOTokenSecurity:
             _json.dumps(payload_data).encode()
         ).rstrip(b"=").decode()
         tampered = f"{header}.{new_payload}.{sig}"
-        r = sso_client.get("/api/users/me", cookies={"app_token": tampered})
+        _set_auth_cookie(sso_client, tampered)
+        r = sso_client.get("/api/users/me")
         assert r.status_code == 401
 
     def test_expired_token_returns_session_expired_detail(
@@ -188,7 +193,8 @@ class TestSSOTokenSecurity:
         user = make_db_user(email="sec-expire@example.com")
         token = auth_cookie(user.user_id, user.email, ttl_hours=0)
         time.sleep(1)
-        r = sso_client.get("/api/users/me", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me")
         assert r.status_code == 401
         assert "expired" in r.json().get("detail", "").lower()
 
@@ -221,14 +227,15 @@ class TestSSODataIsolation:
         token_b = auth_cookie(user_b.user_id, user_b.email)
 
         # User B registers a server
+        _set_auth_cookie(sso_client, token_b)
         sso_client.post(
             "/api/servers",
             json={"alias": "b_private_server", "base_url": "https://secret.b.example.com"},
-            cookies={"app_token": token_b},
         )
 
         # User A's server list must not contain user B's server
-        r = sso_client.get("/api/servers", cookies={"app_token": token_a})
+        _set_auth_cookie(sso_client, token_a)
+        r = sso_client.get("/api/servers")
         assert r.status_code == 200
         aliases = [s["alias"] for s in r.json()]
         assert "b_private_server" not in aliases
@@ -239,11 +246,12 @@ class TestSSODataIsolation:
         """TC-SSO-SEC-07: Non-admin gets 403 on all /api/admin/* endpoints."""
         user = make_db_user(email="sec-nonadmin@example.com", sub="sec-sub-nonadmin")
         token = auth_cookie(user.user_id, user.email, roles=["user"])
+        _set_auth_cookie(sso_client, token)
         for path in [
             "/api/admin/users",
             f"/api/admin/users/{user.user_id}",
         ]:
-            r = sso_client.get(path, cookies={"app_token": token})
+            r = sso_client.get(path)
             assert r.status_code == 403, f"Expected 403 on {path}, got {r.status_code}"
 
     def test_user_profile_never_contains_credentials(
@@ -252,7 +260,8 @@ class TestSSODataIsolation:
         """TC-SSO-SEC-08: GET /api/users/me response body never includes sensitive fields."""
         user = make_db_user(email="sec-profile@example.com")
         token = auth_cookie(user.user_id, user.email)
-        r = sso_client.get("/api/users/me", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me")
         body_text = r.text
         for sensitive_field in ("api_key", "client_secret", "bearer_token", "password"):
             assert sensitive_field not in body_text, (

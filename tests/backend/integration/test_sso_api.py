@@ -9,6 +9,10 @@ TestClient with SECRET_KEY set and one mock OIDC provider ("mock_idp") loaded.
 import pytest
 
 
+def _set_auth_cookie(client, token: str) -> None:
+    client.cookies.set("app_token", token)
+
+
 # ============================================================================
 # GET /auth/providers
 # ============================================================================
@@ -142,7 +146,8 @@ class TestGetMe:
         """TC-SSO-USER-02: GET /api/users/me returns UserProfile for a valid token."""
         user = make_db_user(email="getme@example.com", display_name="Get Me User")
         token = auth_cookie(user.user_id, user.email, ["user"])
-        r = sso_client.get("/api/users/me", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me")
         assert r.status_code == 200
         body = r.json()
         assert body["email"] == "getme@example.com"
@@ -154,7 +159,8 @@ class TestGetMe:
         """TC-SSO-USER-03: UserProfile response never contains api_key or client_secret."""
         user = make_db_user(email="nocreds@example.com")
         token = auth_cookie(user.user_id, user.email)
-        r = sso_client.get("/api/users/me", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me")
         body = r.json()
         assert "api_key" not in body
         assert "client_secret" not in body
@@ -165,7 +171,8 @@ class TestGetMe:
         user = make_db_user(email="expired@example.com")
         token = auth_cookie(user.user_id, user.email, ttl_hours=0)
         time.sleep(1)
-        r = sso_client.get("/api/users/me", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me")
         assert r.status_code == 401
         assert "expired" in r.json().get("detail", "").lower()
 
@@ -173,7 +180,8 @@ class TestGetMe:
         """TC-SSO-USER-05: Disabled user (is_active=False) receives 403."""
         user = make_db_user(email="disabled@example.com", is_active=False)
         token = auth_cookie(user.user_id, user.email)
-        r = sso_client.get("/api/users/me", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me")
         assert r.status_code == 403
         assert "disabled" in r.json().get("detail", "").lower()
 
@@ -181,7 +189,8 @@ class TestGetMe:
         """TC-SSO-USER-06: Admin user's profile reflects the admin role."""
         user = make_db_user(email="adminuser@example.com", roles=["user", "admin"])
         token = auth_cookie(user.user_id, user.email, roles=["user", "admin"])
-        r = sso_client.get("/api/users/me", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me")
         assert r.status_code == 200
         assert "admin" in r.json()["roles"]
 
@@ -196,7 +205,8 @@ class TestMySettings:
         """TC-SSO-SETTINGS-01: GET /api/users/me/settings returns default UserSettings."""
         user = make_db_user(email="settings-get@example.com")
         token = auth_cookie(user.user_id, user.email)
-        r = sso_client.get("/api/users/me/settings", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me/settings")
         assert r.status_code == 200
         body = r.json()
         assert body["theme"] == "system"
@@ -207,10 +217,10 @@ class TestMySettings:
         """TC-SSO-SETTINGS-02: PATCH /api/users/me/settings persists the theme change."""
         user = make_db_user(email="settings-patch@example.com")
         token = auth_cookie(user.user_id, user.email)
+        _set_auth_cookie(sso_client, token)
         r = sso_client.patch(
             "/api/users/me/settings",
             json={"theme": "dark"},
-            cookies={"app_token": token},
         )
         assert r.status_code == 200
         assert r.json()["theme"] == "dark"
@@ -219,17 +229,16 @@ class TestMySettings:
         """TC-SSO-SETTINGS-03: PATCH only changes supplied fields; others remain unchanged."""
         user = make_db_user(email="settings-partial@example.com")
         token = auth_cookie(user.user_id, user.email)
+        _set_auth_cookie(sso_client, token)
         # Establish an initial non-default state
         sso_client.patch(
             "/api/users/me/settings",
             json={"theme": "dark", "message_density": "compact"},
-            cookies={"app_token": token},
         )
         # Partial patch — only theme
         r = sso_client.patch(
             "/api/users/me/settings",
             json={"theme": "light"},
-            cookies={"app_token": token},
         )
         assert r.json()["theme"] == "light"
         assert r.json()["message_density"] == "compact"   # unchanged
@@ -248,17 +257,16 @@ class TestMySettings:
         """TC-SSO-SETTINGS-06: PATCH with all-null body leaves settings unchanged."""
         user = make_db_user(email="settings-noop@example.com")
         token = auth_cookie(user.user_id, user.email)
+        _set_auth_cookie(sso_client, token)
         sso_client.patch(
             "/api/users/me/settings",
             json={"theme": "dark"},
-            cookies={"app_token": token},
         )
         sso_client.patch(
             "/api/users/me/settings",
             json={},
-            cookies={"app_token": token},
         )
-        r = sso_client.get("/api/users/me/settings", cookies={"app_token": token})
+        r = sso_client.get("/api/users/me/settings")
         assert r.json()["theme"] == "dark"
 
 
@@ -272,7 +280,8 @@ class TestAdminUsers:
         """TC-SSO-ADMIN-01: Regular user (no admin role) gets 403 on GET /api/admin/users."""
         user = make_db_user(email="regular-admin-test@example.com")
         token = auth_cookie(user.user_id, user.email, roles=["user"])
-        r = sso_client.get("/api/admin/users", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/admin/users")
         assert r.status_code == 403
 
     def test_unauthenticated_request_gets_401(self, sso_client):
@@ -285,7 +294,8 @@ class TestAdminUsers:
         admin = make_db_user(email="admin-list@corp.com", roles=["user", "admin"])
         make_db_user(email="listed-user@example.com", sub="sub-listed")
         token = auth_cookie(admin.user_id, admin.email, roles=["user", "admin"])
-        r = sso_client.get("/api/admin/users", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/admin/users")
         assert r.status_code == 200
         body = r.json()
         assert "users" in body
@@ -297,7 +307,8 @@ class TestAdminUsers:
         admin = make_db_user(email="admin-get@corp.com", roles=["user", "admin"])
         target = make_db_user(email="target-user@example.com", sub="sub-target-get")
         token = auth_cookie(admin.user_id, admin.email, roles=["user", "admin"])
-        r = sso_client.get(f"/api/admin/users/{target.user_id}", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get(f"/api/admin/users/{target.user_id}")
         assert r.status_code == 200
         assert r.json()["email"] == "target-user@example.com"
 
@@ -305,9 +316,9 @@ class TestAdminUsers:
         """TC-SSO-ADMIN-05: Admin GET for a nonexistent user_id returns 404."""
         admin = make_db_user(email="admin-404@corp.com", roles=["user", "admin"])
         token = auth_cookie(admin.user_id, admin.email, roles=["user", "admin"])
+        _set_auth_cookie(sso_client, token)
         r = sso_client.get(
             "/api/admin/users/00000000-0000-0000-0000-000000000000",
-            cookies={"app_token": token},
         )
         assert r.status_code == 404
 
@@ -316,10 +327,10 @@ class TestAdminUsers:
         admin = make_db_user(email="admin-disable@corp.com", roles=["user", "admin"])
         target = make_db_user(email="to-be-disabled@example.com", sub="sub-disable")
         token = auth_cookie(admin.user_id, admin.email, roles=["user", "admin"])
+        _set_auth_cookie(sso_client, token)
         r = sso_client.patch(
             f"/api/admin/users/{target.user_id}",
             json={"is_active": False},
-            cookies={"app_token": token},
         )
         assert r.status_code == 200
 
@@ -327,7 +338,8 @@ class TestAdminUsers:
         """TC-SSO-ADMIN-07: Disabled user's subsequent requests are rejected with 403."""
         user = make_db_user(email="already-disabled@example.com", is_active=False)
         token = auth_cookie(user.user_id, user.email)
-        r = sso_client.get("/api/users/me", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/users/me")
         assert r.status_code == 403
 
     def test_admin_reset_user_settings_returns_200(self, sso_client, make_db_user, auth_cookie):
@@ -335,9 +347,9 @@ class TestAdminUsers:
         admin = make_db_user(email="admin-reset@corp.com", roles=["user", "admin"])
         target = make_db_user(email="reset-target@example.com", sub="sub-reset")
         token = auth_cookie(admin.user_id, admin.email, roles=["user", "admin"])
+        _set_auth_cookie(sso_client, token)
         r = sso_client.delete(
             f"/api/admin/users/{target.user_id}/settings",
-            cookies={"app_token": token},
         )
         assert r.status_code == 200
 
@@ -347,7 +359,8 @@ class TestAdminUsers:
         for i in range(5):
             make_db_user(email=f"page-user-{i}@example.com", sub=f"sub-page-{i}")
         token = auth_cookie(admin.user_id, admin.email, roles=["user", "admin"])
-        r = sso_client.get("/api/admin/users?limit=2&offset=0", cookies={"app_token": token})
+        _set_auth_cookie(sso_client, token)
+        r = sso_client.get("/api/admin/users?limit=2&offset=0")
         assert r.status_code == 200
         body = r.json()
         assert body["limit"] == 2
@@ -358,8 +371,8 @@ class TestAdminUsers:
         user = make_db_user(email="non-admin-get@example.com")
         target = make_db_user(email="target-for-403@example.com", sub="sub-403")
         token = auth_cookie(user.user_id, user.email, roles=["user"])
+        _set_auth_cookie(sso_client, token)
         r = sso_client.get(
             f"/api/admin/users/{target.user_id}",
-            cookies={"app_token": token},
         )
         assert r.status_code == 403

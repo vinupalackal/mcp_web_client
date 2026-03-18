@@ -228,7 +228,8 @@ class TestGetMessagesForLLM:
             assert "tool_call_id" not in m
 
     def test_ollama_skips_assistant_with_only_tool_calls(self, mgr):
-        """TC-FMT-05: Ollama skips assistant messages that have tool_calls but no content."""
+        """TC-FMT-05: Ollama replaces a tool-calls-only assistant message with a synthetic
+        placeholder to prevent consecutive user messages in the history."""
         tc = ToolCall(
             id="call_1",
             type="function",
@@ -238,7 +239,9 @@ class TestGetMessagesForLLM:
             mgr, ChatMessage(role="assistant", content="", tool_calls=[tc])
         )
         msgs = mgr.get_messages_for_llm(sid, "ollama")
-        assert len(msgs) == 0
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "assistant"
+        assert "tools" in msgs[0]["content"].lower() or "check" in msgs[0]["content"].lower()
 
     def test_none_content_becomes_empty_string(self, mgr):
         """TC-FMT-07: None content is converted to empty string."""

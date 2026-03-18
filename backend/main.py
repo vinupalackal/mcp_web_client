@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 from datetime import datetime
 
 
@@ -133,7 +133,7 @@ enterprise_token_cache: dict[str, object] = {}
 
 # Persistent storage directory (credentials live here, not in the browser)
 MCP_DATA_DIR = PathLib(os.getenv("MCP_DATA_DIR", "./data"))
-USAGE_EXAMPLES_PATH = PROJECT_ROOT / "USAGE-EXAMPLES.md"
+USAGE_EXAMPLES_PATH = PROJECT_ROOT / "docs" / "USAGE-EXAMPLES.md"
 
 
 def _load_tool_test_prompts() -> List[ToolTestPrompt]:
@@ -1463,6 +1463,9 @@ async def send_message(
 3. Do not guess server state, configuration, health, uptime, memory, routes, interfaces, or capabilities when a matching tool is available.
 
 **IMPORTANT — Call multiple tools in a single response when needed:**
+4. **For every new user question, always call the relevant tools to get fresh, up-to-date data.** Do NOT answer from tool results that are already in the conversation history — those results are from earlier in this session and may be stale. Always fetch current data by calling tools again.
+
+**IMPORTANT — Call multiple tools in a single response when needed:**
 - If the user's request requires data from more than one tool (e.g. "show CPU and memory", "list processes and disk usage", "show interface stats and uptime"), you MUST call ALL the relevant tools together in your first response as parallel function calls.
 - Do NOT call one tool, wait for results, then call the next. Issue all independent tool calls simultaneously in a single response.
 - Example: for "show CPU and memory information" → call `get_cpu_info` AND `get_memory_info` in the same response, not sequentially.
@@ -1503,6 +1506,96 @@ Always aim to make technical information accessible and actionable."""
             if not raw_content:
                 return []
 
+            available_tool_names = {
+                tool["function"]["name"]
+                for tool in tools_for_llm
+                if tool.get("type") == "function" and tool.get("function", {}).get("name")
+            }
+            bare_tool_name_map: Dict[str, List[str]] = {}
+            for available_tool_name in available_tool_names:
+                bare_tool_name = available_tool_name.split("__", 1)[-1]
+                bare_tool_name_map.setdefault(bare_tool_name, []).append(available_tool_name)
+
+            def resolve_tool_name(candidate_tool_name: str) -> Optional[str]:
+                if not candidate_tool_name:
+                    return None
+                if candidate_tool_name in available_tool_names:
+                    return candidate_tool_name
+
+                bare_matches = bare_tool_name_map.get(candidate_tool_name, [])
+                if len(bare_matches) == 1:
+                    return bare_matches[0]
+
+                return None
+
+            def build_recovered_tool_calls(parsed_payload: Any) -> List[dict]:
+                candidate_calls = parsed_payload if isinstance(parsed_payload, list) else [parsed_payload]
+                recovered_tool_calls = []
+
+                for content_index, candidate in enumerate(candidate_calls, 1):
+                    if not isinstance(candidate, dict):
+                        return []
+
+                    function_payload = candidate.get("function") if isinstance(candidate.get("function"), dict) else {}
+                    tool_name = candidate.get("name") or function_payload.get("name")
+                    resolved_tool_name = resolve_tool_name(tool_name)
+                    if not resolved_tool_name:
+                        return []
+
+                    arguments = candidate.get("parameters")
+                    if arguments is None:
+                        arguments = candidate.get("arguments")
+                    if arguments is None:
+                        arguments = function_payload.get("arguments")
+                    if arguments is None:
+                        arguments = {}
+
+                    if isinstance(arguments, str):
+                        arguments_str = arguments
+                    else:
+                        arguments_str = json.dumps(arguments)
+
+                    recovered_tool_calls.append({
+                        "id": f"content_tool_call_{turn_number}_{content_index}",
+                        "type": "function",
+                        "function": {
+                            "name": resolved_tool_name,
+                            "arguments": arguments_str,
+                        },
+                    })
+
+                return recovered_tool_calls
+
+            def extract_json_payloads(text: str) -> List[Any]:
+                candidates: List[Any] = []
+                decoder = json.JSONDecoder()
+
+                try:
+                    candidates.append(json.loads(text))
+                except (TypeError, json.JSONDecodeError):
+                    pass
+
+                for fenced_match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
+                    fenced_content = fenced_match.group(1).strip()
+                    if not fenced_content:
+                        continue
+                    try:
+                        candidates.append(json.loads(fenced_content))
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+
+                for start_index, char in enumerate(text):
+                    if char not in "[{":
+                        continue
+                    try:
+                        parsed_payload, _ = decoder.raw_decode(text[start_index:])
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(parsed_payload, (dict, list)):
+                        candidates.append(parsed_payload)
+
+                return candidates
+
             cleaned_content = raw_content
             if cleaned_content.startswith("**") and cleaned_content.endswith("**"):
                 cleaned_content = cleaned_content[2:-2].strip()
@@ -1511,51 +1604,12 @@ Always aim to make technical information accessible and actionable."""
             if cleaned_content.startswith("json"):
                 cleaned_content = cleaned_content[4:].strip()
 
-            try:
-                parsed_content = json.loads(cleaned_content)
-            except (TypeError, json.JSONDecodeError):
-                return []
+            for parsed_content in extract_json_payloads(cleaned_content):
+                recovered_tool_calls = build_recovered_tool_calls(parsed_content)
+                if recovered_tool_calls:
+                    return recovered_tool_calls
 
-            candidate_calls = parsed_content if isinstance(parsed_content, list) else [parsed_content]
-            available_tool_names = {
-                tool["function"]["name"]
-                for tool in tools_for_llm
-                if tool.get("type") == "function" and tool.get("function", {}).get("name")
-            }
-
-            recovered_tool_calls = []
-            for content_index, candidate in enumerate(candidate_calls, 1):
-                if not isinstance(candidate, dict):
-                    return []
-
-                function_payload = candidate.get("function") if isinstance(candidate.get("function"), dict) else {}
-                tool_name = candidate.get("name") or function_payload.get("name")
-                if not tool_name or tool_name not in available_tool_names:
-                    return []
-
-                arguments = candidate.get("parameters")
-                if arguments is None:
-                    arguments = candidate.get("arguments")
-                if arguments is None:
-                    arguments = function_payload.get("arguments")
-                if arguments is None:
-                    arguments = {}
-
-                if isinstance(arguments, str):
-                    arguments_str = arguments
-                else:
-                    arguments_str = json.dumps(arguments)
-
-                recovered_tool_calls.append({
-                    "id": f"content_tool_call_{turn_number}_{content_index}",
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": arguments_str,
-                    },
-                })
-
-            return recovered_tool_calls
+            return []
 
         # Insert system message at the beginning if not already present
         if not messages_for_llm or messages_for_llm[0].get("role") != "system":
@@ -1886,12 +1940,12 @@ Always aim to make technical information accessible and actionable."""
 
                         run_blocks = []
                         for run in summary.runs:
-                            status = "SUCCESS" if run.success else "FAILED"
+                            run_status = "SUCCESS" if run.success else "FAILED"
                             result_str = json.dumps(run.result, default=str) if run.result else ""
                             err_str = run.error or ""
                             block = (
                                 f"--- Run {run.run_index} ({run.timestamp_utc}, "
-                                f"{run.duration_ms / 1000:.1f}s, {status}) ---\n"
+                                f"{run.duration_ms / 1000:.1f}s, {run_status}) ---\n"
                                 + (result_str if run.success else f"Error: {err_str}")
                                 + "\n\n"
                             )
