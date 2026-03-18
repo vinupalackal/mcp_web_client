@@ -84,6 +84,21 @@ class TestGetTools:
             for prompt in prompts
         )
 
+    def test_tool_test_results_output_writes_output_txt(self, client, monkeypatch, tmp_path):
+        """TC-TOOL-15: POST /api/tools/test-results-output persists data/output.txt."""
+        monkeypatch.setattr(main_module, "MCP_DATA_DIR", tmp_path)
+
+        r = client.post(
+            "/api/tools/test-results-output",
+            json={"content": "Tool tester batch completed\nSuccess: 2/2"},
+        )
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["file_path"].endswith("output.txt")
+        assert body["bytes_written"] > 0
+        assert (tmp_path / "output.txt").read_text(encoding="utf-8") == "Tool tester batch completed\nSuccess: 2/2\n"
+
 
 class TestRefreshTools:
 

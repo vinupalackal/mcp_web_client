@@ -70,6 +70,7 @@ function setupToolTesterDOM() {
               <h3>Test Results</h3>
               <button id="toolTesterClearResultsBtn" class="btn btn-secondary btn-sm">Clear</button>
             </div>
+            <div id="toolTesterResultsProgress" data-tone="neutral">Loading tools and prompt examples…</div>
             <div id="toolTesterResults" class="tool-tester-results">
               <p class="empty-state">Run a tool test to see results here.</p>
             </div>
@@ -183,6 +184,14 @@ function buildFetchMock({ sessionOk = true, messageOk = true, toolsOk = true, pr
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
     }
 
+    if (url === '/api/tools/test-results-output' && options?.method === 'POST') {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ file_path: 'data/output.txt', bytes_written: 128, updated_at: '2026-03-18T10:15:00Z' }),
+      });
+    }
+
     return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
   });
 }
@@ -216,6 +225,7 @@ describe('Tool Tester Page — DOM structure', () => {
     expect(document.getElementById('toolTesterToolsList')).not.toBeNull();
     expect(document.getElementById('toolTesterResults')).not.toBeNull();
     expect(document.getElementById('toolTesterStatus')).not.toBeNull();
+    expect(document.getElementById('toolTesterResultsProgress')).not.toBeNull();
     expect(document.getElementById('toolTesterTestAllBtn')).not.toBeNull();
     expect(document.getElementById('toolTesterRefreshBtn')).not.toBeNull();
     expect(document.getElementById('toolTesterNewSessionBtn')).not.toBeNull();
@@ -331,6 +341,13 @@ describe('Tool Tester Page — tool loading', () => {
 
     const status = document.getElementById('toolTesterStatus');
     expect(status.textContent.toLowerCase()).toMatch(/ready|tools/);
+  });
+
+  test('results progress mirrors the current status', async () => {
+    await flushPromises(30);
+
+    const progress = document.getElementById('toolTesterResultsProgress');
+    expect(progress.textContent.toLowerCase()).toMatch(/ready|tools/);
   });
 
   test('count badge shows total number of tools', async () => {
@@ -553,6 +570,39 @@ describe('Tool Tester Page — individual tool test', () => {
     expect(results.innerHTML).toContain('Server version 1.0.0');
   });
 
+  test('tool test execution syncs results to output.txt', async () => {
+    await flushPromises(30);
+
+    const toolsList = document.getElementById('toolTesterToolsList');
+    const testBtns = toolsList.querySelectorAll('.tool-tester-test-btn:not([disabled])');
+    testBtns[0].click();
+    await flushPromises(30);
+
+    const outputCalls = global.fetch.mock.calls.filter(([url, opts]) => url === '/api/tools/test-results-output' && opts?.method === 'POST');
+    expect(outputCalls.length).toBeGreaterThan(0);
+
+    const lastPayload = JSON.parse(outputCalls[outputCalls.length - 1][1].body);
+    expect(lastPayload.content).toContain('MCP Tool Tester Results');
+    expect(lastPayload.content).toContain('Server version 1.0.0');
+  });
+
+  test('previous results collapse when a new test starts', async () => {
+    await flushPromises(30);
+
+    const toolsList = document.getElementById('toolTesterToolsList');
+    const testBtns = toolsList.querySelectorAll('.tool-tester-test-btn:not([disabled])');
+
+    testBtns[0].click();
+    await flushPromises(30);
+    testBtns[1].click();
+    await flushPromises(10);
+
+    const results = document.getElementById('toolTesterResults');
+    const cards = results.querySelectorAll('.tool-tester-result-card');
+    expect(cards.length).toBeGreaterThanOrEqual(2);
+    expect(cards[1].classList.contains('tool-tester-result-collapsed')).toBe(true);
+  });
+
   test('tool execution details appear in result card', async () => {
     await flushPromises(30);
 
@@ -588,9 +638,14 @@ describe('Tool Tester Page — clear results', () => {
 
     const clearBtn = document.getElementById('toolTesterClearResultsBtn');
     clearBtn.click();
+    await flushPromises(10);
 
     const results = document.getElementById('toolTesterResults');
     expect(results.innerHTML).toContain('empty-state');
+
+    const outputCalls = global.fetch.mock.calls.filter(([url, opts]) => url === '/api/tools/test-results-output' && opts?.method === 'POST');
+    const lastPayload = JSON.parse(outputCalls[outputCalls.length - 1][1].body);
+    expect(lastPayload.content).toContain('No tool test results yet.');
   });
 });
 

@@ -40,6 +40,8 @@ from backend.models import (
     MessageListResponse,
     ToolSchema,
     ToolTestPrompt,
+    ToolTestOutputRequest,
+    ToolTestOutputResponse,
     ToolRefreshResponse,
     ServerHealthRefreshResponse,
     DeleteResponse,
@@ -199,6 +201,24 @@ def _load_tool_test_prompts() -> List[ToolTestPrompt]:
         line_index += 1
 
     return prompts
+
+
+def _write_tool_test_output(content: str) -> ToolTestOutputResponse:
+    """Persist Tool Tester results to data/output.txt."""
+    MCP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = MCP_DATA_DIR / "output.txt"
+    normalized_content = content.rstrip() + "\n"
+    output_path.write_text(normalized_content, encoding="utf-8")
+    updated_at = datetime.utcnow()
+    try:
+        relative_path = output_path.resolve().relative_to(PROJECT_ROOT.resolve())
+    except ValueError:
+        relative_path = output_path
+    return ToolTestOutputResponse(
+        file_path=str(relative_path),
+        bytes_written=len(normalized_content.encode("utf-8")),
+        updated_at=updated_at,
+    )
 
 
 def _save_llm_config_to_disk(config: LLMConfig) -> None:
@@ -1129,6 +1149,33 @@ async def list_tool_test_prompts() -> List[ToolTestPrompt]:
     prompts = _load_tool_test_prompts()
     logger_external.info(f"← 200 OK (found {len(prompts)} prompts)")
     return prompts
+
+
+@app.post(
+    "/api/tools/test-results-output",
+    response_model=ToolTestOutputResponse,
+    tags=["Tools"],
+    summary="Persist Tool Tester output.txt snapshot",
+    description="Write the current MCP Tool Tester results panel to data/output.txt on the server",
+    responses={
+        200: {"description": "Tool Tester output.txt updated"},
+        500: {"model": ErrorResponse, "description": "Failed to write output.txt"}
+    }
+)
+async def persist_tool_test_results_output(payload: ToolTestOutputRequest) -> ToolTestOutputResponse:
+    """Persist the latest Tool Tester results snapshot to output.txt."""
+    logger_external.info("→ POST /api/tools/test-results-output")
+    try:
+        result = _write_tool_test_output(payload.content)
+    except OSError as exc:
+        logger_internal.error("Failed to persist Tool Tester output: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to write Tool Tester output.txt"
+        ) from exc
+
+    logger_external.info("← 200 OK (%s, %s bytes)", result.file_path, result.bytes_written)
+    return result
 
 
 # ============================================================================

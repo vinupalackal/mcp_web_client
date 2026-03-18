@@ -1,6 +1,7 @@
 console.log('🧪 Tool tester initializing...');
 
 const TOOL_TEST_PROMPTS_ENDPOINT = '/api/tools/test-prompts';
+const TOOL_TEST_OUTPUT_ENDPOINT = '/api/tools/test-results-output';
 const CHAT_PREFERENCE_STORAGE_KEY = 'includeHistory';
 const TOOL_TEST_DEVICE_IDENTIFIER_STORAGE_KEY = 'toolTesterDeviceIdentifier';
 const TOOL_TEST_DEVICE_IDENTIFIER_DEFAULT_TYPE = 'ip';
@@ -19,6 +20,7 @@ const searchInput = document.getElementById('toolTesterSearchInput');
 const deviceIdentifierTypeSelect = document.getElementById('toolTesterDeviceIdentifierType');
 const deviceIdentifierValueInput = document.getElementById('toolTesterDeviceIdentifierValue');
 const statusEl = document.getElementById('toolTesterStatus');
+const resultsProgressEl = document.getElementById('toolTesterResultsProgress');
 const toolsListEl = document.getElementById('toolTesterToolsList');
 const resultsEl = document.getElementById('toolTesterResults');
 const countBadgeEl = document.getElementById('toolTesterCountBadge');
@@ -73,6 +75,10 @@ function setStatus(message, tone = 'neutral') {
     if (!statusEl) return;
     statusEl.textContent = message;
     statusEl.dataset.tone = tone;
+    if (resultsProgressEl) {
+        resultsProgressEl.textContent = message;
+        resultsProgressEl.dataset.tone = tone;
+    }
 }
 
 function getPromptForTool(tool) {
@@ -479,6 +485,62 @@ async function handleRefreshTools() {
 
 function clearResults() {
     resultsEl.innerHTML = '<p class="empty-state">Run a tool test to see prompts, tool executions, and assistant output here.</p>';
+    syncResultsOutputFile();
+}
+
+function buildResultsOutputText() {
+    const sections = ['MCP Tool Tester Results'];
+    const statusText = (resultsProgressEl?.textContent || statusEl?.textContent || '').trim();
+    if (statusText) {
+        sections.push(`Status: ${statusText}`);
+    }
+
+    const cards = Array.from(resultsEl.querySelectorAll('.tool-tester-result-card'));
+    if (!cards.length) {
+        sections.push('');
+        sections.push('No tool test results yet.');
+        return sections.join('\n');
+    }
+
+    const resultSections = cards.map((card) => {
+        const meta = (card.querySelector('.tool-tester-result-meta')?.textContent || 'Result').trim();
+        const body = (card.querySelector('.tool-tester-result-body')?.textContent || '')
+            .replace(/\s+\n/g, '\n')
+            .replace(/\n\s+/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
+        return [`[${meta}]`, body].filter(Boolean).join('\n');
+    });
+
+    sections.push('');
+    sections.push(resultSections.join('\n\n'));
+    return sections.join('\n');
+}
+
+async function syncResultsOutputFile() {
+    try {
+        await fetch(TOOL_TEST_OUTPUT_ENDPOINT, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: buildResultsOutputText() })
+        });
+    } catch (error) {
+        console.warn('🧪 Failed to update Tool Tester output.txt', error);
+    }
+}
+
+function collapsePreviousResults() {
+    resultsEl.querySelectorAll('.tool-tester-result-card').forEach((card) => {
+        card.classList.add('tool-tester-result-collapsed');
+    });
+}
+
+function removePendingResult(tool) {
+    const selector = tool?.namespaced_id
+        ? `.tool-tester-result-pending[data-tool-id="${CSS.escape(tool.namespaced_id)}"]`
+        : '.tool-tester-result-pending';
+    resultsEl.querySelectorAll(selector).forEach((card) => card.remove());
 }
 
 function appendSystemResult(message) {
@@ -500,8 +562,9 @@ function appendErrorResult(message) {
 }
 
 function appendPendingResult(tool, prompt) {
+    removePendingResult(tool);
     prependResult(`
-        <article class="tool-tester-result-card tool-tester-result-pending">
+        <article class="tool-tester-result-card tool-tester-result-pending" data-tool-id="${escapeHtml(tool.namespaced_id)}">
             <div class="tool-tester-result-meta">Running ${escapeHtml(tool.name)}</div>
             <div class="tool-tester-result-body">
                 <p><strong>Prompt</strong></p>
@@ -512,6 +575,7 @@ function appendPendingResult(tool, prompt) {
 }
 
 function appendResultCard(tool, prompt, data) {
+    removePendingResult(tool);
     const toolExecutions = Array.isArray(data.tool_executions) ? data.tool_executions : [];
     const assistantResponse = (data.message?.content || '').trim() || summarizeToolExecutions(toolExecutions);
     const executionsHtml = toolExecutions.length
@@ -580,5 +644,7 @@ function summarizeToolExecutions(toolExecutions) {
 function prependResult(html) {
     const empty = resultsEl.querySelector('.empty-state');
     if (empty) empty.remove();
+    collapsePreviousResults();
     resultsEl.insertAdjacentHTML('afterbegin', html);
+    syncResultsOutputFile();
 }

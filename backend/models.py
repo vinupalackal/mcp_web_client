@@ -721,6 +721,55 @@ class ToolTestPrompt(BaseModel):
     )
 
 
+class ToolTestOutputRequest(BaseModel):
+    """Payload used to persist Tool Tester output.txt snapshots."""
+
+    content: str = Field(
+        ...,
+        description="Plain-text snapshot of the current Tool Tester results panel"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "content": "MCP Tool Tester Results\nStatus: Completed 2/2 tool tests.\n\n[System]\nFinished tool test batch: 2/2 succeeded."
+                }
+            ]
+        }
+    )
+
+
+class ToolTestOutputResponse(BaseModel):
+    """Metadata returned after persisting Tool Tester output.txt."""
+
+    file_path: str = Field(
+        ...,
+        description="Server-side path of the generated Tool Tester output file"
+    )
+    bytes_written: int = Field(
+        ...,
+        ge=0,
+        description="Number of UTF-8 bytes written to output.txt"
+    )
+    updated_at: datetime = Field(
+        ...,
+        description="Timestamp when output.txt was last updated"
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "file_path": "data/output.txt",
+                    "bytes_written": 184,
+                    "updated_at": "2026-03-18T10:15:00Z"
+                }
+            ]
+        }
+    )
+
+
 class SessionConfig(BaseModel):
     """Session configuration"""
     

@@ -2453,6 +2453,46 @@ body:has(.tool-tester-page) {
     box-shadow: var(--shadow-sm);
 }
 
+.tool-tester-results-progress {
+    margin: 0 1rem 0.75rem;
+    padding: 0.8rem 0.95rem;
+    border: 1px solid rgba(219, 227, 239, 0.95);
+    border-left: 4px solid var(--accent-color);
+    border-radius: 0.8rem;
+    background: rgba(255, 255, 255, 0.92);
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    font-weight: 600;
+    box-shadow: var(--shadow-sm);
+}
+
+.tool-tester-results-progress[data-tone="success"],
+.tool-tester-results-progress[data-tone="ready"] {
+    border-left-color: var(--success-color);
+}
+
+.tool-tester-results-progress[data-tone="warning"] {
+    border-left-color: #f59e0b;
+}
+
+.tool-tester-results-progress[data-tone="error"] {
+    border-left-color: var(--danger-color);
+}
+
+.tool-tester-result-collapsed .tool-tester-result-body {
+    display: none;
+}
+
+.tool-tester-result-collapsed {
+    opacity: 0.86;
+    padding-top: 0.8rem;
+    padding-bottom: 0.8rem;
+}
+
+.tool-tester-result-collapsed .tool-tester-result-meta {
+    margin-bottom: 0;
+}
+
 .tool-tester-result-system {
     border-left-color: var(--success-color);
 }
@@ -2507,6 +2547,7 @@ body:has(.tool-tester-page) {
 [data-theme="dark"] .tool-tester-tools-panel,
 [data-theme="dark"] .tool-tester-results-panel,
 [data-theme="dark"] .tool-tester-card,
+[data-theme="dark"] .tool-tester-results-progress,
 [data-theme="dark"] .tool-tester-result-card {
     background: rgba(15, 23, 42, 0.9);
     border-color: rgba(51, 65, 85, 0.9);
