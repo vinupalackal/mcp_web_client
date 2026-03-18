@@ -59,6 +59,9 @@ function setupToolTesterDOM() {
           <section class="tool-tester-tools-panel">
             <div class="tool-tester-panel-header">
               <h3>Available Tools <span id="toolTesterCountBadge" style="display:none;"></span></h3>
+              <div class="tool-tester-panel-header-actions">
+                <button id="toolTesterToggleToolsPanelBtn" class="btn btn-secondary btn-sm tool-tester-panel-toggle" aria-expanded="true" aria-controls="toolTesterToolsList">Collapse</button>
+              </div>
             </div>
             <div id="toolTesterToolsList" class="tool-tester-tools-list">
               <p class="empty-state">Loading tools…</p>
@@ -68,7 +71,10 @@ function setupToolTesterDOM() {
           <section class="tool-tester-results-panel">
             <div class="tool-tester-panel-header">
               <h3>Test Results</h3>
-              <button id="toolTesterClearResultsBtn" class="btn btn-secondary btn-sm">Clear</button>
+              <div class="tool-tester-panel-header-actions">
+                <button id="toolTesterClearResultsBtn" class="btn btn-secondary btn-sm">Clear</button>
+                <button id="toolTesterToggleResultsPanelBtn" class="btn btn-secondary btn-sm tool-tester-panel-toggle" aria-expanded="true" aria-controls="toolTesterResults">Collapse</button>
+              </div>
             </div>
             <div id="toolTesterResultsProgress" data-tone="neutral">Loading tools and prompt examples…</div>
             <div id="toolTesterResults" class="tool-tester-results">
@@ -226,6 +232,8 @@ describe('Tool Tester Page — DOM structure', () => {
     expect(document.getElementById('toolTesterResults')).not.toBeNull();
     expect(document.getElementById('toolTesterStatus')).not.toBeNull();
     expect(document.getElementById('toolTesterResultsProgress')).not.toBeNull();
+    expect(document.getElementById('toolTesterToggleToolsPanelBtn')).not.toBeNull();
+    expect(document.getElementById('toolTesterToggleResultsPanelBtn')).not.toBeNull();
     expect(document.getElementById('toolTesterTestAllBtn')).not.toBeNull();
     expect(document.getElementById('toolTesterRefreshBtn')).not.toBeNull();
     expect(document.getElementById('toolTesterNewSessionBtn')).not.toBeNull();
@@ -426,6 +434,43 @@ describe('Tool Tester Page — tool loading', () => {
       JSON.stringify({ type: 'ip', value: '10.0.0.25' })
     );
   });
+
+  test('tools panel can be collapsed and expanded', async () => {
+    await flushPromises(30);
+
+    const toggleBtn = document.getElementById('toolTesterToggleToolsPanelBtn');
+    const toolsList = document.getElementById('toolTesterToolsList');
+
+    toggleBtn.click();
+    expect(toolsList.hidden).toBe(true);
+    expect(toggleBtn.textContent).toContain('Expand');
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
+
+    toggleBtn.click();
+    expect(toolsList.hidden).toBe(false);
+    expect(toggleBtn.textContent).toContain('Collapse');
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  test('results panel can be collapsed and expanded', async () => {
+    await flushPromises(30);
+
+    const toggleBtn = document.getElementById('toolTesterToggleResultsPanelBtn');
+    const results = document.getElementById('toolTesterResults');
+    const progress = document.getElementById('toolTesterResultsProgress');
+
+    toggleBtn.click();
+    expect(results.hidden).toBe(true);
+    expect(progress.hidden).toBe(true);
+    expect(toggleBtn.textContent).toContain('Expand');
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
+
+    toggleBtn.click();
+    expect(results.hidden).toBe(false);
+    expect(progress.hidden).toBe(false);
+    expect(toggleBtn.textContent).toContain('Collapse');
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('true');
+  });
 });
 
 describe('Tool Tester Page — search/filter', () => {
@@ -600,7 +645,8 @@ describe('Tool Tester Page — individual tool test', () => {
     const results = document.getElementById('toolTesterResults');
     const cards = results.querySelectorAll('.tool-tester-result-card');
     expect(cards.length).toBeGreaterThanOrEqual(2);
-    expect(cards[1].classList.contains('tool-tester-result-collapsed')).toBe(true);
+    expect(cards[0].classList.contains('tool-tester-result-collapsed')).toBe(true);
+    expect(cards[1].classList.contains('tool-tester-result-collapsed')).toBe(false);
   });
 
   test('collapsed result can be expanded again manually', async () => {
@@ -616,7 +662,7 @@ describe('Tool Tester Page — individual tool test', () => {
 
     const results = document.getElementById('toolTesterResults');
     const cards = results.querySelectorAll('.tool-tester-result-card');
-    const olderCard = cards[1];
+    const olderCard = cards[0];
     const expandBtn = olderCard.querySelector('.tool-tester-result-toggle');
 
     expect(olderCard.classList.contains('tool-tester-result-collapsed')).toBe(true);
@@ -628,6 +674,23 @@ describe('Tool Tester Page — individual tool test', () => {
     expect(olderCard.classList.contains('tool-tester-result-collapsed')).toBe(false);
     expect(expandBtn.textContent).toContain('Minimize');
     expect(expandBtn.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  test('tool cards can be minimized and expanded', async () => {
+    await flushPromises(30);
+
+    const toolCard = document.querySelector('.tool-tester-card');
+    const toggleBtn = toolCard.querySelector('.tool-tester-tool-toggle');
+
+    toggleBtn.click();
+    expect(toolCard.classList.contains('tool-tester-card-collapsed')).toBe(true);
+    expect(toggleBtn.textContent).toContain('Expand');
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
+
+    toggleBtn.click();
+    expect(toolCard.classList.contains('tool-tester-card-collapsed')).toBe(false);
+    expect(toggleBtn.textContent).toContain('Minimize');
+    expect(toggleBtn.getAttribute('aria-expanded')).toBe('true');
   });
 
   test('tool execution details appear in result card', async () => {

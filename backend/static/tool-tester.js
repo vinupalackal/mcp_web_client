@@ -21,9 +21,14 @@ const deviceIdentifierTypeSelect = document.getElementById('toolTesterDeviceIden
 const deviceIdentifierValueInput = document.getElementById('toolTesterDeviceIdentifierValue');
 const statusEl = document.getElementById('toolTesterStatus');
 const resultsProgressEl = document.getElementById('toolTesterResultsProgress');
+const layoutEl = document.querySelector('.tool-tester-layout');
+const toolsPanelEl = document.querySelector('.tool-tester-tools-panel');
+const resultsPanelEl = document.querySelector('.tool-tester-results-panel');
 const toolsListEl = document.getElementById('toolTesterToolsList');
 const resultsEl = document.getElementById('toolTesterResults');
 const countBadgeEl = document.getElementById('toolTesterCountBadge');
+const toggleToolsPanelBtn = document.getElementById('toolTesterToggleToolsPanelBtn');
+const toggleResultsPanelBtn = document.getElementById('toolTesterToggleResultsPanelBtn');
 
 document.addEventListener('DOMContentLoaded', () => {
     applyTheme(localStorage.getItem('theme') === 'dark');
@@ -42,11 +47,41 @@ document.addEventListener('DOMContentLoaded', () => {
     deviceIdentifierTypeSelect?.addEventListener('change', handleDeviceIdentifierTypeChange);
     deviceIdentifierValueInput?.addEventListener('input', handleDeviceIdentifierValueInput);
     resultsEl?.addEventListener('click', handleResultCardToggle);
+    toolsListEl?.addEventListener('click', handleToolsListClick);
+    toggleToolsPanelBtn?.addEventListener('click', () => togglePanel(toolsPanelEl, toggleToolsPanelBtn, [toolsListEl], 'tools'));
+    toggleResultsPanelBtn?.addEventListener('click', () => togglePanel(resultsPanelEl, toggleResultsPanelBtn, [resultsProgressEl, resultsEl], 'results'));
 
     startClock();
     restoreDeviceIdentifierSelection();
+    syncLayoutState();
     loadToolsAndPrompts();
 });
+
+function togglePanel(panelEl, buttonEl, contentEls, panelName) {
+    if (!panelEl || !buttonEl) return;
+
+    const nextCollapsedState = !panelEl.classList.contains('tool-tester-panel-collapsed');
+    panelEl.classList.toggle('tool-tester-panel-collapsed', nextCollapsedState);
+    contentEls.forEach((element) => {
+        if (element) {
+            element.hidden = nextCollapsedState;
+        }
+    });
+    buttonEl.textContent = nextCollapsedState ? 'Expand' : 'Collapse';
+    buttonEl.setAttribute('aria-expanded', String(!nextCollapsedState));
+    syncLayoutState();
+    setStatus(`${nextCollapsedState ? 'Collapsed' : 'Expanded'} ${panelName} panel.`, 'ready');
+}
+
+function syncLayoutState() {
+    if (!layoutEl) return;
+
+    const toolsCollapsed = toolsPanelEl?.classList.contains('tool-tester-panel-collapsed');
+    const resultsCollapsed = resultsPanelEl?.classList.contains('tool-tester-panel-collapsed');
+
+    layoutEl.classList.toggle('tool-tester-layout-tools-collapsed', Boolean(toolsCollapsed));
+    layoutEl.classList.toggle('tool-tester-layout-results-collapsed', Boolean(resultsCollapsed));
+}
 
 function applyTheme(dark) {
     document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
@@ -287,19 +322,24 @@ function renderToolsList() {
                     const hasPrompt = Boolean(basePrompt);
                     const params = tool.parameters?.properties ? Object.keys(tool.parameters.properties) : [];
                     return `
-                        <article class="tool-tester-card">
+                        <article class="tool-tester-card" data-tool-id="${tool.namespaced_id}">
                             <div class="tool-item-header">
-                                <div>
+                                <div class="tool-tester-card-summary">
                                     <div class="tool-name">${tool.name}</div>
                                     ${tool.description ? `<div class="tool-description">${tool.description}</div>` : ''}
                                 </div>
-                                <button class="btn btn-secondary btn-sm tool-tester-test-btn" data-tool-id="${tool.namespaced_id}" data-has-prompt="${hasPrompt ? 'true' : 'false'}" ${hasPrompt ? '' : 'disabled'}>
-                                    ${hasPrompt ? 'Test' : 'No Example'}
-                                </button>
+                                <div class="tool-tester-card-actions">
+                                    <button type="button" class="btn btn-secondary btn-sm tool-tester-tool-toggle" aria-expanded="true">Minimize</button>
+                                    <button class="btn btn-secondary btn-sm tool-tester-test-btn" data-tool-id="${tool.namespaced_id}" data-has-prompt="${hasPrompt ? 'true' : 'false'}" ${hasPrompt ? '' : 'disabled'}>
+                                        ${hasPrompt ? 'Test' : 'No Example'}
+                                    </button>
+                                </div>
                             </div>
-                            ${params.length ? `<div class="tool-params-chips">${params.map((param) => `<span class="tool-param-chip">${param}</span>`).join('')}</div>` : ''}
-                            <div class="tool-tester-prompt ${hasPrompt ? '' : 'tool-test-hint-muted'}">
-                                ${hasPrompt ? `Prompt: ${escapeHtml(prompt)}` : 'No matching prompt in USAGE-EXAMPLES.md.'}
+                            <div class="tool-tester-card-details">
+                                ${params.length ? `<div class="tool-params-chips">${params.map((param) => `<span class="tool-param-chip">${param}</span>`).join('')}</div>` : ''}
+                                <div class="tool-tester-prompt ${hasPrompt ? '' : 'tool-test-hint-muted'}">
+                                    ${hasPrompt ? `Prompt: ${escapeHtml(prompt)}` : 'No matching prompt in USAGE-EXAMPLES.md.'}
+                                </div>
                             </div>
                         </article>
                     `;
@@ -308,17 +348,41 @@ function renderToolsList() {
         </section>
     `).join('');
 
-    toolsListEl.querySelectorAll('.tool-tester-test-btn').forEach((button) => {
-        button.addEventListener('click', async (event) => {
-            const toolId = event.currentTarget.dataset.toolId;
-            const tool = availableTools.find((item) => item.namespaced_id === toolId);
-            if (tool) {
-                await runToolTest(tool);
-            }
-        });
+    toolsListEl.querySelectorAll('.tool-tester-card').forEach((card) => {
+        syncToolCardToggleState(card);
     });
 
     updateActionButtons();
+}
+
+function syncToolCardToggleState(card) {
+    if (!card) return;
+    const toggleBtn = card.querySelector('.tool-tester-tool-toggle');
+    if (!toggleBtn) return;
+
+    const isCollapsed = card.classList.contains('tool-tester-card-collapsed');
+    toggleBtn.textContent = isCollapsed ? 'Expand' : 'Minimize';
+    toggleBtn.setAttribute('aria-expanded', String(!isCollapsed));
+}
+
+async function handleToolsListClick(event) {
+    const toggleBtn = event.target.closest('.tool-tester-tool-toggle');
+    if (toggleBtn) {
+        const card = toggleBtn.closest('.tool-tester-card');
+        if (!card) return;
+        card.classList.toggle('tool-tester-card-collapsed');
+        syncToolCardToggleState(card);
+        return;
+    }
+
+    const testBtn = event.target.closest('.tool-tester-test-btn');
+    if (!testBtn) return;
+
+    const toolId = testBtn.dataset.toolId;
+    const tool = availableTools.find((item) => item.namespaced_id === toolId);
+    if (tool) {
+        await runToolTest(tool);
+    }
 }
 
 function escapeHtml(value) {
@@ -567,7 +631,7 @@ function removePendingResult(tool) {
 }
 
 function appendSystemResult(message) {
-    prependResult(`
+    appendResult(`
         <article class="tool-tester-result-card tool-tester-result-system">
             <div class="tool-tester-result-header">
                 <div class="tool-tester-result-meta">System</div>
@@ -579,7 +643,7 @@ function appendSystemResult(message) {
 }
 
 function appendErrorResult(message) {
-    prependResult(`
+    appendResult(`
         <article class="tool-tester-result-card tool-tester-result-error">
             <div class="tool-tester-result-header">
                 <div class="tool-tester-result-meta">Error</div>
@@ -592,7 +656,7 @@ function appendErrorResult(message) {
 
 function appendPendingResult(tool, prompt) {
     removePendingResult(tool);
-    prependResult(`
+    appendResult(`
         <article class="tool-tester-result-card tool-tester-result-pending" data-tool-id="${escapeHtml(tool.namespaced_id)}">
             <div class="tool-tester-result-header">
                 <div class="tool-tester-result-meta">Running ${escapeHtml(tool.name)}</div>
@@ -641,7 +705,7 @@ function appendResultCard(tool, prompt, data) {
         }).join('')
         : '<p class="tool-tester-muted">No tool executions were returned for this prompt.</p>';
 
-    prependResult(`
+    appendResult(`
         <article class="tool-tester-result-card">
             <div class="tool-tester-result-header">
                 <div class="tool-tester-result-meta">${escapeHtml(tool.server_alias)} · ${escapeHtml(tool.name)}</div>
@@ -676,11 +740,14 @@ function summarizeToolExecutions(toolExecutions) {
     }).join('\n\n');
 }
 
-function prependResult(html) {
+function appendResult(html) {
     const empty = resultsEl.querySelector('.empty-state');
     if (empty) empty.remove();
     collapsePreviousResults();
-    resultsEl.insertAdjacentHTML('afterbegin', html);
-    syncResultCardToggleState(resultsEl.firstElementChild);
+    resultsEl.insertAdjacentHTML('beforeend', html);
+    syncResultCardToggleState(resultsEl.lastElementChild);
+    if (typeof resultsEl.lastElementChild?.scrollIntoView === 'function') {
+        resultsEl.lastElementChild.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
     syncResultsOutputFile();
 }

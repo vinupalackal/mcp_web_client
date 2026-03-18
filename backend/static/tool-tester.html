@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP Tool Tester</title>
-    <link rel="stylesheet" href="/static/style.css?v=17">
+    <link rel="stylesheet" href="/static/style.css?v=18">
 </head>
 <body>
     <div class="tool-tester-page">
@@ -60,6 +60,9 @@
                 <section class="tool-tester-tools-panel">
                     <div class="tool-tester-panel-header">
                         <h3>Available Tools <span id="toolTesterCountBadge" class="tools-count-badge" style="display:none;"></span></h3>
+                        <div class="tool-tester-panel-header-actions">
+                            <button id="toolTesterToggleToolsPanelBtn" type="button" class="btn btn-secondary btn-sm tool-tester-panel-toggle" aria-expanded="true" aria-controls="toolTesterToolsList">Collapse</button>
+                        </div>
                     </div>
                     <div id="toolTesterToolsList" class="tool-tester-tools-list">
                         <p class="empty-state">Loading tools…</p>
@@ -69,7 +72,10 @@
                 <section class="tool-tester-results-panel">
                     <div class="tool-tester-panel-header">
                         <h3>Test Results</h3>
-                        <button id="toolTesterClearResultsBtn" class="btn btn-secondary btn-sm">Clear</button>
+                        <div class="tool-tester-panel-header-actions">
+                            <button id="toolTesterClearResultsBtn" class="btn btn-secondary btn-sm">Clear</button>
+                            <button id="toolTesterToggleResultsPanelBtn" type="button" class="btn btn-secondary btn-sm tool-tester-panel-toggle" aria-expanded="true" aria-controls="toolTesterResults">Collapse</button>
+                        </div>
                     </div>
                     <div id="toolTesterResultsProgress" class="tool-tester-results-progress" data-tone="neutral">Loading tools and prompt examples…</div>
                     <div id="toolTesterResults" class="tool-tester-results">
@@ -80,6 +86,6 @@
         </main>
     </div>
 
-    <script src="/static/tool-tester.js?v=2"></script>
+    <script src="/static/tool-tester.js?v=3"></script>
 </body>
 </html>

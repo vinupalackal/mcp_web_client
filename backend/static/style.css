@@ -2385,6 +2385,36 @@ body:has(.tool-tester-page) {
     margin-bottom: 0.9rem;
 }
 
+.tool-tester-panel-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+
+.tool-tester-panel-toggle {
+    min-width: 5.75rem;
+}
+
+.tool-tester-layout.tool-tester-layout-tools-collapsed {
+    grid-template-columns: minmax(12rem, 0.34fr) minmax(0, 1.66fr);
+}
+
+.tool-tester-layout.tool-tester-layout-results-collapsed {
+    grid-template-columns: minmax(0, 1.66fr) minmax(12rem, 0.34fr);
+}
+
+.tool-tester-layout.tool-tester-layout-tools-collapsed.tool-tester-layout-results-collapsed {
+    grid-template-columns: repeat(2, minmax(12rem, 1fr));
+}
+
+.tool-tester-panel-collapsed {
+    padding-bottom: 0.85rem;
+}
+
+.tool-tester-panel-collapsed .tool-tester-panel-header {
+    margin-bottom: 0;
+}
+
 .tool-tester-tools-list,
 .tool-tester-results {
     display: flex;
@@ -2422,6 +2452,30 @@ body:has(.tool-tester-page) {
     background: var(--bg-tertiary);
     border: 1px solid var(--border-color);
     border-radius: 0.85rem;
+}
+
+.tool-tester-card-summary {
+    min-width: 0;
+}
+
+.tool-tester-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-shrink: 0;
+}
+
+.tool-tester-tool-toggle {
+    min-width: 5.5rem;
+}
+
+.tool-tester-card-details {
+    display: flex;
+    flex-direction: column;
+}
+
+.tool-tester-card-collapsed .tool-tester-card-details {
+    display: none;
 }
 
 .tool-tester-card .tool-item-header {
@@ -2589,6 +2643,12 @@ body:has(.tool-tester-page) {
 
 @media (max-width: 1024px) {
     .tool-tester-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .tool-tester-layout.tool-tester-layout-tools-collapsed,
+    .tool-tester-layout.tool-tester-layout-results-collapsed,
+    .tool-tester-layout.tool-tester-layout-tools-collapsed.tool-tester-layout-results-collapsed {
         grid-template-columns: 1fr;
     }
 }
