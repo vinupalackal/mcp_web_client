@@ -1976,7 +1976,7 @@ Always aim to make technical information accessible and actionable."""
                         rep_duration_ms = int((_time.time() - rep_start) * 1000)
 
                         # --- Build synthesis prompt (FR-REP-018/019/020) ---
-                        max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "12000"))
+                        max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "50000"))
                         header = (
                             f"Repeated execution of `{target_tool_name}` complete.\n"
                             f"Runs: {repeat_count} | "
@@ -2134,7 +2134,7 @@ Always aim to make technical information accessible and actionable."""
                             duration_ms = int((time.time() - start_time) * 1000)
                             
                             # Truncate large results
-                            max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "12000"))
+                            max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "50000"))
                             result_str = json.dumps(tool_result)
                             if len(result_str) > max_chars:
                                 result_str = result_str[:max_chars] + "... [truncated]"
