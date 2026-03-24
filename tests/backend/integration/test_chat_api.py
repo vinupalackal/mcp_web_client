@@ -16,6 +16,17 @@ _MOCK_LLM_STOP = {
     "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
 }
 
+_MOCK_LLM_CLASSIFICATION = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "Issue classified as: Network / Connectivity",
+        },
+        "finish_reason": "stop",
+    }],
+    "usage": {"prompt_tokens": 8, "completion_tokens": 8, "total_tokens": 16},
+}
+
 _MOCK_LLM_TOOL_CALL = {
     "choices": [{
         "message": {
@@ -324,6 +335,52 @@ class TestSendMessage:
         assert "parallel function calls" in system_content or "parallel tool calls" in system_content or "simultaneously" in system_content
 
     @respx.mock
+    def test_system_prompt_contains_diagnostic_strategy_context(self, client, llm_openai, monkeypatch):
+        """System prompt includes platform, tool inventory, classification, and dynamic network guidance."""
+        monkeypatch.setenv("MCP_ALLOW_HTTP_INSECURE", "true")
+        client.post("/api/servers", json={
+            "alias": "svc",
+            "base_url": "https://mcp.example.com",
+            "auth_type": "none",
+        })
+        from backend.models import ToolSchema
+        main_module.mcp_manager.tools["svc__network_dns_check"] = ToolSchema(
+            namespaced_id="svc__network_dns_check",
+            server_alias="svc",
+            name="network_dns_check",
+            description="DNS diagnostics",
+        )
+        main_module.mcp_manager.tools["svc__wan_status"] = ToolSchema(
+            namespaced_id="svc__wan_status",
+            server_alias="svc",
+            name="wan_status",
+            description="WAN status",
+        )
+
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        captured_payload = {}
+
+        def capture(request):
+            import json
+            captured_payload.update(json.loads(request.content))
+            return httpx.Response(200, json=_MOCK_LLM_STOP)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "The device has no internet and DNS is failing"},
+        )
+
+        system_content = captured_payload["messages"][0]["content"]
+        assert "Platform profile: Broadband" in system_content
+        assert "svc__network_dns_check" in system_content
+        assert "svc__wan_status" in system_content
+        assert "Issue classified as: Network / Connectivity" in system_content
+        assert "Prioritize these available tools in order" in system_content
+
+    @respx.mock
     def test_session_with_include_history_false_sends_only_latest_query(self, client, llm_openai):
         """When include_history is false, prior session messages are not sent with the next user query."""
         client.post("/api/llm/config", json=llm_openai)
@@ -388,6 +445,7 @@ class TestToolCallingFlow:
         # First call returns tool_calls, second returns stop
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
                 httpx.Response(200, json=_MOCK_LLM_STOP),
             ]
@@ -420,6 +478,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
                 httpx.Response(200, json=_MOCK_LLM_STOP),
             ]
@@ -449,6 +508,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_TOOL_CALL_WITH_CONTENT),
                 httpx.Response(200, json=_MOCK_LLM_STOP),
             ]
@@ -480,6 +540,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_DUPLICATE_TOOL_CALLS),
                 httpx.Response(200, json=_MOCK_LLM_STOP),
             ]
@@ -512,6 +573,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
                 httpx.Response(200, json=_MOCK_LLM_TEXT_TOOL_CALL),
                 httpx.Response(200, json=_MOCK_LLM_SUMMARY_AFTER_TOOL),
@@ -545,6 +607,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_EMBEDDED_TEXT_TOOL_CALL),
                 httpx.Response(200, json=_MOCK_LLM_SUMMARY_AFTER_TOOL),
             ]
@@ -591,6 +654,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_EMBEDDED_BARE_NAME_TOOL_CALL),
                 httpx.Response(200, json={
                     "choices": [{
@@ -663,6 +727,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
                 capture,
             ]
@@ -698,6 +763,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_TOOL_CALL_STOP_REASON),
                 httpx.Response(200, json=_MOCK_LLM_STOP),
             ]
@@ -732,6 +798,8 @@ class TestToolCallingFlow:
             import json
             ollama_payloads.append(json.loads(request.content))
             if len(ollama_payloads) == 1:
+                return httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION)
+            if len(ollama_payloads) == 2:
                 return httpx.Response(200, json=_MOCK_OLLAMA_TOOL_CALL)
             return httpx.Response(200, json=_MOCK_OLLAMA_STOP)
 
@@ -755,14 +823,14 @@ class TestToolCallingFlow:
         assert len(data["tool_executions"]) == 1
         assert data["tool_executions"][0]["success"] is True
         assert len(mcp_route.calls) == 2
-        assert len(ollama_payloads) == 2
+        assert len(ollama_payloads) == 3
 
-        second_messages = ollama_payloads[1]["messages"]
-        assert all(msg["role"] != "tool" for msg in second_messages)
-        assert all("tool_calls" not in msg for msg in second_messages)
+        follow_up_messages = ollama_payloads[2]["messages"]
+        assert all(msg["role"] != "tool" for msg in follow_up_messages)
+        assert all("tool_calls" not in msg for msg in follow_up_messages)
         assert any(
             msg["role"] == "user" and "Tool result:" in msg["content"]
-            for msg in second_messages
+            for msg in follow_up_messages
         )
 
     @respx.mock
@@ -777,13 +845,16 @@ class TestToolCallingFlow:
         def capture(request):
             import json
             captured_payloads.append(json.loads(request.content))
+            if len(captured_payloads) == 1:
+                return httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION)
             return httpx.Response(200, json=_MOCK_LLM_STOP)
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
         client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "show system info"})
 
-        assert len(captured_payloads) >= 1
-        assert captured_payloads[0].get("parallel_tool_calls") is True
+        assert len(captured_payloads) == 2
+        assert "parallel_tool_calls" not in captured_payloads[0]
+        assert captured_payloads[1].get("parallel_tool_calls") is True
 
     @respx.mock
     def test_second_llm_request_omits_parallel_tool_calls_flag(self, client, llm_openai, monkeypatch):
@@ -798,6 +869,8 @@ class TestToolCallingFlow:
             import json
             captured_payloads.append(json.loads(request.content))
             if len(captured_payloads) == 1:
+                return httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION)
+            if len(captured_payloads) == 2:
                 return httpx.Response(200, json=_MOCK_LLM_TOOL_CALL)
             return httpx.Response(200, json=_MOCK_LLM_STOP)
 
@@ -816,8 +889,10 @@ class TestToolCallingFlow:
 
         client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
 
-        assert len(captured_payloads) == 2
-        follow_up = captured_payloads[1]
+        assert len(captured_payloads) == 3
+        assert "parallel_tool_calls" not in captured_payloads[0]
+        assert captured_payloads[1].get("parallel_tool_calls") is True
+        follow_up = captured_payloads[2]
         # Tools are omitted on follow-up; parallel_tool_calls must also be absent
         assert "tools" not in follow_up
         assert "parallel_tool_calls" not in follow_up
@@ -850,6 +925,7 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_TWO_TOOL_CALLS),
                 httpx.Response(200, json=_MOCK_LLM_STOP),
             ]

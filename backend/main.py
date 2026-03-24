@@ -132,6 +132,13 @@ logger_external = logging.getLogger("mcp_client.external")
 # Import managers
 from backend.mcp_manager import mcp_manager
 from backend.llm_client import LLMClientFactory
+from backend.prompt_injection import (
+    build_classification_prompt,
+    build_layer2_injection_prompt,
+    build_system_prompt,
+    classify_issue_from_text,
+    parse_issue_classification,
+)
 from backend.session_manager import SessionManager
 
 # Initialize managers
@@ -1488,6 +1495,17 @@ async def send_message(
         
         # Get available tools
         tools_for_llm = mcp_manager.get_tools_for_llm()
+        _max_tools_per_request = int(os.getenv("MCP_MAX_TOOLS_PER_REQUEST", "128"))
+        if len(tools_for_llm) > _max_tools_per_request:
+            logger_internal.warning(
+                "Tool catalog has %s tools but MCP_MAX_TOOLS_PER_REQUEST=%s; "
+                "truncating to first %s tools. Raise MCP_MAX_TOOLS_PER_REQUEST if a "
+                "required tool is being dropped (Azure OpenAI hard limit is 128).",
+                len(tools_for_llm),
+                _max_tools_per_request,
+                _max_tools_per_request,
+            )
+            tools_for_llm = tools_for_llm[:_max_tools_per_request]
         logger_internal.info(f"Available tools for LLM: {len(tools_for_llm)} tools")
         if tools_for_llm:
             tool_names = [t["function"]["name"] for t in tools_for_llm]
@@ -1509,43 +1527,28 @@ async def send_message(
             start_index=history_start_index
         )
         
-        # Add system message to guide LLM behavior with tool results
-        system_message = {
-            "role": "system",
-            "content": """You are a helpful AI assistant with access to MCP (Model Context Protocol) tools.
+        tool_executions = []
+        initial_llm_response = None
+        executed_tool_results: dict[str, dict] = {}
+        issue_classification: Optional[str] = None
+        latest_assistant_tool_guidance: Optional[str] = None
+        layer2_context_messages: List[dict] = []
+        has_real_tools = any(tool_name != "mcp_repeated_exec" for tool_name in tool_names)
 
-**Tool usage policy:**
-1. If the user asks for current server, device, network, process, log, runtime, or system information, use a relevant tool instead of answering from general knowledge.
-2. If a tool can fetch real-time or environment-specific data, call the tool first and then explain the result.
-3. Do not guess server state, configuration, health, uptime, memory, routes, interfaces, or capabilities when a matching tool is available.
-
-**IMPORTANT — Call multiple tools in a single response when needed:**
-4. **For every new user question, always call the relevant tools to get fresh, up-to-date data.** Do NOT answer from tool results that are already in the conversation history — those results are from earlier in this session and may be stale. Always fetch current data by calling tools again.
-
-**IMPORTANT — Call multiple tools in a single response when needed:**
-- If the user's request requires data from more than one tool (e.g. "show CPU and memory", "list processes and disk usage", "show interface stats and uptime"), you MUST call ALL the relevant tools together in your first response as parallel function calls.
-- Do NOT call one tool, wait for results, then call the next. Issue all independent tool calls simultaneously in a single response.
-- Example: for "show CPU and memory information" → call `get_cpu_info` AND `get_memory_info` in the same response, not sequentially.
-
-**When you receive tool execution results, always:**
-1. **Explain what you found** - Describe the tool output in clear, understandable terms
-2. **Provide context** - Explain what the data means and why it matters
-3. **Highlight key information** - Point out important values, patterns, or anomalies
-4. **Be specific** - Reference actual values and details from the tool output
-
-**For errors or failures:**
-1. Explain what went wrong based on the error message
-2. Identify possible causes
-3. Suggest specific next steps or alternative tools
-
-**For successful results:**
-- Don't just repeat raw data
-- Interpret and explain what the information means
-- Help the user understand the significance of the results
-- Organize complex data in a readable format
-
-Always aim to make technical information accessible and actionable."""
-        }
+        def build_runtime_system_message() -> dict:
+            tool_result_contents = [str(tool_exec.get("result", "")) for tool_exec in tool_executions]
+            assistant_guidance = latest_assistant_tool_guidance
+            if not assistant_guidance and issue_classification:
+                assistant_guidance = f"Issue classified as: {issue_classification}"
+            return {
+                "role": "system",
+                "content": build_system_prompt(
+                    available_tool_names=tool_names,
+                    current_user_message=message.content,
+                    assistant_content=assistant_guidance,
+                    tool_result_contents=tool_result_contents,
+                ),
+            }
         
         def rebuild_messages_for_llm() -> List[dict]:
             provider_messages = session_manager.get_messages_for_llm(
@@ -1553,8 +1556,30 @@ Always aim to make technical information accessible and actionable."""
                 provider=llm_config_storage.provider,
                 start_index=history_start_index
             )
-            if not provider_messages or provider_messages[0].get("role") != "system":
-                provider_messages.insert(0, system_message)
+            runtime_system_message = build_runtime_system_message()
+            if provider_messages and provider_messages[0].get("role") == "system":
+                provider_messages[0] = runtime_system_message
+            else:
+                provider_messages.insert(0, runtime_system_message)
+            return provider_messages
+
+        def build_classification_messages() -> List[dict]:
+            provider_messages = session_manager.get_messages_for_llm(
+                session_id,
+                provider=llm_config_storage.provider,
+                start_index=history_start_index,
+            )
+            classification_message = {
+                "role": "system",
+                "content": build_classification_prompt(
+                    available_tool_names=tool_names,
+                    current_user_message=message.content,
+                ),
+            }
+            if provider_messages and provider_messages[0].get("role") == "system":
+                provider_messages[0] = classification_message
+            else:
+                provider_messages.insert(0, classification_message)
             return provider_messages
 
         def extract_tool_calls_from_content(content: str, turn_number: int) -> List[dict]:
@@ -1668,15 +1693,73 @@ Always aim to make technical information accessible and actionable."""
 
             return []
 
+        if has_real_tools:
+            classification_messages = build_classification_messages()
+            logger_external.info(
+                "→ LLM Classification Request: %s messages, tools disabled for strict issue classification",
+                len(classification_messages),
+            )
+            logger_internal.info(
+                "Classification messages to LLM: %s",
+                json.dumps(classification_messages, indent=2),
+            )
+
+            classification_response = await llm_client.chat_completion(
+                messages=classification_messages,
+                tools=[],
+            )
+            classification_msg = classification_response["choices"][0]["message"]
+            classification_content = (classification_msg.get("content") or "").strip()
+            latest_assistant_tool_guidance = classification_content or None
+
+            issue_classification = (
+                parse_issue_classification(classification_content)
+                or classify_issue_from_text(message.content)
+            )
+
+            logger_external.info(
+                "← LLM Classification Response: classification=%s preview=%s",
+                issue_classification or "unclassified",
+                classification_content[:200] if classification_content else "<empty>",
+            )
+
+            if issue_classification:
+                layer2_prompt = build_layer2_injection_prompt(
+                    classification=issue_classification,
+                    available_tool_names=tool_names,
+                )
+                logger_internal.info("Strict classification selected issue type: %s", issue_classification)
+
+                if classification_content:
+                    layer2_context_messages.append(
+                        {
+                            "role": "assistant",
+                            "content": classification_content,
+                        }
+                    )
+                if layer2_prompt:
+                    layer2_context_messages.append(
+                        {
+                            "role": "user",
+                            "content": layer2_prompt,
+                        }
+                    )
+            else:
+                logger_internal.warning(
+                    "Strict classification pass did not return a recognized issue type; continuing with heuristic-free tool selection"
+                )
+
         # Insert system message at the beginning if not already present
-        if not messages_for_llm or messages_for_llm[0].get("role") != "system":
-            messages_for_llm.insert(0, system_message)
+        if messages_for_llm and messages_for_llm[0].get("role") == "system":
+            messages_for_llm[0] = build_runtime_system_message()
+        else:
+            messages_for_llm.insert(0, build_runtime_system_message())
+
+        if layer2_context_messages:
+            messages_for_llm.extend(layer2_context_messages)
         
         # Multi-turn loop for tool calling
         max_turns = int(os.getenv("MCP_MAX_TOOL_CALLS_PER_TURN", "8"))
-        tool_executions = []
-        initial_llm_response = None
-        executed_tool_results: dict[str, dict] = {}
         
         for turn in range(max_turns):
             logger_internal.info(f"Turn {turn + 1}/{max_turns}")
@@ -1734,6 +1817,8 @@ Always aim to make technical information accessible and actionable."""
                 assistant_content = (assistant_msg.get("content") or "").strip()
                 if assistant_content and initial_llm_response is None and not recovered_tool_calls_from_content:
                     initial_llm_response = assistant_content
+                if assistant_content:
+                    latest_assistant_tool_guidance = assistant_content
 
                 if finish_reason != "tool_calls":
                     logger_internal.info(

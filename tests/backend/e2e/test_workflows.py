@@ -18,6 +18,17 @@ _MOCK_LLM_STOP = {
     "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
 }
 
+_MOCK_LLM_CLASSIFICATION = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "Issue classified as: Network / Connectivity",
+        },
+        "finish_reason": "stop",
+    }],
+    "usage": {"prompt_tokens": 8, "completion_tokens": 8, "total_tokens": 16},
+}
+
 _MOCK_LLM_TOOL_CALL = {
     "choices": [{
         "message": {
@@ -96,6 +107,7 @@ class TestChatWorkflowWithTools:
         # Step 5 — Send message; LLM first returns tool call, then stop
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
                 httpx.Response(200, json=_MOCK_LLM_STOP),
             ]

@@ -196,6 +196,7 @@ cd tests/frontend && npm install
 | `MCP_ALLOW_HTTP_INSECURE` | `false` | Allow HTTP MCP servers (dev only) |
 | `MCP_REQUEST_TIMEOUT_MS` | `20000` | Request timeout (milliseconds) |
 | `MCP_MAX_TOOL_CALLS_PER_TURN` | `8` | Max tool executions per turn |
+| `MCP_MAX_TOOLS_PER_REQUEST` | `128` | Max tools sent to the LLM per request (Azure OpenAI hard limit is 128) |
 | `OPENAI_API_KEY` | - | OpenAI API key |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI endpoint |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama endpoint |
@@ -260,19 +261,21 @@ Avoid running `uvicorn backend.main:app` from inside the `backend/` folder.
 
 ## Documentation
 
-- **Requirements**: See [REQUIREMENTS.md](REQUIREMENTS.md)
-- **Architecture**: See [HLD.md](HLD.md)
+- **Contributing Guide**: See [CONTRIBUTING.md](CONTRIBUTING.md)
 - **AI Guidelines**: See [.github/copilot-instructions.md](.github/copilot-instructions.md)
 - **API Reference**: http://localhost:8000/docs
 
 ## License
 
-[Add license information]
+- No standalone license file is currently included in this repository.
+- Confirm usage, redistribution, or publication terms with the project owner before reusing the code outside its intended environment.
 
 ## Contributing
 
-[Add contribution guidelines]
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, testing expectations, and change guidelines.
 
 ## Support
 
-[Add support information]
+- Start with the documentation links above, especially [README.md](README.md), [HLD.md](HLD.md), [REQUIREMENTS.md](REQUIREMENTS.md), and [LLM-PROMPT-INJECTION-STRATEGY.md](LLM-PROMPT-INJECTION-STRATEGY.md).
+- Use the API docs at http://localhost:8000/docs and the troubleshooting section in this README for local setup issues.
+- For runtime debugging, review backend logs and the debug/test pages under [backend/static](backend/static).
