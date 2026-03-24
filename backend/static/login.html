@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In — RDK MCP Triaging Tool</title>
-    <link rel="stylesheet" href="/static/style.css?v=17">
+    <link rel="stylesheet" href="/static/style.css?v=23">
     <style>
         /* Login page — scoped styles */
         body {
@@ -142,7 +142,11 @@
         // Apply saved theme preference immediately (avoids flash)
         (function () {
             const saved = localStorage.getItem('theme');
-            if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+            if (saved === 'dark' || saved === 'teal') {
+                document.documentElement.setAttribute('data-theme', saved);
+            } else if (saved === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
         })();
 
         // Show session-expired / error banner

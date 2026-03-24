@@ -222,6 +222,7 @@ async function loadMyAccountTab() {
                 <div class="radio-group">
                     <label class="radio-option"><input type="radio" name="accountTheme" value="light" ${settings.theme === 'light' ? 'checked' : ''}><span>Light</span></label>
                     <label class="radio-option"><input type="radio" name="accountTheme" value="dark" ${settings.theme === 'dark' ? 'checked' : ''}><span>Dark</span></label>
+                    <label class="radio-option"><input type="radio" name="accountTheme" value="teal" ${settings.theme === 'teal' ? 'checked' : ''}><span>Teal</span></label>
                     <label class="radio-option"><input type="radio" name="accountTheme" value="system" ${(!settings.theme || settings.theme === 'system') ? 'checked' : ''}><span>System</span></label>
                 </div>
             </div>
@@ -252,8 +253,7 @@ async function loadMyAccountTab() {
         container.querySelectorAll('input[name="accountTheme"]').forEach(input => {
             input.addEventListener('change', async (e) => {
                 const theme = e.target.value;
-                const dark = theme === 'dark';
-                if (typeof applyTheme === 'function') applyTheme(dark);
+                if (typeof applyTheme === 'function') applyTheme(theme, { patch: false });
                 await _patchSettings({ theme });
             });
         });

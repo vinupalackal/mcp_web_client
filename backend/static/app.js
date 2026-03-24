@@ -60,7 +60,7 @@ async function loadUserSettings() {
 
 function applyUserSettings(settings) {
     if (settings.theme) {
-        applyTheme(settings.theme === 'dark');
+        applyTheme(settings.theme, { persist: true, patch: false });
     }
 }
 
@@ -170,6 +170,8 @@ const sendBtn = document.getElementById('sendBtn');
 const newChatBtn = document.getElementById('newChatBtn');
 const darkModeBtn = document.getElementById('darkModeBtn');
 
+const AVAILABLE_THEMES = ['light', 'dark', 'teal'];
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     console.log('💬 Chat: DOM loaded');
@@ -202,11 +204,13 @@ function initializeChat() {
     // New chat button
     newChatBtn.addEventListener('click', createNewSession);
 
-    // Dark mode toggle
-    applyTheme(localStorage.getItem('theme') === 'dark');
+    // Theme toggle
+    applyTheme(localStorage.getItem('theme') || 'light', { persist: false, patch: false });
     darkModeBtn.addEventListener('click', () => {
-        const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-        applyTheme(!isDark);
+        const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        const currentIndex = AVAILABLE_THEMES.indexOf(currentTheme);
+        const nextTheme = AVAILABLE_THEMES[(currentIndex + 1 + AVAILABLE_THEMES.length) % AVAILABLE_THEMES.length];
+        applyTheme(nextTheme);
     });
 
     console.log('💬 Chat: Initialized');
@@ -266,16 +270,46 @@ async function createNewSession() {
     }
 }
 
-function applyTheme(dark) {
-    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-    if (darkModeBtn) {
-        darkModeBtn.textContent = dark ? '☀️' : '🌙';
-        darkModeBtn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+function normalizeTheme(theme) {
+    if (typeof theme === 'boolean') {
+        return theme ? 'dark' : 'light';
     }
-    localStorage.setItem('theme', dark ? 'dark' : 'light');
+    if (theme === 'system') {
+        return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    return AVAILABLE_THEMES.includes(theme) ? theme : 'light';
+}
+
+function getNextTheme(theme) {
+    const normalizedTheme = normalizeTheme(theme);
+    const currentIndex = AVAILABLE_THEMES.indexOf(normalizedTheme);
+    return AVAILABLE_THEMES[(currentIndex + 1 + AVAILABLE_THEMES.length) % AVAILABLE_THEMES.length];
+}
+
+function getThemeToggleMeta(theme) {
+    return {
+        light: { icon: '☀️', label: 'Light', nextLabel: 'dark' },
+        dark: { icon: '🌙', label: 'Dark', nextLabel: 'teal' },
+        teal: { icon: '🟢', label: 'Teal', nextLabel: 'light' },
+    }[theme] || { icon: '☀️', label: 'Light', nextLabel: 'dark' };
+}
+
+function applyTheme(theme, options = {}) {
+    const { persist = true, patch = true } = options;
+    const normalizedTheme = normalizeTheme(theme);
+    document.documentElement.setAttribute('data-theme', normalizedTheme);
+    if (darkModeBtn) {
+        const toggleMeta = getThemeToggleMeta(normalizedTheme);
+        darkModeBtn.textContent = `${toggleMeta.icon} ${toggleMeta.label}`;
+        darkModeBtn.title = `Switch to ${toggleMeta.nextLabel} mode`;
+        darkModeBtn.setAttribute('aria-label', `Current theme ${toggleMeta.label}. Switch to ${toggleMeta.nextLabel} mode`);
+    }
+    if (persist) {
+        localStorage.setItem('theme', normalizedTheme);
+    }
     // Persist to backend when SSO is active
-    if (currentUser) {
-        patchUserSettings({ theme: dark ? 'dark' : 'light' });
+    if (patch && currentUser) {
+        patchUserSettings({ theme: normalizedTheme });
     }
 }
 

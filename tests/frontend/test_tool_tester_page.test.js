@@ -843,7 +843,7 @@ describe('Tool Tester Page — dark mode toggle', () => {
     jest.resetAllMocks();
   });
 
-  test('dark mode button toggles data-theme attribute', async () => {
+  test('theme button cycles through light, dark, and teal', async () => {
     await flushPromises(10);
 
     const btn = document.getElementById('toolTesterDarkModeBtn');
@@ -851,6 +851,9 @@ describe('Tool Tester Page — dark mode toggle', () => {
 
     btn.click();
     expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+
+    btn.click();
+    expect(document.documentElement.getAttribute('data-theme')).toBe('teal');
 
     btn.click();
     expect(document.documentElement.getAttribute('data-theme')).toBe('light');
@@ -863,6 +866,9 @@ describe('Tool Tester Page — dark mode toggle', () => {
     btn.click();
     // Verify setItem was called with the correct arguments
     expect(localStorage.setItem).toHaveBeenCalledWith('theme', 'dark');
+
+    btn.click();
+    expect(localStorage.setItem).toHaveBeenCalledWith('theme', 'teal');
 
     btn.click();
     expect(localStorage.setItem).toHaveBeenCalledWith('theme', 'light');

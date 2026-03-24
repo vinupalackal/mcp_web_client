@@ -37,6 +37,149 @@
 }
 
 /* ============================================================
+   Teal Theme
+   ============================================================ */
+[data-theme="teal"] {
+    --bg-primary: #ecf9f7;
+    --bg-secondary: #f9fffe;
+    --bg-tertiary: #f2fbfa;
+    --bg-elevated: #ffffff;
+    --bg-accent-soft: #dbf5f0;
+    --text-primary: #0f172a;
+    --text-secondary: #4b6771;
+    --text-muted: #6b8791;
+    --border-color: #c8e8e2;
+    --border-strong: #9fd5cb;
+    --accent-color: #0f766e;
+    --accent-hover: #0d9488;
+    --accent-strong: #115e59;
+    --success-color: #0f766e;
+    --danger-color: #dc2626;
+    --user-message-bg: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
+    --assistant-message-bg: #f4fbfa;
+    --tool-indicator-bg: #ecfeff;
+    --tool-indicator-border: #14b8a6;
+    --ring-focus: 0 0 0 4px rgba(15, 118, 110, 0.14);
+}
+
+[data-theme="teal"] body {
+    background:
+        radial-gradient(circle at top left, rgba(20, 184, 166, 0.12), transparent 28%),
+        radial-gradient(circle at top right, rgba(45, 212, 191, 0.12), transparent 24%),
+        linear-gradient(180deg, #f6fffd 0%, #ecf9f7 38%, #e2f5f1 100%);
+}
+
+[data-theme="teal"] .app-header {
+    background: rgba(249, 255, 254, 0.88);
+    border-bottom-color: rgba(200, 232, 226, 0.95);
+}
+
+[data-theme="teal"] .live-clock {
+    background: rgba(15, 118, 110, 0.06);
+    border-color: rgba(15, 118, 110, 0.14);
+}
+
+[data-theme="teal"] .chat-container,
+[data-theme="teal"] .tools-sidebar {
+    background: rgba(249, 255, 254, 0.96);
+    border-color: rgba(200, 232, 226, 0.92);
+}
+
+[data-theme="teal"] .chat-input-container {
+    background: rgba(242, 251, 250, 0.96);
+    border-top-color: rgba(200, 232, 226, 0.9);
+}
+
+[data-theme="teal"] .chat-input-wrapper,
+[data-theme="teal"] .server-health-controls,
+[data-theme="teal"] .server-item,
+[data-theme="teal"] .tool-item {
+    background: rgba(255, 255, 255, 0.92);
+    border-color: rgba(200, 232, 226, 0.95);
+}
+
+[data-theme="teal"] .sidebar-top-section,
+[data-theme="teal"] .sidebar-block,
+[data-theme="teal"] .sidebar-info-card,
+[data-theme="teal"] .tools-sidebar-header,
+[data-theme="teal"] .tools-search-bar,
+[data-theme="teal"] .tools-sidebar-content,
+[data-theme="teal"] .tool-test-toolbar,
+[data-theme="teal"] .modal-header,
+[data-theme="teal"] .modal-body,
+[data-theme="teal"] .tabs {
+    border-color: rgba(200, 232, 226, 0.9);
+}
+
+[data-theme="teal"] .sidebar-top-section {
+    background: linear-gradient(180deg, rgba(243, 253, 251, 0.98) 0%, rgba(235, 249, 246, 0.95) 100%);
+}
+
+[data-theme="teal"] .sidebar-block,
+[data-theme="teal"] .sidebar-info-card,
+[data-theme="teal"] .modal-content {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(244, 251, 249, 0.98) 100%);
+}
+
+[data-theme="teal"] .sidebar-section-badge,
+[data-theme="teal"] .enterprise-provider-badge {
+    background: rgba(15, 118, 110, 0.1);
+    color: var(--accent-strong);
+}
+
+[data-theme="teal"] .sidebar-toggle-button,
+[data-theme="teal"] .btn-secondary,
+[data-theme="teal"] .btn-icon {
+    background: rgba(255, 255, 255, 0.88);
+    border-color: rgba(200, 232, 226, 0.95);
+}
+
+[data-theme="teal"] .sidebar-toggle-button:hover,
+[data-theme="teal"] .btn-secondary:hover,
+[data-theme="teal"] .btn-icon:hover,
+[data-theme="teal"] .tool-server-header:hover {
+    background: rgba(219, 245, 240, 0.72);
+}
+
+[data-theme="teal"] .sidebar-footer-nav {
+    background: linear-gradient(180deg, rgba(15, 118, 110, 0.05) 0%, rgba(45, 212, 191, 0.08) 100%);
+    border-top-color: rgba(45, 212, 191, 0.18);
+}
+
+[data-theme="teal"] .sidebar-footer-button {
+    background: rgba(15, 118, 110, 0.05);
+    border-color: rgba(45, 212, 191, 0.18);
+    color: var(--accent-strong);
+}
+
+[data-theme="teal"] .sidebar-footer-button:hover {
+    background: rgba(15, 118, 110, 0.1);
+    border-color: rgba(15, 118, 110, 0.24);
+}
+
+[data-theme="teal"] .sidebar-footer-button[aria-expanded="true"] {
+    background: rgba(15, 118, 110, 0.8);
+    border-color: var(--accent-color);
+    color: #ffffff;
+}
+
+[data-theme="teal"] .tool-search-input,
+[data-theme="teal"] .form-group input,
+[data-theme="teal"] .form-group select {
+    background: rgba(255, 255, 255, 0.96);
+    border-color: rgba(200, 232, 226, 0.95);
+}
+
+[data-theme="teal"] .message-wrapper.assistant .message-content,
+[data-theme="teal"] .welcome-message .message-content,
+[data-theme="teal"] .tool-execution-card,
+[data-theme="teal"] .tool-exec-details,
+[data-theme="teal"] .assistant-meta-details {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 251, 249, 0.98) 100%);
+    border-color: rgba(200, 232, 226, 0.95);
+}
+
+/* ============================================================
    Dark Mode Theme
    ============================================================ */
 [data-theme="dark"] {
@@ -247,25 +390,25 @@
 }
 
 [data-theme="dark"] .app-logo {
-    background: linear-gradient(180deg, rgba(30, 41, 59, 0.95) 0%, rgba(15, 23, 42, 0.98) 100%);
-    border-color: rgba(96, 165, 250, 0.24);
+    background: linear-gradient(180deg, rgba(9, 30, 38, 0.98) 0%, rgba(12, 35, 44, 0.94) 100%);
+    border-color: rgba(94, 234, 212, 0.16);
 }
 
 [data-theme="dark"] .app-logo::before {
     background:
-        linear-gradient(180deg, rgba(59, 130, 246, 0.16) 0%, rgba(56, 189, 248, 0.1) 100%),
-        linear-gradient(90deg, transparent 0, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.12) calc(50% - 0.5px), rgba(148, 163, 184, 0.12) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent 100%),
-        linear-gradient(180deg, transparent 0, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.08) calc(50% - 0.5px), rgba(148, 163, 184, 0.08) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent 100%);
-    opacity: 1;
+        linear-gradient(180deg, rgba(45, 212, 191, 0.08) 0%, rgba(45, 212, 191, 0.04) 100%),
+        linear-gradient(90deg, transparent 0, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.08) calc(50% - 0.5px), rgba(148, 163, 184, 0.08) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent 100%),
+        linear-gradient(180deg, transparent 0, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.06) calc(50% - 0.5px), rgba(148, 163, 184, 0.06) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent 100%);
+    opacity: 0.82;
 }
 
 [data-theme="dark"] .app-logo::after {
-    border-color: rgba(148, 163, 184, 0.18);
-    opacity: 0.9;
+    border-color: rgba(94, 234, 212, 0.16);
+    opacity: 1;
 }
 
 [data-theme="dark"] .app-logo-monogram {
-    color: #e2e8f0;
+    color: #f8fafc;
 }
 
 [data-theme="dark"] .app-brand-kicker {
@@ -584,10 +727,10 @@ body::selection {
     position: relative;
     width: 3rem;
     height: 3rem;
-    border-radius: 0.9rem;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.98) 100%);
-    border: 1px solid rgba(37, 99, 235, 0.16);
-    box-shadow: 0 12px 28px -24px rgba(15, 23, 42, 0.35);
+    border-radius: 0.72rem;
+    background: linear-gradient(180deg, rgba(244, 253, 251, 0.99) 0%, rgba(236, 252, 250, 0.99) 100%);
+    border: 1px solid rgba(45, 212, 191, 0.16);
+    box-shadow: 0 10px 24px -24px rgba(15, 23, 42, 0.26);
     overflow: hidden;
 }
 
@@ -600,15 +743,16 @@ body::selection {
 .app-logo::before {
     inset: 0;
     background:
-        linear-gradient(135deg, rgba(37, 99, 235, 0.04) 0%, rgba(14, 165, 233, 0.08) 100%),
-        linear-gradient(90deg, transparent 0, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.16) calc(50% - 0.5px), rgba(148, 163, 184, 0.16) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent 100%),
-        linear-gradient(180deg, transparent 0, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.12) calc(50% - 0.5px), rgba(148, 163, 184, 0.12) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent 100%);
+        linear-gradient(180deg, rgba(45, 212, 191, 0.08) 0%, rgba(45, 212, 191, 0.03) 100%),
+        linear-gradient(90deg, transparent 0, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.1) calc(50% - 0.5px), rgba(148, 163, 184, 0.1) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent 100%),
+        linear-gradient(180deg, transparent 0, transparent calc(50% - 0.5px), rgba(148, 163, 184, 0.08) calc(50% - 0.5px), rgba(148, 163, 184, 0.08) calc(50% + 0.5px), transparent calc(50% + 0.5px), transparent 100%);
+    opacity: 0.8;
 }
 
 .app-logo::after {
-    inset: 0.45rem;
-    border-radius: 0.7rem;
-    border: 1px solid rgba(148, 163, 184, 0.18);
+    inset: 0.42rem;
+    border-radius: 0.48rem;
+    border: 1px solid rgba(45, 212, 191, 0.18);
     opacity: 1;
 }
 
@@ -620,12 +764,14 @@ body::selection {
     justify-content: center;
     width: 100%;
     height: 100%;
-    font-size: 1.15rem;
-    font-weight: 800;
-    letter-spacing: 0;
+    font-family: Georgia, "Times New Roman", Times, serif;
+    font-size: 1.28rem;
+    font-weight: 700;
+    letter-spacing: -0.04em;
     color: var(--accent-strong);
     text-transform: uppercase;
-    text-indent: 0.02em;
+    text-indent: -0.03em;
+    line-height: 1;
 }
 
 .app-brand-copy {
@@ -2367,7 +2513,6 @@ body::selection {
 
     .header-right .btn {
         flex: 1 1 160px;
-        justify-content: center;
     }
 }
 
