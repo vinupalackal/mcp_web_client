@@ -37,65 +37,65 @@
 }
 
 /* ============================================================
-   Teal Theme
+   Teal Theme  — Apple system teal palette
    ============================================================ */
 [data-theme="teal"] {
-    --bg-primary: #ecf9f7;
-    --bg-secondary: #f9fffe;
-    --bg-tertiary: #f2fbfa;
+    --bg-primary: #edf8fb;
+    --bg-secondary: #f7fcfd;
+    --bg-tertiary: #f0fafc;
     --bg-elevated: #ffffff;
-    --bg-accent-soft: #dbf5f0;
-    --text-primary: #0f172a;
-    --text-secondary: #4b6771;
-    --text-muted: #6b8791;
-    --border-color: #c8e8e2;
-    --border-strong: #9fd5cb;
-    --accent-color: #0f766e;
-    --accent-hover: #0d9488;
-    --accent-strong: #115e59;
-    --success-color: #0f766e;
+    --bg-accent-soft: #d6f1f7;
+    --text-primary: #0c1a1f;
+    --text-secondary: #3d6470;
+    --text-muted: #6290a0;
+    --border-color: #a8dce8;
+    --border-strong: #72c4d8;
+    --accent-color: #30b0c7;
+    --accent-hover: #28a0b8;
+    --accent-strong: #1a7f96;
+    --success-color: #1a7f96;
     --danger-color: #dc2626;
-    --user-message-bg: linear-gradient(135deg, #0f766e 0%, #0d9488 100%);
-    --assistant-message-bg: #f4fbfa;
-    --tool-indicator-bg: #ecfeff;
-    --tool-indicator-border: #14b8a6;
-    --ring-focus: 0 0 0 4px rgba(15, 118, 110, 0.14);
+    --user-message-bg: linear-gradient(135deg, #30b0c7 0%, #28a0b8 100%);
+    --assistant-message-bg: #f4fbfd;
+    --tool-indicator-bg: #e5f7fb;
+    --tool-indicator-border: #30b0c7;
+    --ring-focus: 0 0 0 4px rgba(48, 176, 199, 0.18);
 }
 
 [data-theme="teal"] body {
     background:
-        radial-gradient(circle at top left, rgba(20, 184, 166, 0.12), transparent 28%),
-        radial-gradient(circle at top right, rgba(45, 212, 191, 0.12), transparent 24%),
-        linear-gradient(180deg, #f6fffd 0%, #ecf9f7 38%, #e2f5f1 100%);
+        radial-gradient(circle at top left, rgba(48, 176, 199, 0.13), transparent 28%),
+        radial-gradient(circle at top right, rgba(90, 200, 250, 0.11), transparent 24%),
+        linear-gradient(180deg, #f5fbfd 0%, #edf8fb 38%, #e0f4f9 100%);
 }
 
 [data-theme="teal"] .app-header {
-    background: rgba(249, 255, 254, 0.88);
-    border-bottom-color: rgba(200, 232, 226, 0.95);
+    background: rgba(247, 252, 253, 0.9);
+    border-bottom-color: rgba(168, 220, 232, 0.95);
 }
 
 [data-theme="teal"] .live-clock {
-    background: rgba(15, 118, 110, 0.06);
-    border-color: rgba(15, 118, 110, 0.14);
+    background: rgba(48, 176, 199, 0.07);
+    border-color: rgba(48, 176, 199, 0.18);
 }
 
 [data-theme="teal"] .chat-container,
 [data-theme="teal"] .tools-sidebar {
-    background: rgba(249, 255, 254, 0.96);
-    border-color: rgba(200, 232, 226, 0.92);
+    background: rgba(247, 252, 253, 0.96);
+    border-color: rgba(168, 220, 232, 0.92);
 }
 
 [data-theme="teal"] .chat-input-container {
-    background: rgba(242, 251, 250, 0.96);
-    border-top-color: rgba(200, 232, 226, 0.9);
+    background: rgba(240, 250, 252, 0.96);
+    border-top-color: rgba(168, 220, 232, 0.9);
 }
 
 [data-theme="teal"] .chat-input-wrapper,
 [data-theme="teal"] .server-health-controls,
 [data-theme="teal"] .server-item,
 [data-theme="teal"] .tool-item {
-    background: rgba(255, 255, 255, 0.92);
-    border-color: rgba(200, 232, 226, 0.95);
+    background: rgba(255, 255, 255, 0.93);
+    border-color: rgba(168, 220, 232, 0.95);
 }
 
 [data-theme="teal"] .sidebar-top-section,
@@ -108,57 +108,57 @@
 [data-theme="teal"] .modal-header,
 [data-theme="teal"] .modal-body,
 [data-theme="teal"] .tabs {
-    border-color: rgba(200, 232, 226, 0.9);
+    border-color: rgba(168, 220, 232, 0.9);
 }
 
 [data-theme="teal"] .sidebar-top-section {
-    background: linear-gradient(180deg, rgba(243, 253, 251, 0.98) 0%, rgba(235, 249, 246, 0.95) 100%);
+    background: linear-gradient(180deg, rgba(240, 250, 252, 0.99) 0%, rgba(229, 247, 251, 0.96) 100%);
 }
 
 [data-theme="teal"] .sidebar-block,
 [data-theme="teal"] .sidebar-info-card,
 [data-theme="teal"] .modal-content {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(244, 251, 249, 0.98) 100%);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(240, 250, 252, 0.98) 100%);
 }
 
 [data-theme="teal"] .sidebar-section-badge,
 [data-theme="teal"] .enterprise-provider-badge {
-    background: rgba(15, 118, 110, 0.1);
+    background: rgba(48, 176, 199, 0.12);
     color: var(--accent-strong);
 }
 
 [data-theme="teal"] .sidebar-toggle-button,
 [data-theme="teal"] .btn-secondary,
 [data-theme="teal"] .btn-icon {
-    background: rgba(255, 255, 255, 0.88);
-    border-color: rgba(200, 232, 226, 0.95);
+    background: rgba(255, 255, 255, 0.9);
+    border-color: rgba(168, 220, 232, 0.95);
 }
 
 [data-theme="teal"] .sidebar-toggle-button:hover,
 [data-theme="teal"] .btn-secondary:hover,
 [data-theme="teal"] .btn-icon:hover,
 [data-theme="teal"] .tool-server-header:hover {
-    background: rgba(219, 245, 240, 0.72);
+    background: rgba(214, 241, 247, 0.72);
 }
 
 [data-theme="teal"] .sidebar-footer-nav {
-    background: linear-gradient(180deg, rgba(15, 118, 110, 0.05) 0%, rgba(45, 212, 191, 0.08) 100%);
-    border-top-color: rgba(45, 212, 191, 0.18);
+    background: linear-gradient(180deg, rgba(48, 176, 199, 0.06) 0%, rgba(90, 200, 250, 0.09) 100%);
+    border-top-color: rgba(90, 200, 250, 0.2);
 }
 
 [data-theme="teal"] .sidebar-footer-button {
-    background: rgba(15, 118, 110, 0.05);
-    border-color: rgba(45, 212, 191, 0.18);
+    background: rgba(48, 176, 199, 0.06);
+    border-color: rgba(90, 200, 250, 0.2);
     color: var(--accent-strong);
 }
 
 [data-theme="teal"] .sidebar-footer-button:hover {
-    background: rgba(15, 118, 110, 0.1);
-    border-color: rgba(15, 118, 110, 0.24);
+    background: rgba(48, 176, 199, 0.12);
+    border-color: rgba(48, 176, 199, 0.28);
 }
 
 [data-theme="teal"] .sidebar-footer-button[aria-expanded="true"] {
-    background: rgba(15, 118, 110, 0.8);
+    background: rgba(48, 176, 199, 0.82);
     border-color: var(--accent-color);
     color: #ffffff;
 }
@@ -166,8 +166,8 @@
 [data-theme="teal"] .tool-search-input,
 [data-theme="teal"] .form-group input,
 [data-theme="teal"] .form-group select {
-    background: rgba(255, 255, 255, 0.96);
-    border-color: rgba(200, 232, 226, 0.95);
+    background: rgba(255, 255, 255, 0.97);
+    border-color: rgba(168, 220, 232, 0.95);
 }
 
 [data-theme="teal"] .message-wrapper.assistant .message-content,
@@ -175,8 +175,8 @@
 [data-theme="teal"] .tool-execution-card,
 [data-theme="teal"] .tool-exec-details,
 [data-theme="teal"] .assistant-meta-details {
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 251, 249, 0.98) 100%);
-    border-color: rgba(200, 232, 226, 0.95);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99) 0%, rgba(240, 250, 252, 0.98) 100%);
+    border-color: rgba(168, 220, 232, 0.95);
 }
 
 /* ============================================================
