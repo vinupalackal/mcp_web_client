@@ -764,6 +764,10 @@ async function handleSaveLLMConfig(e) {
     const temperature = parseFloat(document.getElementById('llmTemperature').value || '0.7');
     const standardTimeoutMs = parseInt(document.getElementById('llmTimeoutMs').value || '180000', 10);
     const enterpriseTimeoutMs = parseInt(document.getElementById('enterpriseLlmTimeoutMs').value || '180000', 10);
+    const toolsSplitEnabled = document.getElementById('toolsSplitEnabledToggle')?.checked ?? false;
+    const toolsSplitMode = document.getElementById('toolsSplitMode')?.value || 'concurrent';
+    const toolsSplitLimitRaw = document.getElementById('toolsSplitLimit')?.value;
+    const toolsSplitLimit = toolsSplitLimitRaw ? parseInt(toolsSplitLimitRaw, 10) : null;
 
     let llmConfig;
     if (mode === 'enterprise') {
@@ -778,6 +782,9 @@ async function handleSaveLLMConfig(e) {
             token_endpoint_url: document.getElementById('enterpriseTokenEndpoint').value,
             temperature,
             llm_timeout_ms: enterpriseTimeoutMs,
+            tools_split_enabled: toolsSplitEnabled,
+            tools_split_mode: toolsSplitMode,
+            tools_split_limit: toolsSplitEnabled ? toolsSplitLimit : null,
         };
     } else {
         llmConfig = {
@@ -788,6 +795,9 @@ async function handleSaveLLMConfig(e) {
             api_key: document.getElementById('llmApiKey').value || null,
             temperature,
             llm_timeout_ms: standardTimeoutMs,
+            tools_split_enabled: toolsSplitEnabled,
+            tools_split_mode: toolsSplitMode,
+            tools_split_limit: toolsSplitEnabled ? toolsSplitLimit : null,
         };
     }
 
@@ -835,6 +845,28 @@ function loadLLMConfig(config) {
     document.getElementById('llmTemperature').value = config?.temperature ?? '0.7';
     document.getElementById('llmTimeoutMs').value = config?.llm_timeout_ms ?? '180000';
     document.getElementById('enterpriseLlmTimeoutMs').value = config?.llm_timeout_ms ?? '180000';
+
+    const splitEnabledToggle = document.getElementById('toolsSplitEnabledToggle');
+    const toolsSplitOptionsGroup = document.getElementById('toolsSplitOptionsGroup');
+    const toolsSplitLimitEl = document.getElementById('toolsSplitLimit');
+    const toolsSplitModeEl = document.getElementById('toolsSplitMode');
+    const splitEnabled = config?.tools_split_enabled ?? false;
+
+    function applySplitToggleState(enabled) {
+        if (toolsSplitOptionsGroup) toolsSplitOptionsGroup.style.display = enabled ? 'block' : 'none';
+    }
+
+    if (splitEnabledToggle) {
+        splitEnabledToggle.checked = splitEnabled;
+        splitEnabledToggle.onchange = () => applySplitToggleState(splitEnabledToggle.checked);
+    }
+    applySplitToggleState(splitEnabled);
+    if (toolsSplitModeEl) {
+        toolsSplitModeEl.value = config?.tools_split_mode || 'concurrent';
+    }
+    if (toolsSplitLimitEl) {
+        toolsSplitLimitEl.value = config?.tools_split_limit != null ? config.tools_split_limit : '';
+    }
 
     if (config?.provider === 'enterprise') {
         document.getElementById('enterpriseGatewayUrl').value = config.base_url || '';

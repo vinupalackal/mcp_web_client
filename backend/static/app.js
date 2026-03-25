@@ -531,7 +531,23 @@ function formatMessageContent(content) {
     // Format italic (*...* or _..._)
     formatted = formatted.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     formatted = formatted.replace(/_([^_]+)_/g, '<em>$1</em>');
-    
+
+    // Highlight lines that contain key issue/finding/error indicators with red
+    // Operates on the already-formatted HTML split by <br> so each segment
+    // represents one logical line of the original text.
+    const ISSUE_LINE_RE = /(?:^|\s)(?:error|fail(?:ed|ure)?|critical|alert|issue|problem|warning|fault|outage|down|unreachable|timeout|denied|unauthorized|forbidden|crash(?:ed)?|exception|anomal(?:y|ies)|degraded|abnormal|high\s+(?:cpu|memory|load|latency)|packet\s+loss)(?:\W|$)/i;
+    formatted = formatted
+        .split('<br>')
+        .map(segment => {
+            // Strip any tags temporarily to test the plain text of the segment
+            const plain = segment.replace(/<[^>]*>/g, '');
+            if (ISSUE_LINE_RE.test(plain)) {
+                return `<span class="issue-highlight">${segment}</span>`;
+            }
+            return segment;
+        })
+        .join('<br>');
+
     return formatted;
 }
 

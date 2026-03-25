@@ -223,6 +223,41 @@ class LLMConfig(BaseModel):
         ge=1,
         description="Maximum tokens in response"
     )
+    tools_split_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable split-phase tool querying. When True and the total discovered "
+            "tool count exceeds tools_split_limit (or MCP_MAX_TOOLS_PER_REQUEST), "
+            "the tool catalog is split into chunks and the LLM is queried per "
+            "chunk according to tools_split_mode. All tool calls collected across "
+            "chunks are then executed together. Has no effect when False (default)."
+        ),
+    )
+    tools_split_mode: Literal["sequential", "concurrent"] = Field(
+        default="concurrent",
+        description=(
+            "Execution mode for split-phase LLM chunk requests. "
+            "'concurrent': all chunk requests are fired simultaneously via "
+            "asyncio.gather() — fastest, but increases parallel load on the gateway. "
+            "'sequential': chunk requests are sent one after another — slower "
+            "(total latency \u2248 N \u00d7 LLM latency) but easier to debug and "
+            "gentler on rate-limited gateways. Only used when tools_split_enabled=True."
+        ),
+    )
+    tools_split_limit: Optional[int] = Field(
+        None,
+        ge=1,
+        le=512,
+        description=(
+            "Maximum number of tools sent to the LLM in a single request. "
+            "When the total discovered tool count exceeds this value, tools are "
+            "automatically split into multiple chunks and the LLM is queried once "
+            "per chunk (split-phase mode). All tool calls collected across every "
+            "chunk are then executed together before a final synthesis call. "
+            "Overrides the MCP_MAX_TOOLS_PER_REQUEST environment variable when set. "
+            "Leave unset to use the environment default (128)."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_gateway_mode(self):

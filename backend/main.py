@@ -8,6 +8,7 @@ import os
 import json
 import re
 import sys
+import asyncio
 import httpx
 from pathlib import Path as PathLib
 from contextlib import asynccontextmanager
@@ -1495,17 +1496,39 @@ async def send_message(
         
         # Get available tools
         tools_for_llm = mcp_manager.get_tools_for_llm()
-        _max_tools_per_request = int(os.getenv("MCP_MAX_TOOLS_PER_REQUEST", "128"))
-        if len(tools_for_llm) > _max_tools_per_request:
-            logger_internal.warning(
-                "Tool catalog has %s tools but MCP_MAX_TOOLS_PER_REQUEST=%s; "
-                "truncating to first %s tools. Raise MCP_MAX_TOOLS_PER_REQUEST if a "
-                "required tool is being dropped (Azure OpenAI hard limit is 128).",
-                len(tools_for_llm),
-                _max_tools_per_request,
-                _max_tools_per_request,
+
+        # Effective per-request limit: LLM config field overrides env var
+        _env_limit = int(os.getenv("MCP_MAX_TOOLS_PER_REQUEST", "128"))
+        _effective_limit = active_llm_config.tools_split_limit or _env_limit
+        tool_chunks = mcp_manager.get_tools_for_llm_chunks(_effective_limit)
+        _split_phase_needed = (
+            len(tool_chunks) > 1
+            and active_llm_config.tools_split_enabled
+        )
+
+        if _split_phase_needed:
+            logger_internal.info(
+                "Tool catalog: %s tools → %s chunk(s) of ≤%s "
+                "(tools_split_limit=%s, env_limit=%s)",
+                len(tools_for_llm), len(tool_chunks), _effective_limit,
+                active_llm_config.tools_split_limit, _env_limit,
             )
-            tools_for_llm = tools_for_llm[:_max_tools_per_request]
+        elif len(tool_chunks) > 1 and not active_llm_config.tools_split_enabled:
+            logger_internal.warning(
+                "Tool catalog has %s tools across %s chunk(s) but tools_split_enabled=False; "
+                "using full catalog without splitting. Enable 'Split Tools List' in LLM Settings "
+                "to activate split-phase mode.",
+                len(tools_for_llm), len(tool_chunks),
+            )
+        elif len(tools_for_llm) > _effective_limit:
+            logger_internal.warning(
+                "Tool catalog has %s tools but effective limit=%s; truncating. "
+                "Enable 'Split Tools List' in LLM Settings to activate split-phase mode instead.",
+                len(tools_for_llm), _effective_limit,
+            )
+            tools_for_llm = tools_for_llm[:_effective_limit]
+            tool_chunks = [tools_for_llm]
+
         logger_internal.info(f"Available tools for LLM: {len(tools_for_llm)} tools")
         if tools_for_llm:
             tool_names = [t["function"]["name"] for t in tools_for_llm]
@@ -1757,7 +1780,103 @@ async def send_message(
 
         if layer2_context_messages:
             messages_for_llm.extend(layer2_context_messages)
-        
+
+        # ------------------------------------------------------------------ #
+        # Split-phase pre-collection                                           #
+        # When the tool catalog is larger than tools_split_limit (or           #
+        # MCP_MAX_TOOLS_PER_REQUEST), tools are split into chunks and the LLM  #
+        # is queried once per chunk against a read-only snapshot of the        #
+        # conversation.  All tool_calls returned across every chunk are merged  #
+        # (deduplicated by tool name + arguments) and injected into Turn 0     #
+        # of the main loop below, bypassing the normal first-turn LLM call.   #
+        # ------------------------------------------------------------------ #
+        split_phase_tool_calls: Optional[List[Dict[str, Any]]] = None
+        if _split_phase_needed and has_real_tools:
+            _messages_snapshot = list(messages_for_llm)  # read-only snapshot
+            _sp_merged: List[Dict[str, Any]] = []
+            _sp_seen: set = set()
+
+            _ordinals = [
+                "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH",
+                "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH",
+            ]
+
+            _split_mode = active_llm_config.tools_split_mode  # "sequential" | "concurrent"
+
+            async def _query_chunk(
+                sp_idx: int, sp_chunk: List[Dict[str, Any]]
+            ) -> List[Dict[str, Any]]:
+                """Query one tool-chunk against the LLM and return its tool calls."""
+                _ordinal = _ordinals[sp_idx - 1] if sp_idx <= len(_ordinals) else f"#{sp_idx}"
+                logger_external.info(
+                    "→ %s REQUEST TO LLM WITH SPLIT [%s]: Tools Count: %s",
+                    _ordinal, _split_mode.upper(), len(sp_chunk),
+                )
+                try:
+                    resp = await llm_client.chat_completion(
+                        messages=_messages_snapshot,
+                        tools=sp_chunk,
+                    )
+                except Exception as err:
+                    logger_internal.error(
+                        "Split-phase chunk %s/%s failed: %s",
+                        sp_idx, len(tool_chunks), err,
+                    )
+                    return []
+
+                msg = resp["choices"][0]["message"]
+                finish = resp["choices"][0].get("finish_reason", "")
+                calls = msg.get("tool_calls") or []
+
+                if not calls and msg.get("content"):
+                    calls = extract_tool_calls_from_content(msg.get("content", ""), sp_idx)
+
+                logger_external.info(
+                    "← %s RESPONSE FROM LLM WITH SPLIT [%s]: %s tool call(s) requested, finish=%s",
+                    _ordinal, _split_mode.upper(), len(calls), finish,
+                )
+                return calls
+
+            if _split_mode == "sequential":
+                # Sequential: one chunk at a time — predictable, gateway rate-limit friendly
+                logger_internal.info(
+                    "Split-phase mode=sequential: sending %s chunk(s) one after another",
+                    len(tool_chunks),
+                )
+                _chunk_results: List[List[Dict[str, Any]]] = []
+                for _seq_i, _seq_chunk in enumerate(tool_chunks, 1):
+                    _chunk_results.append(await _query_chunk(_seq_i, _seq_chunk))
+            else:
+                # Concurrent (default): fire all chunks simultaneously
+                logger_internal.info(
+                    "Split-phase mode=concurrent: firing %s chunk(s) in parallel",
+                    len(tool_chunks),
+                )
+                _chunk_results = await asyncio.gather(
+                    *[_query_chunk(i + 1, chunk) for i, chunk in enumerate(tool_chunks)]
+                )
+
+            # Merge results in chunk order, deduplicating by (tool_name, arguments)
+            for _chunk_calls in _chunk_results:
+                for _sp_tc in _chunk_calls:
+                    _sp_name = _sp_tc.get("function", {}).get("name", "")
+                    _sp_args = _sp_tc.get("function", {}).get("arguments", "{}")
+                    if isinstance(_sp_args, dict):
+                        _sp_args = json.dumps(_sp_args, sort_keys=True)
+                    _sp_dedup = (_sp_name, _sp_args)
+                    if _sp_dedup not in _sp_seen:
+                        _sp_seen.add(_sp_dedup)
+                        _sp_merged.append(_sp_tc)
+
+            split_phase_tool_calls = _sp_merged
+            _sp_tool_names = [tc.get("function", {}).get("name", "") for tc in split_phase_tool_calls]
+            logger_external.info(
+                "MCP CLIENT → MCP SERVER TOOLS LIST: [%s] (%s tool(s) across %s chunk(s))",
+                ", ".join(_sp_tool_names) if _sp_tool_names else "<none>",
+                len(split_phase_tool_calls),
+                len(tool_chunks),
+            )
+
         # Multi-turn loop for tool calling
         max_turns = int(os.getenv("MCP_MAX_TOOL_CALLS_PER_TURN", "8"))
         
@@ -1769,23 +1888,54 @@ async def send_message(
             # tools in parallel in the first response.
             tools_for_request = tools_for_llm if not tool_executions else []
             
-            # Log request to LLM
-            logger_external.info(
-                f"→ LLM Request: {len(messages_for_llm)} messages, {len(tools_for_request)} tools sent ({len(tools_for_llm)} available)"
-            )
-            logger_internal.info(f"Messages to LLM: {json.dumps(messages_for_llm, indent=2)}")
-            if tools_for_request:
-                logger_internal.info(f"Tools sent to LLM: {json.dumps(tools_for_request, indent=2)}")
-            elif tools_for_llm:
-                logger_internal.info(
-                    "Skipping tool catalog for follow-up LLM request because tool results are already in context"
+            # Call LLM — or inject split-phase pre-collected tool calls for Turn 0
+            if turn == 0 and split_phase_tool_calls is not None:
+                if split_phase_tool_calls:
+                    # Inject the merged tool calls from all chunks; skip LLM call
+                    logger_internal.info(
+                        "Split-phase Turn 0: injecting %s pre-collected tool call(s), skipping LLM call",
+                        len(split_phase_tool_calls),
+                    )
+                    llm_response = {
+                        "choices": [{
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": split_phase_tool_calls,
+                            },
+                            "finish_reason": "tool_calls",
+                        }],
+                        "usage": {},
+                    }
+                else:
+                    # No tools requested from any chunk — go straight to synthesis
+                    logger_internal.info(
+                        "Split-phase Turn 0: no tool calls collected; requesting direct synthesis"
+                    )
+                    logger_external.info(
+                        "→ LLM Request (split-phase synthesis): %s messages, 0 tools",
+                        len(messages_for_llm),
+                    )
+                    llm_response = await llm_client.chat_completion(
+                        messages=messages_for_llm,
+                        tools=[],
+                    )
+            else:
+                # Normal path: log and call LLM
+                logger_external.info(
+                    f"→ LLM Request: {len(messages_for_llm)} messages, {len(tools_for_request)} tools sent ({len(tools_for_llm)} available)"
                 )
-            
-            # Call LLM
-            llm_response = await llm_client.chat_completion(
-                messages=messages_for_llm,
-                tools=tools_for_request
-            )
+                logger_internal.info(f"Messages to LLM: {json.dumps(messages_for_llm, indent=2)}")
+                if tools_for_request:
+                    logger_internal.info(f"Tools sent to LLM: {json.dumps(tools_for_request, indent=2)}")
+                elif tools_for_llm:
+                    logger_internal.info(
+                        "Skipping tool catalog for follow-up LLM request because tool results are already in context"
+                    )
+                llm_response = await llm_client.chat_completion(
+                    messages=messages_for_llm,
+                    tools=tools_for_request,
+                )
             
             # Extract assistant message
             assistant_msg = llm_response["choices"][0]["message"]
@@ -1910,6 +2060,14 @@ async def send_message(
                     f"2×LLM({llm_timeout_ms / 1000:.0f}s) + tools[{tool_budget_str}] "
                     f"= {total_turn_budget_ms / 1000:.0f}s total. "
                     "Ensure upstream proxy/client timeouts exceed this value."
+                )
+
+                # Log the full list of tools about to be dispatched to MCP servers
+                _exec_tool_names = [tc["function"].get("name", "") for tc in normalized_tool_calls]
+                logger_external.info(
+                    "MCP CLIENT → MCP SERVER TOOLS LIST: [%s] (%s tool(s))",
+                    ", ".join(_exec_tool_names),
+                    len(_exec_tool_names),
                 )
 
                 # Execute tool calls

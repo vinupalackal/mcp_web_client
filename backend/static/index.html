@@ -363,6 +363,32 @@
                             <input type="number" id="llmTemperature" min="0" max="2" step="0.1" value="0.7">
                         </div>
                         <div class="form-group">
+                            <label class="switch-toggle" for="toolsSplitEnabledToggle">
+                                <input type="checkbox" id="toolsSplitEnabledToggle">
+                                <span class="switch-slider"></span>
+                                <span class="switch-label">Split Tools List across multiple LLM requests</span>
+                            </label>
+                            <small style="color: var(--text-secondary, #888); font-size: 0.8em;">
+                                When enabled and the total tool count exceeds the limit below, tools are chunked and queried per the mode selected below. All requested tools are then executed together.
+                            </small>
+                        </div>
+                        <div id="toolsSplitOptionsGroup" style="margin-left: 1.5rem; display: none;">
+                            <div class="form-group">
+                                <label for="toolsSplitMode">Split Request Mode</label>
+                                <select id="toolsSplitMode">
+                                    <option value="concurrent">Concurrent — all chunks fired simultaneously (fastest)</option>
+                                    <option value="sequential">Sequential — chunks sent one after another (rate-limit friendly)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="toolsSplitLimit">Tools Split Limit per Request</label>
+                                <input type="number" id="toolsSplitLimit" min="1" max="512" step="1" placeholder="Default: 128 (MCP_MAX_TOOLS_PER_REQUEST)">
+                                <small style="color: var(--text-secondary, #888); font-size: 0.8em;">
+                                    Max tools per LLM request chunk. Leave blank to use the server default.
+                                </small>
+                            </div>
+                        </div>
+                        <div class="form-group">
                             <label class="switch-toggle" for="includeHistoryToggle">
                                 <input type="checkbox" id="includeHistoryToggle" checked>
                                 <span class="switch-slider"></span>

@@ -538,6 +538,11 @@
 [data-theme="dark"] .tool-exec-duration { background-color:rgba(255,255,255,0.08); }
 [data-theme="dark"] .tool-exec-status.success { background-color:rgba(6,78,59,0.4); color:#6ee7b7; }
 [data-theme="dark"] .tool-exec-status.error   { background-color:rgba(127,29,29,0.4); color:#fca5a5; }
+[data-theme="dark"] .issue-highlight {
+    color: #fca5a5;
+    background-color: rgba(127, 29, 29, 0.25);
+    border-left-color: #f87171;
+}
 
 [data-theme="dark"] .tool-duration {
     background-color: rgba(255, 255, 255, 0.08);
@@ -1173,6 +1178,18 @@ body::selection {
 }
 .tool-exec-status.success { background-color:#d1fae5; color:#065f46; border:1px solid #10b981; }
 .tool-exec-status.error   { background-color:#fee2e2; color:#991b1b; border:1px solid #ef4444; }
+
+/* Issue / finding highlights inside assistant messages */
+.issue-highlight {
+    display: block;
+    color: #b91c1c;
+    background-color: #fff1f2;
+    border-left: 3px solid #ef4444;
+    padding: 0.15rem 0.5rem 0.15rem 0.6rem;
+    margin: 0.1rem 0;
+    border-radius: 0 0.25rem 0.25rem 0;
+    font-weight: 500;
+}
 
 .tool-exec-body {
     padding: 0 0.9rem 0.75rem;

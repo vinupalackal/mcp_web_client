@@ -570,6 +570,50 @@ class MCPManager:
         tools.append(VIRTUAL_REPEATED_EXEC_TOOL)
 
         return tools
+
+    def get_tools_for_llm_chunks(self, chunk_size: int) -> List[List[Dict[str, Any]]]:
+        """Return tools in OpenAI function calling format split into chunks.
+
+        Each chunk contains at most ``chunk_size`` tools, with the virtual
+        ``mcp_repeated_exec`` tool always appended so the LLM can call it
+        regardless of which chunk it receives.
+
+        When all real tools fit within a single chunk the result is a
+        single-element list identical to ``get_tools_for_llm()``.
+
+        Args:
+            chunk_size: Maximum tools per chunk (includes the virtual tool slot).
+        """
+        real_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.namespaced_id,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                },
+            }
+            for tool in self.tools.values()
+        ]
+
+        # Reserve one slot per chunk for VIRTUAL_REPEATED_EXEC_TOOL
+        effective_chunk_size = max(1, chunk_size - 1)
+
+        if len(real_tools) <= effective_chunk_size:
+            # Everything fits — identical to get_tools_for_llm()
+            return [real_tools + [VIRTUAL_REPEATED_EXEC_TOOL]]
+
+        # Split real tools into chunks; append virtual tool to each chunk
+        chunks: List[List[Dict[str, Any]]] = []
+        for offset in range(0, len(real_tools), effective_chunk_size):
+            chunk = real_tools[offset: offset + effective_chunk_size]
+            chunks.append(chunk + [VIRTUAL_REPEATED_EXEC_TOOL])
+
+        logger_internal.info(
+            "Tool split: %s real tools → %s chunk(s) of ≤%s (chunk_size=%s)",
+            len(real_tools), len(chunks), effective_chunk_size, chunk_size,
+        )
+        return chunks
     
     def _build_headers(self, server: ServerConfig) -> Dict[str, str]:
         """Build HTTP headers with authentication"""
