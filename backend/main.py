@@ -3,6 +3,8 @@ MCP Client Web - FastAPI Application
 LibreChat-inspired interface for MCP server communication via JSON-RPC 2.0
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import json
