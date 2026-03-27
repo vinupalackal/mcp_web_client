@@ -564,6 +564,12 @@
 [data-theme="dark"] .tool-exec-duration { background-color:rgba(255,255,255,0.08); }
 [data-theme="dark"] .tool-exec-status.success { background-color:rgba(6,78,59,0.4); color:#6ee7b7; }
 [data-theme="dark"] .tool-exec-status.error   { background-color:rgba(127,29,29,0.4); color:#fca5a5; }
+[data-theme="dark"] .message-content.synthesis-clean {
+    background: linear-gradient(180deg, rgba(6,78,59,0.22) 0%, rgba(4,55,43,0.15) 100%);
+    border-color: rgba(16,185,129,0.3);
+    border-left-color: #10b981;
+}
+[data-theme="dark"] .synthesis-label.clean { color: #6ee7b7; }
 [data-theme="dark"] .issue-highlight {
     color: #fca5a5;
     background-color: rgba(127, 29, 29, 0.25);
@@ -1134,6 +1140,19 @@ body::selection {
     letter-spacing: 0.06em;
     margin-bottom: 0.4rem;
     opacity: 0.65;
+}
+
+.synthesis-label.clean {
+    color: #065f46;
+    opacity: 1;
+}
+
+.message-content.synthesis-clean {
+    background: linear-gradient(180deg, rgba(209,250,229,0.45) 0%, rgba(167,243,208,0.25) 100%);
+    border: 1px solid rgba(16,185,129,0.35);
+    border-left: 3px solid #10b981;
+    border-radius: 0.75rem;
+    padding: 0.65rem 0.85rem;
 }
 
 .assistant-meta-details {

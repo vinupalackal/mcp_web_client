@@ -497,8 +497,31 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
     const messageContent = document.createElement('div');
     messageContent.classList.add('message-content');
     if (hasToolExecs && content) {
+        // Detect whether the synthesis indicates a clean/healthy result.
+        // Heuristic: no strong negative words AND at least one positive phrase.
+        const lc = content.toLowerCase();
+        const negativeWords = [
+            'error', 'fail', 'failed', 'failure', 'issue', 'problem', 'warn',
+            'critical', 'crash', 'degraded', 'abnormal', 'fault', 'exception',
+            'missing', 'unavailable', 'alert', 'leak', 'corrupted',
+        ];
+        const positiveWords = [
+            'no issue', 'no error', 'no problem', 'no fault', 'all ok',
+            'healthy', 'normal', 'nominal', 'good', 'success', 'stable',
+            'running fine', 'looks good', 'everything ok', 'within normal',
+            'no critical', 'no warning', 'clean', 'all clear',
+        ];
+        const hasNegative = negativeWords.some(w => lc.includes(w));
+        const hasPositive = positiveWords.some(w => lc.includes(w));
+        const isClean = !hasNegative && hasPositive;
+
+        if (isClean) {
+            messageContent.classList.add('synthesis-clean');
+        }
+        const labelClass = isClean ? 'synthesis-label clean' : 'synthesis-label';
+        const labelIcon  = isClean ? '✅ Analysis' : '📝 Analysis';
         // Label the LLM's interpretation clearly when it follows tool outputs
-        messageContent.innerHTML = `<span class="synthesis-label">📝 Analysis</span>${formatMessageContent(content)}`;
+        messageContent.innerHTML = `<span class="${labelClass}">${labelIcon}</span>${formatMessageContent(content)}`;
     } else {
         messageContent.innerHTML = formatMessageContent(primaryContent);
     }
