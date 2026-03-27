@@ -24,6 +24,14 @@ const ENTERPRISE_DEFAULT_MODELS = [
     { model_id: 'text-embedding-3-large', provider: 'Azure', type: 'Embedding', is_default: true },
 ];
 
+const TINY_MODE_CLASSIFIER_DEFAULTS = {
+    enabled: false,
+    minConfidence: 0.60,
+    minScoreGap: 3,
+    acceptConfidence: 0.55,
+    maxTokens: 96,
+};
+
 const STORAGE_KEYS = {
 // Non-sensitive UI preferences only — credentials and configs live on the server
     gatewayMode: 'llmGatewayMode',
@@ -61,6 +69,7 @@ const enterpriseTokenStatus = document.getElementById('enterpriseTokenStatus');
 const refreshServerHealthBtn = document.getElementById('refreshServerHealthBtn');
 const autoRefreshHealthToggle = document.getElementById('autoRefreshHealthToggle');
 const includeHistoryToggle = document.getElementById('includeHistoryToggle');
+const tinyModeClassifierOverrideToggle = document.getElementById('tinyModeClassifierOverrideToggle');
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log('⚙️ Settings: DOM loaded');
@@ -109,6 +118,9 @@ function initializeSettings() {
     autoRefreshHealthToggle?.addEventListener('change', (event) => {
         setServerHealthAutoRefresh(event.target.checked);
     });
+    tinyModeClassifierOverrideToggle?.addEventListener('change', (event) => {
+        applyTinyModeClassifierOverrideState(event.target.checked);
+    });
 
     updateServerAuthUI();
     updateStandardProviderUI();
@@ -129,6 +141,66 @@ function initializeChatHistoryPreference() {
             localStorage.setItem(STORAGE_KEYS.includeHistory, event.target.checked ? 'true' : 'false');
         });
     }
+}
+
+function getTinyModeClassifierElements() {
+    return {
+        overrideToggle: document.getElementById('tinyModeClassifierOverrideToggle'),
+        optionsGroup: document.getElementById('tinyModeClassifierOptionsGroup'),
+        enabledToggle: document.getElementById('tinyModeClassifierEnabledToggle'),
+        minConfidence: document.getElementById('tinyModeClassifierMinConfidence'),
+        minScoreGap: document.getElementById('tinyModeClassifierMinScoreGap'),
+        acceptConfidence: document.getElementById('tinyModeClassifierAcceptConfidence'),
+        maxTokens: document.getElementById('tinyModeClassifierMaxTokens'),
+    };
+}
+
+function resetTinyModeClassifierInputs() {
+    const elements = getTinyModeClassifierElements();
+    if (elements.enabledToggle) elements.enabledToggle.checked = TINY_MODE_CLASSIFIER_DEFAULTS.enabled;
+    if (elements.minConfidence) elements.minConfidence.value = String(TINY_MODE_CLASSIFIER_DEFAULTS.minConfidence);
+    if (elements.minScoreGap) elements.minScoreGap.value = String(TINY_MODE_CLASSIFIER_DEFAULTS.minScoreGap);
+    if (elements.acceptConfidence) elements.acceptConfidence.value = String(TINY_MODE_CLASSIFIER_DEFAULTS.acceptConfidence);
+    if (elements.maxTokens) elements.maxTokens.value = String(TINY_MODE_CLASSIFIER_DEFAULTS.maxTokens);
+}
+
+function setToggleOptionPanelState(panel, enabled) {
+    if (!panel) {
+        return;
+    }
+
+    panel.classList.toggle('is-open', enabled);
+    panel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+}
+
+function applyTinyModeClassifierOverrideState(enabled) {
+    const elements = getTinyModeClassifierElements();
+    if (elements.overrideToggle) {
+        elements.overrideToggle.checked = enabled;
+    }
+    setToggleOptionPanelState(elements.optionsGroup, enabled);
+}
+
+function buildTinyModeClassifierOverridePayload() {
+    const elements = getTinyModeClassifierElements();
+    const overrideEnabled = elements.overrideToggle?.checked ?? false;
+    if (!overrideEnabled) {
+        return {
+            tiny_llm_mode_classifier_enabled: null,
+            tiny_llm_mode_classifier_min_confidence: null,
+            tiny_llm_mode_classifier_min_score_gap: null,
+            tiny_llm_mode_classifier_accept_confidence: null,
+            tiny_llm_mode_classifier_max_tokens: null,
+        };
+    }
+
+    return {
+        tiny_llm_mode_classifier_enabled: elements.enabledToggle?.checked ?? TINY_MODE_CLASSIFIER_DEFAULTS.enabled,
+        tiny_llm_mode_classifier_min_confidence: parseFloat(elements.minConfidence?.value || String(TINY_MODE_CLASSIFIER_DEFAULTS.minConfidence)),
+        tiny_llm_mode_classifier_min_score_gap: parseInt(elements.minScoreGap?.value || String(TINY_MODE_CLASSIFIER_DEFAULTS.minScoreGap), 10),
+        tiny_llm_mode_classifier_accept_confidence: parseFloat(elements.acceptConfidence?.value || String(TINY_MODE_CLASSIFIER_DEFAULTS.acceptConfidence)),
+        tiny_llm_mode_classifier_max_tokens: parseInt(elements.maxTokens?.value || String(TINY_MODE_CLASSIFIER_DEFAULTS.maxTokens), 10),
+    };
 }
 
 function closeSettingsModal() {
@@ -768,6 +840,7 @@ async function handleSaveLLMConfig(e) {
     const toolsSplitMode = document.getElementById('toolsSplitMode')?.value || 'concurrent';
     const toolsSplitLimitRaw = document.getElementById('toolsSplitLimit')?.value;
     const toolsSplitLimit = toolsSplitLimitRaw ? parseInt(toolsSplitLimitRaw, 10) : null;
+    const tinyModeClassifierOverrides = buildTinyModeClassifierOverridePayload();
 
     let llmConfig;
     if (mode === 'enterprise') {
@@ -785,6 +858,7 @@ async function handleSaveLLMConfig(e) {
             tools_split_enabled: toolsSplitEnabled,
             tools_split_mode: toolsSplitMode,
             tools_split_limit: toolsSplitEnabled ? toolsSplitLimit : null,
+            ...tinyModeClassifierOverrides,
         };
     } else {
         llmConfig = {
@@ -798,6 +872,7 @@ async function handleSaveLLMConfig(e) {
             tools_split_enabled: toolsSplitEnabled,
             tools_split_mode: toolsSplitMode,
             tools_split_limit: toolsSplitEnabled ? toolsSplitLimit : null,
+            ...tinyModeClassifierOverrides,
         };
     }
 
@@ -845,6 +920,7 @@ function loadLLMConfig(config) {
     document.getElementById('llmTemperature').value = config?.temperature ?? '0.7';
     document.getElementById('llmTimeoutMs').value = config?.llm_timeout_ms ?? '180000';
     document.getElementById('enterpriseLlmTimeoutMs').value = config?.llm_timeout_ms ?? '180000';
+    resetTinyModeClassifierInputs();
 
     const splitEnabledToggle = document.getElementById('toolsSplitEnabledToggle');
     const toolsSplitOptionsGroup = document.getElementById('toolsSplitOptionsGroup');
@@ -853,7 +929,7 @@ function loadLLMConfig(config) {
     const splitEnabled = config?.tools_split_enabled ?? false;
 
     function applySplitToggleState(enabled) {
-        if (toolsSplitOptionsGroup) toolsSplitOptionsGroup.style.display = enabled ? 'block' : 'none';
+        setToggleOptionPanelState(toolsSplitOptionsGroup, enabled);
     }
 
     if (splitEnabledToggle) {
@@ -867,6 +943,39 @@ function loadLLMConfig(config) {
     if (toolsSplitLimitEl) {
         toolsSplitLimitEl.value = config?.tools_split_limit != null ? config.tools_split_limit : '';
     }
+
+    const tinyModeClassifierOverrideEnabled = [
+        config?.tiny_llm_mode_classifier_enabled,
+        config?.tiny_llm_mode_classifier_min_confidence,
+        config?.tiny_llm_mode_classifier_min_score_gap,
+        config?.tiny_llm_mode_classifier_accept_confidence,
+        config?.tiny_llm_mode_classifier_max_tokens,
+    ].some(value => value !== null && value !== undefined);
+    const tinyModeClassifierElements = getTinyModeClassifierElements();
+    if (tinyModeClassifierElements.enabledToggle) {
+        tinyModeClassifierElements.enabledToggle.checked = config?.tiny_llm_mode_classifier_enabled ?? TINY_MODE_CLASSIFIER_DEFAULTS.enabled;
+    }
+    if (tinyModeClassifierElements.minConfidence) {
+        tinyModeClassifierElements.minConfidence.value = String(
+            config?.tiny_llm_mode_classifier_min_confidence ?? TINY_MODE_CLASSIFIER_DEFAULTS.minConfidence
+        );
+    }
+    if (tinyModeClassifierElements.minScoreGap) {
+        tinyModeClassifierElements.minScoreGap.value = String(
+            config?.tiny_llm_mode_classifier_min_score_gap ?? TINY_MODE_CLASSIFIER_DEFAULTS.minScoreGap
+        );
+    }
+    if (tinyModeClassifierElements.acceptConfidence) {
+        tinyModeClassifierElements.acceptConfidence.value = String(
+            config?.tiny_llm_mode_classifier_accept_confidence ?? TINY_MODE_CLASSIFIER_DEFAULTS.acceptConfidence
+        );
+    }
+    if (tinyModeClassifierElements.maxTokens) {
+        tinyModeClassifierElements.maxTokens.value = String(
+            config?.tiny_llm_mode_classifier_max_tokens ?? TINY_MODE_CLASSIFIER_DEFAULTS.maxTokens
+        );
+    }
+    applyTinyModeClassifierOverrideState(tinyModeClassifierOverrideEnabled);
 
     if (config?.provider === 'enterprise') {
         document.getElementById('enterpriseGatewayUrl').value = config.base_url || '';

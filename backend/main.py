@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Optional, Dict, Callable
 from datetime import datetime
 
 
@@ -141,6 +141,305 @@ from backend.prompt_injection import (
     parse_issue_classification,
 )
 from backend.session_manager import SessionManager
+
+
+DIRECT_QUERY_ROUTES: List[Dict[str, Any]] = [
+    {
+        "name": "free_memory",
+        "patterns": [
+            r"\bhow much free memory\b",
+            r"\bfree memory\b",
+            r"\bmemory free\b",
+            r"\bavailable memory\b",
+            r"\bmemory available\b",
+        ],
+        "tool_candidates": [
+            ["system_memory_free"],
+            ["get_memory_info"],
+            ["system_memory_stats"],
+        ],
+    },
+    {
+        "name": "uptime",
+        "patterns": [
+            r"\buptime\b",
+            r"\bhow long .*up\b",
+            r"\bhow long.*running\b",    # "how long has this device been running"
+            r"\bwithout.*reboot\b",       # "without a reboot"
+            r"\bsince.*reboot\b",         # "since last reboot"
+            r"\blast\s+reboot\b",         # "last reboot time"
+            r"\btime.*running\b",         # "time it's been running"
+        ],
+        "tool_candidates": [
+            ["get_system_uptime"],
+            ["get_uptime"],
+            ["server_info"],
+        ],
+    },
+    {
+        "name": "cpu_usage",
+        "patterns": [
+            r"\bcpu usage\b",
+            r"\bcpu load\b",
+            r"\bload average\b",
+        ],
+        "tool_candidates": [
+            ["get_cpu_usage"],
+            ["system_cpu_stats"],
+            ["get_load_average", "system_load_average"],
+        ],
+    },
+    {
+        "name": "disk_usage",
+        "patterns": [
+            r"\bdisk usage\b",
+            r"\bfree disk\b",
+            r"\bdisk space\b",
+        ],
+        "tool_candidates": [
+            ["get_disk_usage", "system_disk_space", "check_disk_space"],
+            ["get_disk_stats"],
+        ],
+    },
+    {
+        "name": "wan_ip",
+        "patterns": [
+            r"\bwan ip\b",
+            r"\bpublic ip\b",
+            r"\bexternal ip\b",
+        ],
+        "tool_candidates": [
+            ["get_wan_ip_config"],
+            ["get_wan_connection_status", "wan_status"],
+        ],
+    },
+    {
+        "name": "kernel_logs",
+        "patterns": [
+            r"\bdmesg\b",
+            r"\bkernel\s+log[s]?\b",
+            r"\bkernel\s+message[s]?\b",
+            r"\blast\s+\d+\s+kernel\b",      # "last 100 kernel lines"
+            r"\bsyslog\b",
+            r"\bklog\b",
+            r"\bjournalctl\b",
+            r"\bboot\s+log[s]?\b",
+        ],
+        "tool_candidates": [
+            ["get_dmesg", "dmesg_log", "kernel_logs", "get_kernel_logs", "kernel_log"],
+            ["get_syslog", "syslog"],
+            ["get_service_logs", "system_logs"],
+        ],
+    },
+]
+
+REQUEST_DOMAIN_PATTERNS: Dict[str, tuple[str, ...]] = {
+    "memory": (
+        r"\bmemory\b",
+        r"\bmemfree\b",
+        r"\bmemavailable\b",
+        r"\brss\b",
+        r"\bswap\b",
+        r"\boom\b",
+    ),
+    "cpu": (
+        r"\bcpu\b",
+        r"\bload\b",
+        r"\butili[sz]ation\b",
+        r"\bspin\b",
+        r"\binterrupts\b",
+    ),
+    "uptime": (
+        r"\buptime\b",
+        r"\bboot time\b",
+        r"\breboot(?:ed)?\b",
+    ),
+    "network": (
+        r"\bwan\b",
+        r"\blan\b",
+        r"\bdns\b",
+        r"\bping\b",
+        r"\broute\b",
+        r"\bconnect(?:ion|ivity)?\b",
+        r"\bnetwork\b",
+        r"\bdhcp\b",
+        r"\bip\s+config(?:uration)?\b",  # specific: avoid false-positive on 'ip address X.X.X.X'
+        r"\bip\s+route\b",
+        r"\bip\s+addr(?:ess)?\s+(?:is|was|change|assign)\b",
+    ),
+    "disk": (
+        r"\bdisk\b",
+        r"\bstorage\b",
+        r"\bfilesystem\b",
+        r"\binode\b",
+    ),
+    "wifi": (
+        r"\bwifi\b",
+        r"\bwireless\b",
+        r"\bssid\b",
+        r"\bradio\b",
+        r"\bclient[s]?\b",
+    ),
+    "logs": (
+        r"\blog[s]?\b",
+        r"\bdmesg\b",
+        r"\bkernel\b",
+        r"\berror[s]?\b",
+        r"\btrace\b",
+    ),
+}
+
+# Maps domain names → tool-name substrings that indicate a tool is relevant
+# to that domain.  Used by _narrow_tools_by_domain() to reduce the 265-tool
+# catalog to a focused set before handing it to the LLM.  This prevents the
+# LLM from calling audio/video/HDMI tools when the user asks for kernel logs.
+DOMAIN_TOOL_KEYWORDS: Dict[str, List[str]] = {
+    "logs":    ["log", "dmesg", "kern", "syslog", "journal", "event", "trace", "audit"],
+    "memory":  ["mem", "memory", "heap", "ram", "swap", "oom", "vmstat"],
+    "cpu":     ["cpu", "proc", "load", "util", "thread", "scheduler", "irq"],
+    "network": ["net", "wan", "lan", "ip", "dns", "route", "dhcp", "firewall",
+                "ping", "socket", "arp", "nft", "iptable"],
+    "disk":    ["disk", "storage", "fs", "mount", "filesystem", "partition",
+                "block", "inode", "df", "du"],
+    "wifi":    ["wifi", "wireless", "wlan", "ssid", "radio", "beacon", "station",
+                "ap", "wpa"],
+    "uptime":  ["uptime", "boot", "reboot", "running", "start"],
+}
+
+
+def _narrow_tools_by_domain(
+    tools_for_llm: List[Dict[str, Any]],
+    matched_domains: List[str],
+) -> List[Dict[str, Any]]:
+    """Filter the LLM tool catalog to only tools relevant to the matched domains.
+
+    When a targeted_status query matches e.g. ["logs"], this reduces a
+    265-tool catalog to only the handful of tools whose bare names contain
+    "log", "dmesg", "kern", etc., preventing the LLM from being presented
+    with (and then calling) unrelated audio/video/HDMI tools.
+
+    Falls back to the full catalog if no tools survive the filter (safety net).
+    The virtual mcp_repeated_exec tool is always preserved.
+    """
+    if not matched_domains:
+        return tools_for_llm
+
+    target_keywords: List[str] = []
+    for domain in matched_domains:
+        target_keywords.extend(DOMAIN_TOOL_KEYWORDS.get(domain, []))
+
+    if not target_keywords:
+        return tools_for_llm
+
+    narrowed: List[Dict[str, Any]] = []
+    virtual_tools: List[Dict[str, Any]] = []
+
+    for tool in tools_for_llm:
+        tool_name = tool.get("function", {}).get("name", "").lower()
+        if tool_name == "mcp_repeated_exec":
+            virtual_tools.append(tool)
+            continue
+        bare_name = tool_name.split("__", 1)[-1] if "__" in tool_name else tool_name
+        if any(kw in bare_name for kw in target_keywords):
+            narrowed.append(tool)
+
+    if not narrowed:
+        logger_internal.warning(
+            "Domain narrowing found 0 matching tools for domains=%s keywords=%s; using full catalog",
+            matched_domains, target_keywords,
+        )
+        return tools_for_llm
+
+    logger_internal.info(
+        "Domain narrowing: %s tools → %s tools for domains=%s",
+        len(tools_for_llm) - len(virtual_tools),
+        len(narrowed),
+        matched_domains,
+    )
+    return narrowed + virtual_tools
+
+
+FOLLOW_UP_PATTERNS = (
+    r"\bwhat about\b",
+    r"\bhow about\b",
+    r"\bsame device\b",
+    r"\bsame issue\b",
+    r"\bwhat changed\b",
+    r"\bnow\b",
+    r"\bagain\b",
+    r"\bcompare\b",
+    r"\bstill\b",
+)
+
+TARGETED_STATUS_PATTERNS = (
+    r"\bcheck\b",
+    r"\bshow\b",
+    r"\bstatus\b",
+    r"\busage\b",
+    r"\blist\b",
+    r"\bmetrics\b",
+)
+
+DIAGNOSTIC_REQUEST_KEYWORDS = (
+    "diagnose",
+    "diagnostic",
+    "root cause",
+    "investigate",
+    "analysis",
+    "analyze",
+    "problem",
+    "issue",
+    "failing",
+    "failure",
+    "crash",
+    "coredump",
+    "hang",
+    "freeze",
+    "slow",
+    "high load",
+    "memory leak",
+    "oom",
+)
+
+EXPLANATION_REQUEST_PATTERNS = (
+    r"\bwhy\b",
+    r"\broot cause\b",
+    r"\breason\b",
+    r"\binvestigate\b",
+    r"\bexplain\b",
+)
+
+VAGUE_STATUS_PATTERNS = (
+    r"\bhealth\b",
+    r"\bcheck device\b",
+    r"\bcheck system\b",
+    r"\bshow system info\b",
+    r"\bshow info\b",
+)
+
+PRIOR_CONTEXT_REFERENCES = (
+    r"\bthat\b",
+    r"\bit\b",
+    r"\bthose\b",
+    r"\bbefore\b",
+    r"\bearlier\b",
+    r"\bprevious\b",
+)
+
+WORKFLOW_ACTION_PATTERNS = (
+    r"\bthen\b",
+    r"\bsummarize\b",
+    r"\bexecute\b",
+    r"\brun\b",
+    r"\bcall\b",
+)
+
+REQUEST_MODES = (
+    "direct_fact",
+    "targeted_status",
+    "full_diagnostic",
+    "follow_up",
+)
 
 # Initialize managers
 session_manager = SessionManager()
@@ -497,6 +796,820 @@ def _get_user_llm_config(user_id: Optional[str]) -> Optional[LLMConfig]:
     if user_id:
         return _llm_store.get_full(user_id)
     return llm_config_storage
+
+
+def _normalize_user_text(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _matches_any_pattern(text: str, patterns: tuple[str, ...] | List[str]) -> bool:
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _contains_any_keyword(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _extract_request_domains(message_content: str) -> List[str]:
+    normalized_message = _normalize_user_text(message_content)
+    matched_domains: List[str] = []
+
+    for domain_name, patterns in REQUEST_DOMAIN_PATTERNS.items():
+        if _matches_any_pattern(normalized_message, patterns):
+            matched_domains.append(domain_name)
+
+    return matched_domains
+
+
+def _has_recent_device_context(conversation_summary: Optional[str]) -> bool:
+    if not conversation_summary:
+        return False
+    normalized_summary = _normalize_user_text(conversation_summary)
+    return any(marker in normalized_summary for marker in (
+        "device",
+        "ip",
+        "mac",
+        "model",
+        "firmware",
+    ))
+
+
+def _references_prior_context(message_content: str, conversation_summary: Optional[str]) -> bool:
+    if not conversation_summary:
+        return False
+    normalized_message = _normalize_user_text(message_content)
+    return _matches_any_pattern(normalized_message, FOLLOW_UP_PATTERNS) or _matches_any_pattern(
+        normalized_message,
+        PRIOR_CONTEXT_REFERENCES,
+    )
+
+
+def _count_direct_route_hits(message_content: str) -> int:
+    normalized_message = _normalize_user_text(message_content)
+    return sum(
+        1
+        for route in DIRECT_QUERY_ROUTES
+        if any(re.search(pattern, normalized_message) for pattern in route["patterns"])
+    )
+
+
+def _compute_request_mode_scores(
+    message_content: str,
+    *,
+    existing_messages: List[ChatMessage],
+    direct_tool_route: Optional[Dict[str, Any]],
+    conversation_summary: Optional[str],
+) -> Dict[str, int]:
+    normalized_message = _normalize_user_text(message_content)
+    matched_domains = _extract_request_domains(message_content)
+    has_history = len(existing_messages) > 0
+
+    scores: Dict[str, int] = {
+        "direct_fact": 0,
+        "targeted_status": 0,
+        "full_diagnostic": 0,
+        "follow_up": 0,
+    }
+
+    if direct_tool_route is not None:
+        scores["direct_fact"] += 6
+
+    if _matches_any_pattern(normalized_message, FOLLOW_UP_PATTERNS):
+        scores["follow_up"] += 4
+
+    if _matches_any_pattern(normalized_message, TARGETED_STATUS_PATTERNS):
+        scores["targeted_status"] += 3
+
+    if _matches_any_pattern(normalized_message, EXPLANATION_REQUEST_PATTERNS) or _contains_any_keyword(
+        normalized_message,
+        DIAGNOSTIC_REQUEST_KEYWORDS,
+    ):
+        scores["full_diagnostic"] += 4
+
+    if len(matched_domains) == 1:
+        scores["direct_fact"] += 2
+    elif len(matched_domains) >= 2:
+        scores["targeted_status"] += 3
+
+    direct_route_hits = _count_direct_route_hits(message_content)
+    if direct_route_hits == 1:
+        scores["direct_fact"] += 2
+    elif direct_route_hits >= 2:
+        scores["targeted_status"] += 2
+
+    if _matches_any_pattern(normalized_message, VAGUE_STATUS_PATTERNS):
+        scores["targeted_status"] += 2
+
+    if _matches_any_pattern(normalized_message, WORKFLOW_ACTION_PATTERNS):
+        scores["targeted_status"] += 3
+        scores["direct_fact"] -= 2
+
+    if not _contains_any_keyword(normalized_message, DIAGNOSTIC_REQUEST_KEYWORDS) and not _matches_any_pattern(
+        normalized_message,
+        EXPLANATION_REQUEST_PATTERNS,
+    ):
+        scores["direct_fact"] += 2
+        scores["targeted_status"] += 1
+
+    if re.match(r"^[a-z0-9_\-? ]{1,20}\?$", normalized_message) and len(matched_domains) <= 1:
+        scores["direct_fact"] += 2
+
+    if len(normalized_message.split()) <= 2 and direct_route_hits == 0 and len(matched_domains) == 1:
+        scores["targeted_status"] += 3
+        scores["direct_fact"] -= 1
+
+    if has_history and _has_recent_device_context(conversation_summary):
+        scores["follow_up"] += 2
+
+    if has_history and _references_prior_context(message_content, conversation_summary):
+        scores["follow_up"] += 2
+
+    if _matches_any_pattern(normalized_message, EXPLANATION_REQUEST_PATTERNS):
+        scores["full_diagnostic"] += 2
+        scores["direct_fact"] -= 3
+
+    if has_history and not _matches_any_pattern(normalized_message, FOLLOW_UP_PATTERNS) and len(matched_domains) == 0:
+        scores["follow_up"] += 1
+
+    return scores
+
+
+def _compute_request_mode_confidence(scores: Dict[str, int], top_mode: str) -> float:
+    top_score = scores.get(top_mode, 0)
+    positive_total = sum(max(score, 0) for score in scores.values())
+    if top_score <= 0 or positive_total <= 0:
+        return 0.0
+    return round(top_score / positive_total, 3)
+
+
+def _get_bool_env(name: str, default: bool = False) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_float_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_bool_override(value: Optional[bool], env_name: str, default: bool) -> bool:
+    if value is not None:
+        return bool(value)
+    return _get_bool_env(env_name, default=default)
+
+
+def _resolve_float_override(value: Optional[float], env_name: str, default: float) -> float:
+    if value is not None:
+        return float(value)
+    return _get_float_env(env_name, default)
+
+
+def _resolve_int_override(value: Optional[int], env_name: str, default: int) -> int:
+    if value is not None:
+        return int(value)
+    return _get_int_env(env_name, default)
+
+
+def _should_consult_llm_mode_classifier(
+    request_mode_details: Dict[str, Any],
+    *,
+    direct_tool_route: Optional[Dict[str, Any]],
+    llm_config: LLMConfig,
+) -> bool:
+    if not _resolve_bool_override(
+        llm_config.tiny_llm_mode_classifier_enabled,
+        "MCP_ENABLE_LLM_MODE_CLASSIFIER",
+        default=False,
+    ):
+        return False
+    if llm_config.provider == "mock":
+        return False
+    if direct_tool_route is not None:
+        return False
+
+    min_confidence = _resolve_float_override(
+        llm_config.tiny_llm_mode_classifier_min_confidence,
+        "MCP_LLM_MODE_CLASSIFIER_MIN_CONFIDENCE",
+        0.60,
+    )
+    min_score_gap = _resolve_int_override(
+        llm_config.tiny_llm_mode_classifier_min_score_gap,
+        "MCP_LLM_MODE_CLASSIFIER_MIN_SCORE_GAP",
+        3,
+    )
+
+    return (
+        request_mode_details.get("confidence", 0.0) < min_confidence
+        or request_mode_details.get("score_gap", 0) < min_score_gap
+    )
+
+
+def _should_enable_split_phase_early_stop(
+    *,
+    request_mode: str,
+    request_mode_details: Dict[str, Any],
+) -> bool:
+    if request_mode != "direct_fact":
+        return False
+
+    min_confidence = _get_float_env(
+        "MCP_SPLIT_PHASE_DIRECT_FACT_EARLY_STOP_MIN_CONFIDENCE",
+        0.75,
+    )
+    return float(request_mode_details.get("confidence", 0.0) or 0.0) >= min_confidence
+
+
+def _split_phase_has_real_tool_calls(tool_calls: List[Dict[str, Any]]) -> bool:
+    for tool_call in tool_calls:
+        tool_name = tool_call.get("function", {}).get("name", "")
+        if tool_name and tool_name != "mcp_repeated_exec":
+            return True
+    return False
+
+
+def _merge_split_phase_tool_calls(chunk_results: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    for chunk_calls in chunk_results:
+        for tool_call in chunk_calls:
+            tool_name = tool_call.get("function", {}).get("name", "")
+            tool_args = tool_call.get("function", {}).get("arguments", "{}")
+            if isinstance(tool_args, dict):
+                tool_args = json.dumps(tool_args, sort_keys=True)
+            dedup_key = (tool_name, tool_args)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+            merged.append(tool_call)
+
+    return merged
+
+
+async def _collect_split_phase_tool_calls(
+    *,
+    llm_client: Any,
+    messages_snapshot: List[Dict[str, Any]],
+    tool_chunks: List[List[Dict[str, Any]]],
+    split_mode: str,
+    request_mode: str,
+    request_mode_details: Dict[str, Any],
+    extract_tool_calls_from_content: Callable[[str, int], List[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    ordinals = [
+        "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH",
+        "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH",
+    ]
+    stop_on_first_real_tool = _should_enable_split_phase_early_stop(
+        request_mode=request_mode,
+        request_mode_details=request_mode_details,
+    )
+    if stop_on_first_real_tool:
+        logger_internal.info(
+            "Split-phase early stop enabled: mode=%s confidence=%.2f min_confidence=%.2f chunks=%s",
+            request_mode,
+            float(request_mode_details.get("confidence", 0.0) or 0.0),
+            _get_float_env("MCP_SPLIT_PHASE_DIRECT_FACT_EARLY_STOP_MIN_CONFIDENCE", 0.75),
+            len(tool_chunks),
+        )
+        logger_external.info(
+            "→ SPLIT EARLY-STOP ENABLED: mode=%s confidence=%.2f chunks=%s",
+            request_mode,
+            float(request_mode_details.get("confidence", 0.0) or 0.0),
+            len(tool_chunks),
+        )
+
+    async def query_chunk(sp_idx: int, sp_chunk: List[Dict[str, Any]]) -> tuple[int, List[Dict[str, Any]]]:
+        ordinal = ordinals[sp_idx - 1] if sp_idx <= len(ordinals) else f"#{sp_idx}"
+        logger_external.info(
+            "→ %s REQUEST TO LLM WITH SPLIT [%s]: Tools Count: %s",
+            ordinal, split_mode.upper(), len(sp_chunk),
+        )
+        try:
+            resp = await llm_client.chat_completion(
+                messages=messages_snapshot,
+                tools=sp_chunk,
+            )
+        except Exception as err:
+            logger_internal.error(
+                "Split-phase chunk %s/%s failed: %s",
+                sp_idx, len(tool_chunks), err,
+            )
+            return sp_idx, []
+
+        msg = resp["choices"][0]["message"]
+        finish = resp["choices"][0].get("finish_reason", "")
+        calls = msg.get("tool_calls") or []
+
+        if not calls and msg.get("content"):
+            calls = extract_tool_calls_from_content(msg.get("content", ""), sp_idx)
+
+        logger_external.info(
+            "← %s RESPONSE FROM LLM WITH SPLIT [%s]: %s tool call(s) requested, finish=%s",
+            ordinal, split_mode.upper(), len(calls), finish,
+        )
+        return sp_idx, calls
+
+    chunk_results: List[List[Dict[str, Any]]] = [[] for _ in tool_chunks]
+
+    if split_mode == "sequential":
+        logger_internal.info(
+            "Split-phase mode=sequential: sending %s chunk(s) one after another",
+            len(tool_chunks),
+        )
+        for seq_idx, seq_chunk in enumerate(tool_chunks, 1):
+            chunk_index, chunk_calls = await query_chunk(seq_idx, seq_chunk)
+            chunk_results[chunk_index - 1] = chunk_calls
+            if stop_on_first_real_tool and _split_phase_has_real_tool_calls(chunk_calls):
+                logger_internal.info(
+                    "Split-phase early stop: direct_fact confidence=%.2f satisfied by chunk %s/%s; skipping remaining %s chunk(s)",
+                    float(request_mode_details.get("confidence", 0.0) or 0.0),
+                    chunk_index,
+                    len(tool_chunks),
+                    len(tool_chunks) - chunk_index,
+                )
+                break
+    else:
+        logger_internal.info(
+            "Split-phase mode=concurrent: firing %s chunk(s) in parallel%s",
+            len(tool_chunks),
+            " with early-stop enabled" if stop_on_first_real_tool else "",
+        )
+        tasks = [
+            asyncio.create_task(query_chunk(i + 1, chunk))
+            for i, chunk in enumerate(tool_chunks)
+        ]
+
+        try:
+            for completed in asyncio.as_completed(tasks):
+                chunk_index, chunk_calls = await completed
+                chunk_results[chunk_index - 1] = chunk_calls
+                if stop_on_first_real_tool and _split_phase_has_real_tool_calls(chunk_calls):
+                    pending_tasks = [task for task in tasks if not task.done()]
+                    logger_internal.info(
+                        "Split-phase early stop: direct_fact confidence=%.2f satisfied by chunk %s/%s with %s tool call(s); cancelling %s pending chunk(s)",
+                        float(request_mode_details.get("confidence", 0.0) or 0.0),
+                        chunk_index,
+                        len(tool_chunks),
+                        len(chunk_calls),
+                        len(pending_tasks),
+                    )
+                    for pending_task in pending_tasks:
+                        pending_task.cancel()
+                    if pending_tasks:
+                        await asyncio.gather(*pending_tasks, return_exceptions=True)
+                    break
+        finally:
+            leftover_tasks = [task for task in tasks if not task.done()]
+            for leftover_task in leftover_tasks:
+                leftover_task.cancel()
+            if leftover_tasks:
+                await asyncio.gather(*leftover_tasks, return_exceptions=True)
+
+    return _merge_split_phase_tool_calls(chunk_results)
+
+
+def _build_llm_mode_classifier_prompt(
+    *,
+    message_content: str,
+    conversation_summary: Optional[str],
+    direct_tool_route: Optional[Dict[str, Any]],
+    heuristic_details: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    summary_text = conversation_summary or "none"
+    route_name = direct_tool_route["route_name"] if direct_tool_route else "none"
+
+    system_prompt = (
+        "You are a tiny routing classifier for a device-diagnostics chat system.\n"
+        "Pick exactly one mode from: direct_fact, targeted_status, full_diagnostic, follow_up.\n"
+        "Return only strict JSON with keys: mode, confidence, reasoning.\n"
+        "confidence must be a number between 0 and 1.\n"
+        "Mode guide:\n"
+        "- direct_fact: single factual lookup or one concrete metric.\n"
+        "- targeted_status: focused live status check or concise multi-check command.\n"
+        "- full_diagnostic: root cause, explanation, investigation, or broad failure analysis.\n"
+        "- follow_up: depends on previous context or asks about prior findings."
+    )
+    user_prompt = (
+        f"Latest user request: {message_content}\n"
+        f"Conversation summary: {summary_text}\n"
+        f"Direct route candidate: {route_name}\n"
+        f"Heuristic mode: {heuristic_details.get('mode')}\n"
+        f"Heuristic confidence: {heuristic_details.get('confidence', 0.0)}\n"
+        f"Heuristic score gap: {heuristic_details.get('score_gap', 0)}\n"
+        f"Heuristic domains: {', '.join(heuristic_details.get('domains', [])) or 'none'}\n"
+        f"Heuristic scores: {json.dumps(heuristic_details.get('scores', {}), sort_keys=True)}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _parse_llm_mode_classifier_response(response_content: str) -> Optional[Dict[str, Any]]:
+    raw_content = (response_content or "").strip()
+    if not raw_content:
+        return None
+
+    candidates: List[str] = [raw_content]
+    fenced_matches = re.findall(r"```(?:json)?\s*([\s\S]*?)```", raw_content, re.IGNORECASE)
+    for fenced_match in fenced_matches:
+        cleaned = fenced_match.strip()
+        if cleaned:
+            candidates.append(cleaned)
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(raw_content):
+        if char not in "{[":
+            continue
+        try:
+            parsed_payload, _ = decoder.raw_decode(raw_content[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed_payload, dict):
+            candidates.append(json.dumps(parsed_payload))
+
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+
+        mode = str(payload.get("mode", "")).strip()
+        if mode not in REQUEST_MODES:
+            continue
+
+        confidence_raw = payload.get("confidence", 0.0)
+        try:
+            confidence = float(confidence_raw)
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        confidence = max(0.0, min(1.0, round(confidence, 3)))
+        reasoning = str(payload.get("reasoning", "")).strip()
+        return {
+            "mode": mode,
+            "confidence": confidence,
+            "reasoning": reasoning,
+        }
+
+    return None
+
+
+async def _classify_request_mode_with_llm(
+    *,
+    llm_config: LLMConfig,
+    enterprise_access_token: Optional[str],
+    message_content: str,
+    conversation_summary: Optional[str],
+    direct_tool_route: Optional[Dict[str, Any]],
+    heuristic_details: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    prompt_messages = _build_llm_mode_classifier_prompt(
+        message_content=message_content,
+        conversation_summary=conversation_summary,
+        direct_tool_route=direct_tool_route,
+        heuristic_details=heuristic_details,
+    )
+    classifier_max_tokens = max(
+        32,
+        _resolve_int_override(
+            llm_config.tiny_llm_mode_classifier_max_tokens,
+            "MCP_LLM_MODE_CLASSIFIER_MAX_TOKENS",
+            96,
+        ),
+    )
+    classifier_config = llm_config.model_copy(
+        update={
+            "temperature": 0.0,
+            "max_tokens": classifier_max_tokens,
+        }
+    )
+    classifier_client = LLMClientFactory.create(
+        classifier_config,
+        enterprise_access_token=enterprise_access_token,
+    )
+    llm_response = await classifier_client.chat_completion(
+        messages=prompt_messages,
+        tools=[],
+    )
+    classifier_message = llm_response["choices"][0]["message"]
+    classifier_content = (classifier_message.get("content") or "").strip()
+    parsed_response = _parse_llm_mode_classifier_response(classifier_content)
+    if parsed_response is None:
+        logger_internal.warning(
+            "Tiny LLM mode-classifier returned unparseable content; falling back to heuristics. preview=%s",
+            classifier_content[:200] if classifier_content else "<empty>",
+        )
+        return None
+
+    min_accept_confidence = _resolve_float_override(
+        llm_config.tiny_llm_mode_classifier_accept_confidence,
+        "MCP_LLM_MODE_CLASSIFIER_ACCEPT_CONFIDENCE",
+        0.55,
+    )
+    if parsed_response["confidence"] < min_accept_confidence:
+        logger_internal.info(
+            "Tiny LLM mode-classifier confidence %.2f below threshold %.2f; keeping heuristic mode=%s",
+            parsed_response["confidence"],
+            min_accept_confidence,
+            heuristic_details.get("mode"),
+        )
+        return None
+
+    parsed_response["raw_content"] = classifier_content
+    return parsed_response
+
+
+def _classify_request_mode_details(
+    message_content: str,
+    *,
+    existing_messages: List[ChatMessage],
+    direct_tool_route: Optional[Dict[str, Any]],
+    conversation_summary: Optional[str] = None,
+) -> Dict[str, Any]:
+    matched_domains = _extract_request_domains(message_content)
+    scores = _compute_request_mode_scores(
+        message_content,
+        existing_messages=existing_messages,
+        direct_tool_route=direct_tool_route,
+        conversation_summary=conversation_summary,
+    )
+    ranked_modes = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    top_mode, top_score = ranked_modes[0]
+    second_score = ranked_modes[1][1] if len(ranked_modes) > 1 else 0
+    confidence = _compute_request_mode_confidence(scores, top_mode)
+
+    if confidence < 0.45 or (top_score - second_score) < 2:
+        top_mode = "targeted_status"
+
+    return {
+        "mode": top_mode,
+        "domains": matched_domains,
+        "scores": scores,
+        "confidence": confidence,
+        "score_gap": top_score - second_score,
+        "source": "heuristic",
+    }
+
+
+def _find_matching_tool_names(
+    candidate_names: List[str],
+    available_tool_names: List[str],
+) -> List[str]:
+    resolved: List[str] = []
+    available_set = set(available_tool_names)
+
+    for candidate_name in candidate_names:
+        if candidate_name in available_set and candidate_name not in resolved:
+            resolved.append(candidate_name)
+
+        for available_tool_name in available_tool_names:
+            bare_name = available_tool_name.split("__", 1)[-1]
+            if bare_name == candidate_name and available_tool_name not in resolved:
+                resolved.append(available_tool_name)
+
+    return resolved
+
+
+def _select_direct_tool_route(
+    message_content: str,
+    available_tool_names: List[str],
+) -> Optional[Dict[str, Any]]:
+    normalized_message = _normalize_user_text(message_content)
+    if not normalized_message:
+        return None
+
+    if _contains_any_keyword(normalized_message, DIAGNOSTIC_REQUEST_KEYWORDS):
+        return None
+
+    for route in DIRECT_QUERY_ROUTES:
+        if not any(re.search(pattern, normalized_message) for pattern in route["patterns"]):
+            continue
+
+        allowed_tool_names: List[str] = []
+        for candidate_group in route["tool_candidates"]:
+            for tool_name in _find_matching_tool_names(candidate_group, available_tool_names):
+                if tool_name not in allowed_tool_names:
+                    allowed_tool_names.append(tool_name)
+
+        if allowed_tool_names:
+            return {
+                "route_name": route["name"],
+                "allowed_tool_names": allowed_tool_names,
+                "include_virtual_repeated": False,
+                "include_history": False,
+            }
+
+    return None
+
+
+def _extract_tool_result_text(result: Any) -> str:
+    """Unwrap an MCP JSON-RPC tool result into clean text suitable for the LLM.
+
+    MCP servers return::
+
+        {"content": [{"type": "text", "text": "..."}, ...], "isError": bool}
+
+    The ``text`` fields themselves often contain another JSON object like::
+
+        {"output": "<shell output>", "exit_code": 0, "executed_command": "..."}
+
+    This function unwraps all of that into a single readable string so the LLM
+    does not have to parse nested JSON.
+    """
+    if not isinstance(result, dict):
+        return str(result)
+
+    parts: List[str] = []
+    for item in result.get("content") or []:
+        if not isinstance(item, dict):
+            continue
+        raw_text = item.get("text", "")
+        if not isinstance(raw_text, str):
+            raw_text = json.dumps(raw_text)
+
+        # Try to parse the inner JSON blob (common for shell-wrapper MCP tools)
+        try:
+            inner = json.loads(raw_text)
+        except (json.JSONDecodeError, ValueError):
+            parts.append(raw_text.strip())
+            continue
+
+        if isinstance(inner, dict):
+            # Prefer the "output" field from shell-wrapper tools
+            output_val = inner.get("output", "")
+            cmd_val = inner.get("executed_command", "")
+            if output_val and isinstance(output_val, str) and output_val.strip():
+                # Prefix with the command that produced this output so the LLM
+                # has context (e.g. "cat /proc/meminfo") without noise.
+                if cmd_val and isinstance(cmd_val, str) and cmd_val.strip():
+                    parts.append(f"$ {cmd_val.strip()}\n{output_val.strip()}")
+                else:
+                    parts.append(output_val.strip())
+            else:
+                # Remove noisy/redundant fields before presenting to the LLM
+                clean = {k: v for k, v in inner.items()
+                         if k not in ("exit_code", "executed_command")}
+                parts.append(json.dumps(clean, indent=2) if clean else raw_text.strip())
+        else:
+            parts.append(raw_text.strip())
+
+    if result.get("isError"):
+        prefix = "[TOOL ERROR] "
+    else:
+        prefix = ""
+
+    combined = "\n".join(p for p in parts if p)
+    return prefix + combined if combined else json.dumps(result)
+
+
+def _build_synthesis_prompt(
+    *,
+    current_user_message: str,
+    tool_names_executed: List[str],
+    tool_executions: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """System prompt for the follow-up LLM turn after tool results are in context."""
+    tools_str = ", ".join(tool_names_executed) if tool_names_executed else "(none)"
+
+    # Build a compact per-tool status table to orient the LLM
+    status_lines: List[str] = []
+    if tool_executions:
+        for te in tool_executions:
+            tool_name = str(te.get("tool", ""))
+            status = "✓ success" if te.get("success") else "✗ failed"
+            # Brief result preview (first 120 chars of the text, stripped of newlines)
+            raw_result = te.get("result", "")
+            if isinstance(raw_result, dict):
+                preview = _extract_tool_result_text(raw_result)
+            else:
+                preview = str(raw_result)
+            preview = " ".join(preview.split())[:120]
+            status_lines.append(f"  • {tool_name} [{status}]: {preview}")
+    status_table = "\n".join(status_lines) if status_lines else "  (none)"
+
+    return (
+        "You are a live device assistant. The following tools have already executed "
+        "and their full outputs are in the conversation history above.\n\n"
+        f"Tools executed:\n{status_table}\n\n"
+        "INSTRUCTIONS:\n"
+        "1. Do NOT call any more tools.\n"
+        "2. Read ALL tool outputs in the conversation above — do not rely only on the "
+        "summary table (it is truncated).\n"
+        "3. Translate raw numbers into human-readable form "
+        "(e.g. kB → MB/GB, seconds → days/hours/minutes).\n"
+        "4. Provide a concise analytical answer: state the key facts, assess whether "
+        "values indicate healthy / degraded / critical conditions, and highlight "
+        "anything that needs attention.\n"
+        "5. If tools failed, say so and explain what could not be determined.\n"
+        "6. Keep the answer focused — one short paragraph or a tight bullet list.\n"
+        f"\nUser request: {current_user_message}"
+    )
+
+
+def _build_direct_tool_prompt(
+    *,
+    available_tool_names: List[str],
+    current_user_message: str,
+    conversation_summary: Optional[str] = None,
+) -> str:
+    tool_inventory = ", ".join(available_tool_names) if available_tool_names else "none"
+    sections = [
+        "You are a live device assistant connected to MCP tools.",
+        f"Available tools: {tool_inventory}",
+        "Use only the available tools.",
+        "This is a direct factual lookup, not a full diagnostic investigation.",
+        "Call only the minimum number of tools needed to answer the latest user question.",
+        "If more than one independent tool is genuinely needed, call them together as parallel tool calls in your first response.",
+        "Do not run broad diagnostic baselines, unrelated checks, or repeated-execution workflows unless the user explicitly asks for investigation or trending.",
+        "Answer with the freshest concrete values and only brief supporting context.",
+        f"Latest user request: {current_user_message}",
+    ]
+    if conversation_summary:
+        sections.insert(3, "Conversation summary:\n" + conversation_summary)
+    return "\n\n".join(sections)
+
+
+def _build_targeted_tool_prompt(
+    *,
+    available_tool_names: List[str],
+    current_user_message: str,
+    request_mode: str,
+    conversation_summary: Optional[str] = None,
+) -> str:
+    tool_inventory = ", ".join(available_tool_names) if available_tool_names else "none"
+    sections = [
+        "You are a live device assistant connected to MCP tools.",
+        f"Request mode: {request_mode}",
+        f"Available tools: {tool_inventory}",
+        "Use only the available tools.",
+        "This request needs a focused status check, not a full root-cause investigation unless the evidence clearly demands escalation.",
+        "Select only the smallest relevant set of fresh tools for the latest user request.",
+        "When multiple independent checks are needed, call them together as parallel tool calls in your first response.",
+        "If the request expands into a broader failure investigation, say that a deeper diagnostic pass is needed before calling unrelated tools.",
+        f"Latest user request: {current_user_message}",
+    ]
+    if conversation_summary:
+        sections.insert(3, "Conversation summary:\n" + conversation_summary)
+    return "\n\n".join(sections)
+
+
+def _classify_request_mode(
+    message_content: str,
+    *,
+    existing_messages: List[ChatMessage],
+    direct_tool_route: Optional[Dict[str, Any]],
+    conversation_summary: Optional[str] = None,
+) -> str:
+    return _classify_request_mode_details(
+        message_content,
+        existing_messages=existing_messages,
+        direct_tool_route=direct_tool_route,
+        conversation_summary=conversation_summary,
+    )["mode"]
+
+
+def _resolve_history_mode(
+    session_config: Dict[str, Any],
+    *,
+    request_mode: str,
+    direct_tool_route: Optional[Dict[str, Any]],
+) -> str:
+    if not session_config.get("include_history", True):
+        return "latest"
+    if direct_tool_route is not None:
+        return "latest"
+
+    history_mode = session_config.get("history_mode", "summary")
+    if history_mode not in {"summary", "full", "latest"}:
+        history_mode = "summary"
+
+    if request_mode == "direct_fact":
+        return "latest"
+    if request_mode in {"targeted_status", "follow_up"} and history_mode == "full":
+        return "summary"
+    return history_mode
 
 
 # ============================================================================
@@ -1401,7 +2514,7 @@ async def create_session(
     user_id = _user_id_or_none(request)
 
     session = session_manager.create_session(
-        config=config.model_dump() if config else {"include_history": True, "enabled_servers": []},
+        config=config.model_dump() if config else {"include_history": True, "history_mode": "summary", "enabled_servers": []},
         user_id=user_id,
     )
     
@@ -1451,7 +2564,8 @@ async def send_message(
         )
     
     # Add user message to session
-    existing_message_count = len(session_manager.get_messages(session_id))
+    existing_messages = list(session_manager.get_messages(session_id))
+    existing_message_count = len(existing_messages)
     session_manager.add_message(session_id, message)
     
     # Check LLM config
@@ -1494,13 +2608,32 @@ async def send_message(
             enterprise_access_token=enterprise_access_token
         )
         
+        all_available_tool_names = list(mcp_manager.tools.keys())
+        direct_tool_route = _select_direct_tool_route(message.content, all_available_tool_names)
+        allowed_tool_names = direct_tool_route["allowed_tool_names"] if direct_tool_route else None
+        include_virtual_repeated = direct_tool_route["include_virtual_repeated"] if direct_tool_route else True
+
+        if direct_tool_route:
+            logger_internal.info(
+                "Direct tool route selected: %s → [%s]",
+                direct_tool_route["route_name"],
+                ", ".join(allowed_tool_names),
+            )
+
         # Get available tools
-        tools_for_llm = mcp_manager.get_tools_for_llm()
+        tools_for_llm = mcp_manager.get_tools_for_llm(
+            allowed_tool_names=allowed_tool_names,
+            include_virtual_repeated=include_virtual_repeated,
+        )
 
         # Effective per-request limit: LLM config field overrides env var
         _env_limit = int(os.getenv("MCP_MAX_TOOLS_PER_REQUEST", "128"))
         _effective_limit = active_llm_config.tools_split_limit or _env_limit
-        tool_chunks = mcp_manager.get_tools_for_llm_chunks(_effective_limit)
+        tool_chunks = mcp_manager.get_tools_for_llm_chunks(
+            _effective_limit,
+            allowed_tool_names=allowed_tool_names,
+            include_virtual_repeated=include_virtual_repeated,
+        )
         _split_phase_needed = (
             len(tool_chunks) > 1
             and active_llm_config.tools_split_enabled
@@ -1537,11 +2670,110 @@ async def send_message(
             logger_internal.warning("No tools available! LLM will not be able to call any tools.")
         
         session = session_manager.get_session(session_id)
-        include_history = True
-        if session and isinstance(session.config, dict):
-            include_history = session.config.get("include_history", True)
+        session_config = session.config if session and isinstance(session.config, dict) else {}
+        mode_classification_summary = session_manager.build_history_summary(
+            session_id,
+            upto_index=existing_message_count,
+        )
+        request_mode_details = _classify_request_mode_details(
+            message.content,
+            existing_messages=existing_messages,
+            direct_tool_route=direct_tool_route,
+            conversation_summary=mode_classification_summary,
+        )
 
-        history_start_index = 0 if include_history else existing_message_count
+        if _should_consult_llm_mode_classifier(
+            request_mode_details,
+            direct_tool_route=direct_tool_route,
+            llm_config=active_llm_config,
+        ):
+            logger_internal.info(
+                "Tiny LLM mode-classifier enabled for ambiguous routing: heuristic_mode=%s confidence=%.2f score_gap=%s",
+                request_mode_details["mode"],
+                request_mode_details["confidence"],
+                request_mode_details["score_gap"],
+            )
+            llm_mode_details = await _classify_request_mode_with_llm(
+                llm_config=active_llm_config,
+                enterprise_access_token=enterprise_access_token,
+                message_content=message.content,
+                conversation_summary=mode_classification_summary,
+                direct_tool_route=direct_tool_route,
+                heuristic_details=request_mode_details,
+            )
+            if llm_mode_details is not None:
+                request_mode_details = {
+                    **request_mode_details,
+                    "mode": llm_mode_details["mode"],
+                    "confidence": llm_mode_details["confidence"],
+                    "source": "llm",
+                    "llm_reasoning": llm_mode_details.get("reasoning"),
+                }
+                logger_internal.info(
+                    "Tiny LLM mode-classifier selected mode=%s confidence=%.2f reasoning=%s",
+                    request_mode_details["mode"],
+                    request_mode_details["confidence"],
+                    request_mode_details.get("llm_reasoning") or "<none>",
+                )
+
+        request_mode = request_mode_details["mode"]
+        history_mode = _resolve_history_mode(
+            session_config,
+            request_mode=request_mode,
+            direct_tool_route=direct_tool_route,
+        )
+
+        if history_mode == "full":
+            history_start_index = 0
+        else:
+            history_start_index = existing_message_count
+
+        conversation_summary = None
+        if history_mode == "summary":
+            conversation_summary = mode_classification_summary
+
+        logger_internal.info(
+            "Request routing: mode=%s source=%s history_mode=%s direct_route=%s confidence=%.2f domains=%s scores=%s",
+            request_mode,
+            request_mode_details.get("source", "heuristic"),
+            history_mode,
+            direct_tool_route["route_name"] if direct_tool_route else "none",
+            request_mode_details["confidence"],
+            request_mode_details["domains"],
+            request_mode_details["scores"],
+        )
+
+        # ── Domain-aware tool narrowing ────────────────────────────────────
+        # When targeted_status (or direct_fact with no route match) is chosen
+        # and the query maps to specific domains, restrict the tool catalog to
+        # only domain-relevant tools.  This prevents the LLM from being shown
+        # (and thus calling) audio/video/HDMI tools when the user asks for
+        # kernel logs, memory tools for disk queries, etc. — particularly
+        # critical during split-phase where the LLM only sees a subset per turn.
+        if direct_tool_route is None and request_mode in {"targeted_status", "direct_fact"}:
+            _matched_domains = request_mode_details.get("domains", [])
+            if _matched_domains:
+                tools_for_llm = _narrow_tools_by_domain(tools_for_llm, _matched_domains)
+                # Recompute tool_names and chunks from the narrowed list
+                tool_names = [t["function"]["name"] for t in tools_for_llm]
+                # Re-chunk: split narrowed list respecting effective_limit
+                _virtual_slot = 1 if include_virtual_repeated else 0
+                _eff_chunk = max(1, _effective_limit - _virtual_slot)
+                real_narrowed = [t for t in tools_for_llm if t.get("function", {}).get("name") != "mcp_repeated_exec"]
+                virt_narrowed = [t for t in tools_for_llm if t.get("function", {}).get("name") == "mcp_repeated_exec"]
+                if len(real_narrowed) <= _eff_chunk:
+                    tool_chunks = [real_narrowed + virt_narrowed]
+                else:
+                    tool_chunks = [
+                        real_narrowed[i: i + _eff_chunk] + virt_narrowed
+                        for i in range(0, len(real_narrowed), _eff_chunk)
+                    ]
+                _split_phase_needed = len(tool_chunks) > 1 and active_llm_config.tools_split_enabled
+                logger_internal.info(
+                    "Domain-narrowed catalog: %s tools, %s chunk(s), split_needed=%s domains=%s",
+                    len(tools_for_llm), len(tool_chunks), _split_phase_needed, _matched_domains,
+                )
+
 
         # Get conversation history (pass provider for correct message formatting)
         messages_for_llm = session_manager.get_messages_for_llm(
@@ -1563,6 +2795,39 @@ async def send_message(
             assistant_guidance = latest_assistant_tool_guidance
             if not assistant_guidance and issue_classification:
                 assistant_guidance = f"Issue classified as: {issue_classification}"
+
+            # After tool execution, switch to a synthesis-focused prompt so the model
+            # knows to read the results already in context rather than keep calling tools.
+            if tool_executions:
+                executed_names = [str(t.get("tool", "")) for t in tool_executions]
+                return {
+                    "role": "system",
+                    "content": _build_synthesis_prompt(
+                        current_user_message=message.content,
+                        tool_names_executed=executed_names,
+                        tool_executions=tool_executions,
+                    ),
+                }
+
+            if direct_tool_route is not None:
+                return {
+                    "role": "system",
+                    "content": _build_direct_tool_prompt(
+                        available_tool_names=tool_names,
+                        current_user_message=message.content,
+                        conversation_summary=conversation_summary,
+                    ),
+                }
+            if request_mode in {"targeted_status", "follow_up"}:
+                return {
+                    "role": "system",
+                    "content": _build_targeted_tool_prompt(
+                        available_tool_names=tool_names,
+                        current_user_message=message.content,
+                        request_mode=request_mode,
+                        conversation_summary=conversation_summary,
+                    ),
+                }
             return {
                 "role": "system",
                 "content": build_system_prompt(
@@ -1570,6 +2835,7 @@ async def send_message(
                     current_user_message=message.content,
                     assistant_content=assistant_guidance,
                     tool_result_contents=tool_result_contents,
+                    conversation_summary=conversation_summary,
                 ),
             }
         
@@ -1716,7 +2982,7 @@ async def send_message(
 
             return []
 
-        if has_real_tools:
+        if has_real_tools and request_mode in {"full_diagnostic", "targeted_status"} and direct_tool_route is None:
             classification_messages = build_classification_messages()
             logger_external.info(
                 "→ LLM Classification Request: %s messages, tools disabled for strict issue classification",
@@ -1793,82 +3059,16 @@ async def send_message(
         split_phase_tool_calls: Optional[List[Dict[str, Any]]] = None
         if _split_phase_needed and has_real_tools:
             _messages_snapshot = list(messages_for_llm)  # read-only snapshot
-            _sp_merged: List[Dict[str, Any]] = []
-            _sp_seen: set = set()
-
-            _ordinals = [
-                "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH",
-                "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH",
-            ]
-
             _split_mode = active_llm_config.tools_split_mode  # "sequential" | "concurrent"
-
-            async def _query_chunk(
-                sp_idx: int, sp_chunk: List[Dict[str, Any]]
-            ) -> List[Dict[str, Any]]:
-                """Query one tool-chunk against the LLM and return its tool calls."""
-                _ordinal = _ordinals[sp_idx - 1] if sp_idx <= len(_ordinals) else f"#{sp_idx}"
-                logger_external.info(
-                    "→ %s REQUEST TO LLM WITH SPLIT [%s]: Tools Count: %s",
-                    _ordinal, _split_mode.upper(), len(sp_chunk),
-                )
-                try:
-                    resp = await llm_client.chat_completion(
-                        messages=_messages_snapshot,
-                        tools=sp_chunk,
-                    )
-                except Exception as err:
-                    logger_internal.error(
-                        "Split-phase chunk %s/%s failed: %s",
-                        sp_idx, len(tool_chunks), err,
-                    )
-                    return []
-
-                msg = resp["choices"][0]["message"]
-                finish = resp["choices"][0].get("finish_reason", "")
-                calls = msg.get("tool_calls") or []
-
-                if not calls and msg.get("content"):
-                    calls = extract_tool_calls_from_content(msg.get("content", ""), sp_idx)
-
-                logger_external.info(
-                    "← %s RESPONSE FROM LLM WITH SPLIT [%s]: %s tool call(s) requested, finish=%s",
-                    _ordinal, _split_mode.upper(), len(calls), finish,
-                )
-                return calls
-
-            if _split_mode == "sequential":
-                # Sequential: one chunk at a time — predictable, gateway rate-limit friendly
-                logger_internal.info(
-                    "Split-phase mode=sequential: sending %s chunk(s) one after another",
-                    len(tool_chunks),
-                )
-                _chunk_results: List[List[Dict[str, Any]]] = []
-                for _seq_i, _seq_chunk in enumerate(tool_chunks, 1):
-                    _chunk_results.append(await _query_chunk(_seq_i, _seq_chunk))
-            else:
-                # Concurrent (default): fire all chunks simultaneously
-                logger_internal.info(
-                    "Split-phase mode=concurrent: firing %s chunk(s) in parallel",
-                    len(tool_chunks),
-                )
-                _chunk_results = await asyncio.gather(
-                    *[_query_chunk(i + 1, chunk) for i, chunk in enumerate(tool_chunks)]
-                )
-
-            # Merge results in chunk order, deduplicating by (tool_name, arguments)
-            for _chunk_calls in _chunk_results:
-                for _sp_tc in _chunk_calls:
-                    _sp_name = _sp_tc.get("function", {}).get("name", "")
-                    _sp_args = _sp_tc.get("function", {}).get("arguments", "{}")
-                    if isinstance(_sp_args, dict):
-                        _sp_args = json.dumps(_sp_args, sort_keys=True)
-                    _sp_dedup = (_sp_name, _sp_args)
-                    if _sp_dedup not in _sp_seen:
-                        _sp_seen.add(_sp_dedup)
-                        _sp_merged.append(_sp_tc)
-
-            split_phase_tool_calls = _sp_merged
+            split_phase_tool_calls = await _collect_split_phase_tool_calls(
+                llm_client=llm_client,
+                messages_snapshot=_messages_snapshot,
+                tool_chunks=tool_chunks,
+                split_mode=_split_mode,
+                request_mode=request_mode,
+                request_mode_details=request_mode_details,
+                extract_tool_calls_from_content=extract_tool_calls_from_content,
+            )
             _sp_tool_names = [tc.get("function", {}).get("name", "") for tc in split_phase_tool_calls]
             logger_external.info(
                 "MCP CLIENT → MCP SERVER TOOLS LIST: [%s] (%s tool(s) across %s chunk(s))",
@@ -2070,24 +3270,141 @@ async def send_message(
                     len(_exec_tool_names),
                 )
 
-                # Execute tool calls
-                for idx, tool_call in enumerate(normalized_tool_calls, 1):
-                    tool_id = tool_call["id"]
-                    namespaced_tool_name = tool_call["function"].get("name", "")
-                    arguments_str = tool_call["function"].get("arguments", "{}")
-                    
-                    logger_internal.info(f"Executing tool {idx}/{num_tool_calls}: {namespaced_tool_name}")
-                    
-                    # Parse arguments
+                # -----------------------------------------------------------------
+                # Phase 1: Pre-parse all tool calls and classify them.
+                # -----------------------------------------------------------------
+                _parsed_tool_calls: List[Dict[str, Any]] = []
+                for _idx, _tc in enumerate(normalized_tool_calls, 1):
+                    _tc_id = _tc["id"]
+                    _tc_name = _tc["function"].get("name", "")
+                    _tc_args_raw = _tc["function"].get("arguments", "{}")
                     try:
-                        arguments = json.loads(arguments_str) if isinstance(arguments_str, str) else arguments_str
+                        _tc_args = json.loads(_tc_args_raw) if isinstance(_tc_args_raw, str) else _tc_args_raw
                     except json.JSONDecodeError:
-                        arguments = {}
+                        _tc_args = {}
+                    _tc_dedup = json.dumps(
+                        {"tool": _tc_name, "arguments": _tc_args},
+                        sort_keys=True,
+                        default=str,
+                    )
+                    _parsed_tool_calls.append({
+                        "idx": _idx,
+                        "tool_id": _tc_id,
+                        "namespaced_tool_name": _tc_name,
+                        "arguments": _tc_args,
+                        "dedupe_key": _tc_dedup,
+                    })
 
-                    dedupe_key = json.dumps({
-                        "tool": namespaced_tool_name,
-                        "arguments": arguments,
-                    }, sort_keys=True, default=str)
+                # -----------------------------------------------------------------
+                # Phase 2: Fire all independent (non-deduped, non-virtual) MCP
+                # tool calls in parallel.  Results are collected keyed by tool_id
+                # and injected in original tool_call order in Phase 3 below.
+                # mcp_repeated_exec is a complex virtual tool that must remain
+                # sequential; it is excluded from the parallel batch.
+                # -----------------------------------------------------------------
+                async def _run_one_mcp_tool(pc: Dict[str, Any]) -> Dict[str, Any]:
+                    """Execute one normal MCP tool call. Pure I/O — no side effects."""
+                    _name = pc["namespaced_tool_name"]
+                    _args = pc["arguments"]
+                    if not _name or "__" not in _name:
+                        logger_internal.error("Invalid tool name format: %s", _name)
+                        return {**pc, "result_content": f"Error: Invalid tool name format: {_name}",
+                                "tool_result": None, "success": False, "duration_ms": 0}
+                    _server_alias, _actual_name = _name.split("__", 1)
+                    _server = next(
+                        (s for s in servers_storage.values() if s.alias == _server_alias),
+                        None,
+                    )
+                    if not _server:
+                        logger_internal.error("Server not found: %s", _server_alias)
+                        return {**pc, "result_content": f"Error: Server '{_server_alias}' not found",
+                                "tool_result": None, "success": False, "duration_ms": 0}
+                    _stored = mcp_manager.tools.get(_name)
+                    _hints = _stored.execution_hints if _stored else None
+                    if _hints:
+                        _est_ms = _hints.estimatedRuntimeMs or 0
+                        if _hints.mode == "sampling" or _est_ms >= 5000:
+                            logger_internal.info(
+                                "Long-running diagnostic tool: %s | mode=%s, estimatedRuntime=%.1fs. "
+                                "This diagnostic samples data over time — client timeout extended accordingly.",
+                                _name, _hints.mode, _est_ms / 1000,
+                            )
+                        else:
+                            logger_internal.info(
+                                "One-shot diagnostic tool: %s | mode=%s, estimatedRuntime=%.1fs. "
+                                "Collecting snapshot.",
+                                _name, _hints.mode, _est_ms / 1000,
+                            )
+                    import time as _time_mod
+                    _start = _time_mod.time()
+                    try:
+                        _result = await mcp_manager.execute_tool(
+                            server=_server,
+                            tool_name=_actual_name,
+                            arguments=_args,
+                            execution_hints=_hints,
+                        )
+                        _dur = int((_time_mod.time() - _start) * 1000)
+                        _max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "131072"))
+                        _res_str = _extract_tool_result_text(_result)
+                        if len(_res_str) > _max_chars:
+                            _res_str = _res_str[:_max_chars] + "... [truncated]"
+                        _success = not bool(_result.get("isError")) if isinstance(_result, dict) else True
+                        return {**pc, "result_content": _res_str, "tool_result": _result,
+                                "success": _success, "duration_ms": _dur}
+                    except Exception as _exc:
+                        _dur = int((_time_mod.time() - _start) * 1000)
+                        logger_internal.error("Tool execution error: %s", _exc)
+                        return {**pc, "result_content": f"Error: {_exc}", "tool_result": str(_exc),
+                                "success": False, "duration_ms": _dur}
+
+                _parallel_candidates = [
+                    pc for pc in _parsed_tool_calls
+                    if pc["namespaced_tool_name"] != "mcp_repeated_exec"
+                    and pc["dedupe_key"] not in executed_tool_results
+                ]
+                if len(_parallel_candidates) > 1:
+                    logger_internal.info(
+                        "Executing %s tool calls in parallel: %s",
+                        len(_parallel_candidates),
+                        ", ".join(pc["namespaced_tool_name"] for pc in _parallel_candidates),
+                    )
+                    logger_external.info(
+                        "→ PARALLEL TOOL DISPATCH: %s tool(s) fired concurrently",
+                        len(_parallel_candidates),
+                    )
+                _raw_parallel: List[Any] = []
+                if _parallel_candidates:
+                    _raw_parallel = list(await asyncio.gather(
+                        *[_run_one_mcp_tool(pc) for pc in _parallel_candidates],
+                        return_exceptions=True,
+                    ))
+                _parallel_results_map: Dict[str, Dict[str, Any]] = {}
+                for _pc, _raw in zip(_parallel_candidates, _raw_parallel):
+                    if isinstance(_raw, BaseException):
+                        _parallel_results_map[_pc["tool_id"]] = {
+                            **_pc,
+                            "result_content": f"Error: {_raw}",
+                            "tool_result": str(_raw),
+                            "success": False,
+                            "duration_ms": 0,
+                        }
+                    else:
+                        _parallel_results_map[_pc["tool_id"]] = _raw
+
+                # -----------------------------------------------------------------
+                # Phase 3: Inject results in original tool_call order.
+                # Deduped hits use the cached result; mcp_repeated_exec is executed
+                # sequentially inline; normal tool results come from the parallel map.
+                # -----------------------------------------------------------------
+                for pc in _parsed_tool_calls:
+                    tool_id = pc["tool_id"]
+                    namespaced_tool_name = pc["namespaced_tool_name"]
+                    arguments = pc["arguments"]
+                    dedupe_key = pc["dedupe_key"]
+                    idx = pc["idx"]
+
+                    logger_internal.info("Executing tool %s/%s: %s", idx, num_tool_calls, namespaced_tool_name)
 
                     if dedupe_key in executed_tool_results:
                         cached_execution = executed_tool_results[dedupe_key]
@@ -2097,23 +3414,17 @@ async def send_message(
                             arguments,
                         )
                         result_content = cached_execution["result_content"]
-
                         tool_result_msg = llm_client.format_tool_result(
                             tool_call_id=tool_id,
-                            content=result_content
+                            content=result_content,
                         )
-
                         messages_for_llm.append(tool_result_msg)
-
-                        tool_msg_obj = ChatMessage(
-                            role="tool",
-                            content=result_content
-                        )
+                        tool_msg_obj = ChatMessage(role="tool", content=result_content)
                         if "tool_call_id" in tool_result_msg:
                             tool_msg_obj.tool_call_id = tool_result_msg["tool_call_id"]
                         session_manager.add_message(session_id, tool_msg_obj)
                         continue
-                    
+
                     # ---------------------------------------------------------
                     # mcp_repeated_exec intercept (virtual client-side tool)
                     # Must be checked BEFORE the __-split guard below.
@@ -2241,7 +3552,7 @@ async def send_message(
                         run_blocks = []
                         for run in summary.runs:
                             run_status = "SUCCESS" if run.success else "FAILED"
-                            result_str = json.dumps(run.result, default=str) if run.result else ""
+                            result_str = _extract_tool_result_text(run.result) if run.result else ""
                             err_str = run.error or ""
                             block = (
                                 f"--- Run {run.run_index} ({run.timestamp_utc}, "
@@ -2288,6 +3599,7 @@ async def send_message(
                             "tool": "mcp_repeated_exec",
                             "arguments": arguments,
                             "result": summary.model_dump(),
+                            "result_text": result_content,
                             "success": summary.success_count > 0,
                             "duration_ms": rep_duration_ms,
                         })
@@ -2320,138 +3632,76 @@ async def send_message(
                     # END mcp_repeated_exec intercept
                     # ---------------------------------------------------------
 
-                    # Parse namespaced tool name (server_alias__tool_name)
-                    if not namespaced_tool_name or "__" not in namespaced_tool_name:
-                        logger_internal.error(f"Invalid tool name format: {namespaced_tool_name}")
+                    # Inject result from parallel execution map (Phase 2 above).
+                    _pr = _parallel_results_map.get(tool_id)
+                    if _pr is None:
+                        # Shouldn't happen, but fall back gracefully.
+                        logger_internal.error(
+                            "Parallel result missing for tool_id=%s tool=%s; skipping",
+                            tool_id, namespaced_tool_name,
+                        )
                         continue
-                    
-                    server_alias, actual_tool_name = namespaced_tool_name.split("__", 1)
-                    
-                    # Find server by alias
-                    server = None
-                    for s in servers_storage.values():
-                        if s.alias == server_alias:
-                            server = s
-                            break
-                    
-                    if not server:
-                        logger_internal.error(f"Server not found: {server_alias}")
-                        result_content = f"Error: Server '{server_alias}' not found"
+
+                    result_content = _pr["result_content"]
+                    tool_result = _pr["tool_result"]
+                    tool_success = _pr["success"]
+                    duration_ms = _pr["duration_ms"]
+
+                    # Prefix with tool name so Ollama (which strips tool_call_id) still
+                    # knows which tool produced this result.
+                    labeled_result_content = f"[{namespaced_tool_name}]\n{result_content}"
+
+                    # Track execution & update dedup cache.
+                    tool_executions.append({
+                        "tool": namespaced_tool_name,
+                        "arguments": arguments,
+                        "result": tool_result,
+                        "result_text": result_content,
+                        "success": tool_success,
+                        "duration_ms": duration_ms,
+                    })
+                    executed_tool_results[dedupe_key] = {
+                        "result_content": labeled_result_content,
+                        "result": tool_result,
+                        "success": tool_success,
+                    }
+
+                    if tool_success:
+                        logger_internal.info("Tool result accepted as success: %s", namespaced_tool_name)
                     else:
-                        # Look up advisory executionHints for this tool (CR-EXEC-001..014)
-                        stored_tool = mcp_manager.tools.get(namespaced_tool_name)
-                        execution_hints = stored_tool.execution_hints if stored_tool else None
+                        logger_internal.warning(
+                            "Tool result reported isError=true: %s", namespaced_tool_name,
+                        )
 
-                        # UX trace: warn when tool is long-running (CR-EXEC-009/010)
-                        if execution_hints:
-                            est_ms = execution_hints.estimatedRuntimeMs or 0
-                            recommended_ms = execution_hints.recommended_wait_ms()
-                            if execution_hints.mode == "sampling" or est_ms >= 5000:
-                                logger_internal.info(
-                                    f"Long-running diagnostic tool: {namespaced_tool_name} | "
-                                    f"mode={execution_hints.mode}, "
-                                    f"estimatedRuntime={est_ms / 1000:.1f}s, "
-                                    f"clientWaitBudget={recommended_ms / 1000:.1f}s. "
-                                    "This diagnostic samples data over time — client timeout extended accordingly."
-                                )
-                            else:
-                                logger_internal.info(
-                                    f"One-shot diagnostic tool: {namespaced_tool_name} | "
-                                    f"mode={execution_hints.mode}, "
-                                    f"estimatedRuntime={est_ms / 1000:.1f}s. "
-                                    "Collecting snapshot."
-                                )
+                    session_manager.add_tool_trace(
+                        session_id=session_id,
+                        tool_name=namespaced_tool_name,
+                        arguments=arguments,
+                        result=tool_result,
+                        success=tool_success,
+                    )
 
-                        # Execute tool
-                        try:
-                            import time
-                            start_time = time.time()
-
-                            tool_result = await mcp_manager.execute_tool(
-                                server=server,
-                                tool_name=actual_tool_name,
-                                arguments=arguments,
-                                execution_hints=execution_hints
-                            )
-                            
-                            duration_ms = int((time.time() - start_time) * 1000)
-                            
-                            # Truncate large results
-                            max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "131072"))  # default 128 KB
-                            result_str = json.dumps(tool_result)
-                            if len(result_str) > max_chars:
-                                result_str = result_str[:max_chars] + "... [truncated]"
-                            
-                            result_content = result_str
-                            
-                            # Track execution
-                            tool_executions.append({
-                                "tool": namespaced_tool_name,
-                                "arguments": arguments,
-                                "result": tool_result,
-                                "success": True,
-                                "duration_ms": duration_ms
-                            })
-
-                            executed_tool_results[dedupe_key] = {
-                                "result_content": result_content,
-                                "result": tool_result,
-                                "success": True,
-                            }
-                            
-                            # Trace successful execution
-                            session_manager.add_tool_trace(
-                                session_id=session_id,
-                                tool_name=namespaced_tool_name,
-                                arguments=arguments,
-                                result=tool_result,
-                                success=True
-                            )
-                            
-                        except Exception as e:
-                            duration_ms = int((time.time() - start_time) * 1000) if 'start_time' in locals() else 0
-                            logger_internal.error(f"Tool execution error: {e}")
-                            result_content = f"Error: {str(e)}"
-                            
-                            # Track execution
-                            tool_executions.append({
-                                "tool": namespaced_tool_name,
-                                "arguments": arguments,
-                                "result": str(e),
-                                "success": False,
-                                "duration_ms": duration_ms
-                            })
-
-                            executed_tool_results[dedupe_key] = {
-                                "result_content": result_content,
-                                "result": str(e),
-                                "success": False,
-                            }
-                            
-                            # Trace failed execution
-                            session_manager.add_tool_trace(
-                                session_id=session_id,
-                                tool_name=namespaced_tool_name,
-                                arguments=arguments,
-                                result=str(e),
-                                success=False
-                            )
-                    
-                    # Format tool result message
+                    # Format and inject tool result message.
                     tool_result_msg = llm_client.format_tool_result(
                         tool_call_id=tool_id,
-                        content=result_content
+                        content=labeled_result_content,
                     )
                     logger_internal.info(
                         "Prepared tool result for LLM: provider=%s tool=%s tool_call_id=%s content_preview=%s",
                         llm_config_storage.provider,
                         namespaced_tool_name,
                         tool_id,
-                        result_content[:400],
+                        labeled_result_content[:400],
                     )
-                    
+
                     # Add to messages
                     messages_for_llm.append(tool_result_msg)
+
+                    # Store in session
+                    tool_msg_obj = ChatMessage(
+                        role="tool",
+                        content=labeled_result_content,
+                    )
                     
                     # Store in session
                     tool_msg_obj = ChatMessage(
@@ -2488,10 +3738,13 @@ async def send_message(
             
             # No more tool calls - final response
             else:
-                if tools_for_llm and not has_tool_calls:
+                # Only warn when tools were actually sent in this request and the model
+                # returned stop without using any.  On synthesis turns tools_for_request
+                # is intentionally empty, so this is not a concern there.
+                if tools_for_request and not has_tool_calls:
                     logger_internal.warning(
-                        "LLM returned final response without tool_calls despite %s tools being available. finish_reason=%s, response_preview=%s",
-                        len(tools_for_llm),
+                        "LLM returned final response without tool_calls despite %s tools being sent. finish_reason=%s, response_preview=%s",
+                        len(tools_for_request),
                         finish_reason,
                         (assistant_msg.get("content", "")[:200] or "<empty>")
                     )
@@ -2594,7 +3847,14 @@ async def serve_frontend():
     """Serve the main frontend HTML"""
     index_path = os.path.join(static_dir, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return FileResponse(
+            index_path,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
     else:
         return {"message": "MCP Client Web API - Frontend not yet deployed. Access API docs at /docs"}
 
@@ -2604,7 +3864,14 @@ async def serve_tool_tester():
     """Serve the dedicated MCP tool tester page."""
     tool_tester_path = os.path.join(static_dir, "tool-tester.html")
     if os.path.exists(tool_tester_path):
-        return FileResponse(tool_tester_path)
+        return FileResponse(
+            tool_tester_path,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Tool tester page not found"

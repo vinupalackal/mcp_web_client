@@ -173,6 +173,29 @@
     border-color: rgba(30, 80, 96, 0.95);
 }
 
+[data-theme="teal"] .toggle-option {
+    background: rgba(22, 56, 64, 0.9);
+    border-color: var(--border-color);
+}
+
+[data-theme="teal"] .toggle-option:has(input:checked) {
+    border-color: var(--accent-color);
+    background: rgba(48, 176, 199, 0.07);
+    box-shadow: 0 0 0 3px rgba(48, 176, 199, 0.14), var(--shadow-sm);
+}
+
+[data-theme="teal"] .toggle-option-panel {
+    background: rgba(15, 42, 49, 0);
+    border-color: transparent;
+    box-shadow: inset 0 1px 0 rgba(126, 200, 216, 0);
+}
+
+[data-theme="teal"] .toggle-option-panel.is-open {
+    background: rgba(15, 42, 49, 0.72);
+    border-color: rgba(30, 80, 96, 0.95);
+    box-shadow: inset 0 1px 0 rgba(126, 200, 216, 0.06);
+}
+
 [data-theme="teal"] .message-wrapper.assistant .message-content,
 [data-theme="teal"] .welcome-message .message-content,
 [data-theme="teal"] .tool-execution-card,
@@ -561,6 +584,29 @@
     background: rgba(30, 41, 59, 0.8);
     border-color: var(--border-color);
     color: var(--text-primary);
+}
+
+[data-theme="dark"] .toggle-option {
+    background: rgba(30, 41, 59, 0.8);
+    border-color: var(--border-color);
+}
+
+[data-theme="dark"] .toggle-option:has(input:checked) {
+    border-color: var(--accent-color);
+    background: rgba(59, 130, 246, 0.07);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.12), var(--shadow-sm);
+}
+
+[data-theme="dark"] .toggle-option-panel {
+    background: rgba(15, 23, 42, 0);
+    border-color: transparent;
+    box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0);
+}
+
+[data-theme="dark"] .toggle-option-panel.is-open {
+    background: rgba(15, 23, 42, 0.48);
+    border-color: var(--border-color);
+    box-shadow: inset 0 1px 0 rgba(148, 163, 184, 0.05);
 }
 
 [data-theme="dark"] .enterprise-model-item {
@@ -1069,6 +1115,27 @@ body::selection {
     gap: 0.45rem;
 }
 
+.tool-executions-header {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    padding: 0 0.25rem 0.35rem;
+    border-bottom: 1px solid rgba(219,227,239,0.7);
+    margin-bottom: 0.15rem;
+    letter-spacing: 0.01em;
+}
+
+.synthesis-label {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.4rem;
+    opacity: 0.65;
+}
+
 .assistant-meta-details {
     margin-top: 0.6rem;
     background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.98) 100%);
@@ -1268,6 +1335,50 @@ body::selection {
     flex-wrap: wrap;
 }
 
+.toggle-option-group {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.toggle-option-card {
+    flex: 1 1 220px;
+    min-width: 220px;
+}
+
+.toggle-option-panel {
+    margin-top: 0;
+    padding: 0 0.95rem;
+    border-radius: 0.875rem;
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0);
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transform: translateY(-0.35rem);
+    transition: max-height 0.26s ease, opacity 0.22s ease, transform 0.22s ease, margin-top 0.22s ease, padding-top 0.22s ease, padding-bottom 0.22s ease, border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.toggle-option-panel.is-open {
+    margin-top: 0.75rem;
+    padding-top: 0.95rem;
+    padding-bottom: 0.95rem;
+    border-color: rgba(219, 227, 239, 0.95);
+    background: rgba(255, 255, 255, 0.55);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35);
+    max-height: 40rem;
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+}
+
+.toggle-option-panel .form-group:last-child {
+    margin-bottom: 0;
+}
+
 .radio-option {
     display: inline-flex;
     align-items: center;
@@ -1278,6 +1389,119 @@ body::selection {
     border: 1px solid rgba(219, 227, 239, 0.95);
     background: rgba(255, 255, 255, 0.8);
     box-shadow: var(--shadow-sm);
+}
+
+/* Card-style toggle row — same visual vocabulary as .radio-option but for checkboxes.
+   Shows a bordered card with an accent highlight when the checkbox inside is checked. */
+.toggle-option {
+    padding: 0.75rem 0.9rem 0.8rem;
+    border-radius: 0.875rem;
+    border: 1.5px solid rgba(219, 227, 239, 0.95);
+    background: rgba(255, 255, 255, 0.8);
+    box-shadow: var(--shadow-sm);
+    width: 100%;
+    min-height: 8.9rem;
+    box-sizing: border-box;
+    gap: 0.55rem;
+    transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.toggle-option:has(input:checked) {
+    border-color: var(--accent-color);
+    background: rgba(37, 99, 235, 0.04);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.07), var(--shadow-sm);
+}
+
+/* Override .form-group label's display:block so the card uses flex (full-width row) */
+.form-group label.switch-toggle.toggle-option {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    margin-bottom: 0;
+}
+
+.toggle-option .switch-slider {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 0.85rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(148, 163, 184, 0.14);
+    border: 1.5px solid rgba(148, 163, 184, 0.45);
+    box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.toggle-option .switch-slider::after {
+    top: 50%;
+    left: 50%;
+    width: 0.62rem;
+    height: 1.08rem;
+    background: transparent;
+    border-radius: 0;
+    border-right: 0.18rem solid rgba(15, 23, 42, 0.82);
+    border-bottom: 0.18rem solid rgba(15, 23, 42, 0.82);
+    box-shadow: none;
+    transform: translate(-50%, -58%) rotate(45deg) scale(0);
+    transition: transform 0.2s ease;
+}
+
+.toggle-option input:checked + .switch-slider {
+    background: rgba(37, 99, 235, 0.14);
+    border-color: var(--accent-color);
+}
+
+.toggle-option input:checked + .switch-slider::after {
+    transform: translate(-50%, -58%) rotate(45deg) scale(1);
+}
+
+.toggle-option .switch-label {
+    text-align: left;
+    color: var(--text-primary);
+    line-height: 1.35;
+}
+
+.toggle-option-nested {
+    padding: 0.75rem 0.9rem 0.8rem;
+    min-height: 8.9rem;
+}
+
+.form-group label.switch-toggle.toggle-option.toggle-option-nested {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: flex-start;
+    gap: 0.85rem;
+}
+
+.toggle-option-nested .switch-slider {
+    flex-shrink: 0;
+}
+
+.toggle-option-nested .switch-label {
+    grid-column: 2;
+    align-self: center;
+    text-align: left;
+}
+
+.toggle-option-nested input:checked + .switch-slider {
+    background: rgba(37, 99, 235, 0.24);
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14), inset 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.toggle-option-nested .toggle-option-help {
+    grid-column: 1 / -1;
+    margin-top: -0.15rem;
+    text-align: left;
+}
+
+.toggle-option-help {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.35;
+    text-align: left;
+    font-weight: 500;
 }
 
 .enterprise-panel {
@@ -1669,6 +1893,14 @@ body::selection {
 
 .switch-toggle input:focus-visible + .switch-slider {
     box-shadow: var(--ring-focus);
+}
+
+/* .form-group label (0,1,1) has higher specificity than .switch-toggle (0,1,0),
+   which would override display:inline-flex and break the flex layout, causing the
+   slider knob (::after) to render on top of the label text. Override it here. */
+.form-group label.switch-toggle {
+    display: inline-flex;
+    margin-bottom: 0;
 }
 
 .switch-label {

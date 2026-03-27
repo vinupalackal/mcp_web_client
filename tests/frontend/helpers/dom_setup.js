@@ -147,6 +147,14 @@ function setupSettingsDOM() {
             <button type="button" id="fetchEnterpriseTokenBtn">Fetch Token</button>
           </div>
           <input id="llmTemperature" type="number" value="0.7" />
+          <input id="tinyModeClassifierOverrideToggle" type="checkbox" />
+          <div id="tinyModeClassifierOptionsGroup" style="display:none">
+            <input id="tinyModeClassifierEnabledToggle" type="checkbox" />
+            <input id="tinyModeClassifierMinConfidence" type="number" value="0.60" />
+            <input id="tinyModeClassifierMinScoreGap" type="number" value="3" />
+            <input id="tinyModeClassifierAcceptConfidence" type="number" value="0.55" />
+            <input id="tinyModeClassifierMaxTokens" type="number" value="96" />
+          </div>
           <input id="includeHistoryToggle" type="checkbox" checked />
           <button type="submit">Save</button>
         </form>
@@ -286,6 +294,14 @@ function setupFullDOM() {
             <button type="button" id="fetchEnterpriseTokenBtn">Fetch Token</button>
           </div>
           <input id="llmTemperature" type="number" value="0.7" />
+          <input id="tinyModeClassifierOverrideToggle" type="checkbox" />
+          <div id="tinyModeClassifierOptionsGroup" style="display:none">
+            <input id="tinyModeClassifierEnabledToggle" type="checkbox" />
+            <input id="tinyModeClassifierMinConfidence" type="number" value="0.60" />
+            <input id="tinyModeClassifierMinScoreGap" type="number" value="3" />
+            <input id="tinyModeClassifierAcceptConfidence" type="number" value="0.55" />
+            <input id="tinyModeClassifierMaxTokens" type="number" value="96" />
+          </div>
           <input id="includeHistoryToggle" type="checkbox" checked />
           <button type="submit">Save</button>
         </form>

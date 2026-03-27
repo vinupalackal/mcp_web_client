@@ -100,6 +100,29 @@ class TestSaveLLMConfig:
         r = client.post("/api/llm/config", json={**llm_mock, "llm_timeout_ms": 4000})
         assert r.status_code == 422
 
+    def test_tiny_mode_classifier_overrides_round_trip_in_config_api(self, client, llm_mock):
+        """Tiny classifier overrides save and load through the config API."""
+        payload = {
+            **llm_mock,
+            "tiny_llm_mode_classifier_enabled": True,
+            "tiny_llm_mode_classifier_min_confidence": 0.72,
+            "tiny_llm_mode_classifier_min_score_gap": 5,
+            "tiny_llm_mode_classifier_accept_confidence": 0.66,
+            "tiny_llm_mode_classifier_max_tokens": 128,
+        }
+        save = client.post("/api/llm/config", json=payload)
+        assert save.status_code == 200
+        assert save.json()["tiny_llm_mode_classifier_enabled"] is True
+        assert save.json()["tiny_llm_mode_classifier_min_confidence"] == pytest.approx(0.72)
+        assert save.json()["tiny_llm_mode_classifier_min_score_gap"] == 5
+        assert save.json()["tiny_llm_mode_classifier_accept_confidence"] == pytest.approx(0.66)
+        assert save.json()["tiny_llm_mode_classifier_max_tokens"] == 128
+
+        fetch = client.get("/api/llm/config")
+        assert fetch.status_code == 200
+        assert fetch.json()["tiny_llm_mode_classifier_enabled"] is True
+        assert fetch.json()["tiny_llm_mode_classifier_max_tokens"] == 128
+
     def test_config_overwritten_on_second_save(self, client, llm_openai, llm_ollama):
         """TC-LLM-12: Second POST replaces first config."""
         client.post("/api/llm/config", json=llm_openai)

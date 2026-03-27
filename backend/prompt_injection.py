@@ -257,6 +257,7 @@ def build_system_prompt(
     current_user_message: Optional[str] = None,
     assistant_content: Optional[str] = None,
     tool_result_contents: Optional[Iterable[str]] = None,
+    conversation_summary: Optional[str] = None,
 ) -> str:
     """Build the static Layer 1 prompt plus opportunistic Layer 2 guidance."""
     platform_profile = infer_platform_profile(available_tool_names)
@@ -280,6 +281,9 @@ def build_system_prompt(
         "Do not serialize independent checks across multiple turns when they can be requested together.",
         _build_issue_classification_section(),
     ]
+
+    if conversation_summary:
+        sections.append("Conversation summary:\n" + conversation_summary)
 
     if baseline_tools:
         sections.append(

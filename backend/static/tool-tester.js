@@ -4,6 +4,7 @@ const TOOL_TEST_PROMPTS_ENDPOINT = '/api/tools/test-prompts';
 const TOOL_TEST_OUTPUT_ENDPOINT = '/api/tools/test-results-output';
 const CHAT_PREFERENCE_STORAGE_KEY = 'includeHistory';
 const TOOL_TEST_DEVICE_IDENTIFIER_STORAGE_KEY = 'toolTesterDeviceIdentifier';
+const TOOL_TEST_VIEW_STATE_STORAGE_KEY = 'toolTesterViewState';
 const TOOL_TEST_DEVICE_IDENTIFIER_DEFAULT_TYPE = 'ip';
 
 let currentSessionId = null;
@@ -56,7 +57,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     startClock();
     restoreDeviceIdentifierSelection();
+    restoreToolTesterViewState();
     syncLayoutState();
+
+    // Save state before the user navigates away (belt-and-suspenders alongside
+    // the reactive saves that fire on every result mutation).
+    window.addEventListener('pagehide', saveToolTesterViewState);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') saveToolTesterViewState();
+    });
+
     loadToolsAndPrompts();
 });
 
@@ -147,6 +157,45 @@ function setStatus(message, tone = 'neutral') {
     if (resultsProgressEl) {
         resultsProgressEl.textContent = message;
         resultsProgressEl.dataset.tone = tone;
+    }
+    saveToolTesterViewState();
+}
+
+function saveToolTesterViewState() {
+    if (!resultsEl) {
+        return;
+    }
+
+    try {
+        sessionStorage.setItem(TOOL_TEST_VIEW_STATE_STORAGE_KEY, JSON.stringify({
+            sessionId: currentSessionId,
+            resultsHtml: resultsEl.innerHTML,
+        }));
+    } catch (error) {
+        console.warn('🧪 Failed to persist tool tester view state', error);
+    }
+}
+
+function restoreToolTesterViewState() {
+    try {
+        const rawState = sessionStorage.getItem(TOOL_TEST_VIEW_STATE_STORAGE_KEY);
+        if (!rawState) {
+            return;
+        }
+
+        const parsedState = JSON.parse(rawState);
+        currentSessionId = typeof parsedState?.sessionId === 'string' && parsedState.sessionId
+            ? parsedState.sessionId
+            : null;
+
+        if (typeof parsedState?.resultsHtml === 'string') {
+            resultsEl.innerHTML = parsedState.resultsHtml;
+            resultsEl.querySelectorAll('.tool-tester-result-card').forEach((card) => {
+                syncResultCardToggleState(card);
+            });
+        }
+    } catch (error) {
+        console.warn('🧪 Failed to restore tool tester view state', error);
     }
 }
 
@@ -583,6 +632,7 @@ async function handleRefreshTools() {
 
 function clearResults() {
     resultsEl.innerHTML = '<p class="empty-state">Run a tool test to see prompts, tool executions, and assistant output here.</p>';
+    saveToolTesterViewState();
     syncResultsOutputFile();
 }
 
@@ -799,6 +849,7 @@ function appendResult(html) {
     collapsePreviousResults();
     resultsEl.insertAdjacentHTML('beforeend', html);
     syncResultCardToggleState(resultsEl.lastElementChild);
+    saveToolTesterViewState();
     if (typeof resultsEl.lastElementChild?.scrollIntoView === 'function') {
         resultsEl.lastElementChild.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }

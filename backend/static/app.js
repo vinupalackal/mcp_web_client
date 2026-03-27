@@ -9,6 +9,7 @@ console.log('💬 Chat app initializing...');
 let currentSessionId = null;
 let isProcessing = false;
 const CHAT_PREFERENCE_STORAGE_KEY = 'includeHistory';
+const CHAT_VIEW_STATE_STORAGE_KEY = 'chatViewState';
 
 // Current authenticated user (null in single-user / unauthenticated mode)
 let currentUser = null;
@@ -180,6 +181,15 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function initializeChat() {
+    restoreChatViewState();
+
+    // Save state before the user navigates away (belt-and-suspenders alongside
+    // the reactive saves that fire on every message mutation).
+    window.addEventListener('pagehide', saveChatViewState);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') saveChatViewState();
+    });
+
     // Auto-resize textarea
     messageInput.addEventListener('input', () => {
         messageInput.style.height = 'auto';
@@ -214,6 +224,42 @@ function initializeChat() {
     });
 
     console.log('💬 Chat: Initialized');
+}
+
+function saveChatViewState() {
+    if (!chatMessages) {
+        return;
+    }
+
+    try {
+        sessionStorage.setItem(CHAT_VIEW_STATE_STORAGE_KEY, JSON.stringify({
+            sessionId: currentSessionId,
+            messagesHtml: chatMessages.innerHTML,
+        }));
+    } catch (error) {
+        console.warn('💬 Failed to persist chat view state', error);
+    }
+}
+
+function restoreChatViewState() {
+    try {
+        const rawState = sessionStorage.getItem(CHAT_VIEW_STATE_STORAGE_KEY);
+        if (!rawState) {
+            return;
+        }
+
+        const parsedState = JSON.parse(rawState);
+        currentSessionId = typeof parsedState?.sessionId === 'string' && parsedState.sessionId
+            ? parsedState.sessionId
+            : null;
+
+        if (typeof parsedState?.messagesHtml === 'string') {
+            chatMessages.innerHTML = parsedState.messagesHtml;
+            scrollToBottom();
+        }
+    } catch (error) {
+        console.warn('💬 Failed to restore chat view state', error);
+    }
 }
 
 function updateSendButtonState() {
@@ -387,50 +433,25 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
     const messageWrapper = document.createElement('div');
     messageWrapper.classList.add('message-wrapper', role);
 
-    const messageContent = document.createElement('div');
-    messageContent.classList.add('message-content');
+    const hasToolExecs = role === 'assistant' && Array.isArray(toolExecutions) && toolExecutions.length > 0;
 
-    const toolExecutionSummary = summarizeToolExecutions(toolExecutions);
-    const primaryContent = content || toolExecutionSummary || initialLlmResponse || '';
-    const formattedContent = formatMessageContent(primaryContent);
-    messageContent.innerHTML = formattedContent;
+    const escHtml = s => String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-    messageWrapper.appendChild(messageContent);
-
-    if (timestamp) {
-        const ts = document.createElement('div');
-        ts.classList.add('message-timestamp');
-        const timeStr = timestamp.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-        const label = role === 'user' ? 'Sent' : 'Received';
-        ts.textContent = `${label} at ${timeStr}`;
-        messageWrapper.appendChild(ts);
-    }
-
-    const hasInitialSuggestion = role === 'assistant'
-        && Boolean(initialLlmResponse)
-        && Boolean(content)
-        && initialLlmResponse.trim() !== content.trim();
-
-    if (hasInitialSuggestion) {
-        const suggestionDetails = document.createElement('details');
-        suggestionDetails.className = 'assistant-meta-details';
-        suggestionDetails.innerHTML = `
-            <summary class="assistant-meta-summary">
-                <span class="assistant-meta-icon">💡</span>
-                <span class="assistant-meta-title">Initial LLM suggestion</span>
-            </summary>
-            <div class="assistant-meta-body">${formatMessageContent(initialLlmResponse)}</div>
-        `;
-        messageWrapper.appendChild(suggestionDetails);
-    }
-
-    if (toolExecutions && toolExecutions.length > 0) {
+    // ── 1. Tool executions (shown BEFORE synthesis so raw outputs are visible first) ──
+    if (hasToolExecs) {
         const section = document.createElement('div');
         section.classList.add('tool-executions-section');
 
-        const escHtml = s => String(s)
-            .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const failCount = toolExecutions.filter(t => !t.success).length;
+        const headerText = failCount > 0
+            ? `🔧 Tool Results — ${toolExecutions.length} executed, ${failCount} failed`
+            : `🔧 Tool Results — ${toolExecutions.length} executed`;
+        const header = document.createElement('div');
+        header.className = 'tool-executions-header';
+        header.textContent = headerText;
+        section.appendChild(header);
 
         toolExecutions.forEach(exec => {
             const statusClass = exec.success ? 'success' : 'error';
@@ -438,11 +459,15 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
             const durationLabel = exec.duration_ms != null ? `${exec.duration_ms} ms` : '';
             const argsStr = exec.arguments && Object.keys(exec.arguments).length
                 ? JSON.stringify(exec.arguments, null, 2) : '{}';
-            const resultStr = typeof exec.result === 'string'
-                ? exec.result : JSON.stringify(exec.result, null, 2);
+            // Prefer cleaned result_text (unwrapped MCP envelope); fall back to raw result
+            const resultStr = exec.result_text
+                || (typeof exec.result === 'string'
+                    ? exec.result : JSON.stringify(exec.result, null, 2));
 
             const details = document.createElement('details');
             details.className = `tool-exec-details ${statusClass}`;
+            // Auto-expand failed tools so errors are immediately visible without clicking
+            if (!exec.success) details.open = true;
             details.innerHTML = `
                 <summary class="tool-exec-summary">
                     <span class="tool-exec-icon">🔧</span>
@@ -466,7 +491,50 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
         messageWrapper.appendChild(section);
     }
 
+    // ── 2. LLM synthesis / primary message content ────────────────────────
+    const toolExecutionSummary = !hasToolExecs ? summarizeToolExecutions(toolExecutions) : '';
+    const primaryContent = content || toolExecutionSummary || initialLlmResponse || '';
+    const messageContent = document.createElement('div');
+    messageContent.classList.add('message-content');
+    if (hasToolExecs && content) {
+        // Label the LLM's interpretation clearly when it follows tool outputs
+        messageContent.innerHTML = `<span class="synthesis-label">📝 Analysis</span>${formatMessageContent(content)}`;
+    } else {
+        messageContent.innerHTML = formatMessageContent(primaryContent);
+    }
+    messageWrapper.appendChild(messageContent);
+
+    // ── 3. Timestamp ──────────────────────────────────────────────────────
+    if (timestamp) {
+        const ts = document.createElement('div');
+        ts.classList.add('message-timestamp');
+        const timeStr = timestamp.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const label = role === 'user' ? 'Sent' : 'Received';
+        ts.textContent = `${label} at ${timeStr}`;
+        messageWrapper.appendChild(ts);
+    }
+
+    // ── 4. Initial LLM suggestion (collapsible meta) ──────────────────────
+    const hasInitialSuggestion = role === 'assistant'
+        && Boolean(initialLlmResponse)
+        && Boolean(content)
+        && initialLlmResponse.trim() !== content.trim();
+
+    if (hasInitialSuggestion) {
+        const suggestionDetails = document.createElement('details');
+        suggestionDetails.className = 'assistant-meta-details';
+        suggestionDetails.innerHTML = `
+            <summary class="assistant-meta-summary">
+                <span class="assistant-meta-icon">💡</span>
+                <span class="assistant-meta-title">Initial LLM suggestion</span>
+            </summary>
+            <div class="assistant-meta-body">${formatMessageContent(initialLlmResponse)}</div>
+        `;
+        messageWrapper.appendChild(suggestionDetails);
+    }
+
     chatMessages.appendChild(messageWrapper);
+    saveChatViewState();
     scrollToBottom();
 }
 
@@ -560,6 +628,7 @@ function addSystemMessage(content) {
         </div>
     `;
     chatMessages.appendChild(messageWrapper);
+    saveChatViewState();
     scrollToBottom();
 }
 
@@ -576,6 +645,7 @@ function addLoadingMessage() {
         </div>
     `;
     chatMessages.appendChild(messageWrapper);
+    saveChatViewState();
     scrollToBottom();
     return id;
 }
@@ -584,6 +654,7 @@ function removeMessage(id) {
     const element = document.getElementById(id);
     if (element) {
         element.remove();
+        saveChatViewState();
     }
 }
 
@@ -596,6 +667,7 @@ function showError(message) {
         </div>
     `;
     chatMessages.appendChild(errorDiv);
+    saveChatViewState();
     scrollToBottom();
 }
 

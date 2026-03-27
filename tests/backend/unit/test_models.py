@@ -275,6 +275,33 @@ class TestLLMConfig:
         with pytest.raises(ValidationError):
             LLMConfig(provider="mock", base_url="https://x.com")
 
+    def test_tiny_mode_classifier_override_fields_are_optional(self):
+        """Tiny classifier override fields default to None when omitted."""
+        cfg = LLMConfig(provider="mock", model="m", base_url="https://x.com")
+        assert cfg.tiny_llm_mode_classifier_enabled is None
+        assert cfg.tiny_llm_mode_classifier_min_confidence is None
+        assert cfg.tiny_llm_mode_classifier_min_score_gap is None
+        assert cfg.tiny_llm_mode_classifier_accept_confidence is None
+        assert cfg.tiny_llm_mode_classifier_max_tokens is None
+
+    def test_tiny_mode_classifier_override_bounds(self):
+        """Tiny classifier override fields validate numeric ranges."""
+        LLMConfig(
+            provider="mock",
+            model="m",
+            base_url="https://x.com",
+            tiny_llm_mode_classifier_min_confidence=0.5,
+            tiny_llm_mode_classifier_min_score_gap=3,
+            tiny_llm_mode_classifier_accept_confidence=0.6,
+            tiny_llm_mode_classifier_max_tokens=64,
+        )
+        with pytest.raises(ValidationError):
+            LLMConfig(provider="mock", model="m", base_url="https://x.com", tiny_llm_mode_classifier_min_confidence=1.1)
+        with pytest.raises(ValidationError):
+            LLMConfig(provider="mock", model="m", base_url="https://x.com", tiny_llm_mode_classifier_accept_confidence=-0.1)
+        with pytest.raises(ValidationError):
+            LLMConfig(provider="mock", model="m", base_url="https://x.com", tiny_llm_mode_classifier_max_tokens=16)
+
 
 # ============================================================================
 # TR-MODEL-3: ChatMessage

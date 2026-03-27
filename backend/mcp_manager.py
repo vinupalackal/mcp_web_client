@@ -13,7 +13,7 @@ import time
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Iterable, Set
 from backend.models import (
     ServerConfig,
     ToolSchema,
@@ -546,8 +546,17 @@ class MCPManager:
     def get_all_tools(self) -> List[ToolSchema]:
         """Get all discovered tools"""
         return list(self.tools.values())
+
+    def _filter_tool_names(self, allowed_tool_names: Optional[Iterable[str]]) -> Optional[Set[str]]:
+        if allowed_tool_names is None:
+            return None
+        return {tool_name for tool_name in allowed_tool_names if tool_name}
     
-    def get_tools_for_llm(self) -> List[Dict[str, Any]]:
+    def get_tools_for_llm(
+        self,
+        allowed_tool_names: Optional[Iterable[str]] = None,
+        include_virtual_repeated: bool = True,
+    ) -> List[Dict[str, Any]]:
         """
         Get tools in OpenAI function calling format for LLM.
 
@@ -555,8 +564,11 @@ class MCPManager:
         can request repeated execution of any registered tool.
         """
         tools = []
+        allowed_tool_name_set = self._filter_tool_names(allowed_tool_names)
 
         for tool in self.tools.values():
+            if allowed_tool_name_set is not None and tool.namespaced_id not in allowed_tool_name_set:
+                continue
             tools.append({
                 "type": "function",
                 "function": {
@@ -567,11 +579,17 @@ class MCPManager:
             })
 
         # Always inject the virtual repeated-exec tool (intercepted in main.py)
-        tools.append(VIRTUAL_REPEATED_EXEC_TOOL)
+        if include_virtual_repeated:
+            tools.append(VIRTUAL_REPEATED_EXEC_TOOL)
 
         return tools
 
-    def get_tools_for_llm_chunks(self, chunk_size: int) -> List[List[Dict[str, Any]]]:
+    def get_tools_for_llm_chunks(
+        self,
+        chunk_size: int,
+        allowed_tool_names: Optional[Iterable[str]] = None,
+        include_virtual_repeated: bool = True,
+    ) -> List[List[Dict[str, Any]]]:
         """Return tools in OpenAI function calling format split into chunks.
 
         Each chunk contains at most ``chunk_size`` tools, with the virtual
@@ -584,6 +602,7 @@ class MCPManager:
         Args:
             chunk_size: Maximum tools per chunk (includes the virtual tool slot).
         """
+        allowed_tool_name_set = self._filter_tool_names(allowed_tool_names)
         real_tools = [
             {
                 "type": "function",
@@ -594,20 +613,27 @@ class MCPManager:
                 },
             }
             for tool in self.tools.values()
+            if allowed_tool_name_set is None or tool.namespaced_id in allowed_tool_name_set
         ]
 
         # Reserve one slot per chunk for VIRTUAL_REPEATED_EXEC_TOOL
-        effective_chunk_size = max(1, chunk_size - 1)
+        effective_chunk_size = max(1, chunk_size - (1 if include_virtual_repeated else 0))
 
         if len(real_tools) <= effective_chunk_size:
             # Everything fits — identical to get_tools_for_llm()
-            return [real_tools + [VIRTUAL_REPEATED_EXEC_TOOL]]
+            chunk = list(real_tools)
+            if include_virtual_repeated:
+                chunk.append(VIRTUAL_REPEATED_EXEC_TOOL)
+            return [chunk]
 
         # Split real tools into chunks; append virtual tool to each chunk
         chunks: List[List[Dict[str, Any]]] = []
         for offset in range(0, len(real_tools), effective_chunk_size):
             chunk = real_tools[offset: offset + effective_chunk_size]
-            chunks.append(chunk + [VIRTUAL_REPEATED_EXEC_TOOL])
+            if include_virtual_repeated:
+                chunks.append(chunk + [VIRTUAL_REPEATED_EXEC_TOOL])
+            else:
+                chunks.append(chunk)
 
         logger_internal.info(
             "Tool split: %s real tools → %s chunk(s) of ≤%s (chunk_size=%s)",

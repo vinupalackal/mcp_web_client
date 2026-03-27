@@ -7,6 +7,11 @@
 beforeEach(() => {
   jest.clearAllMocks();
 
+  jest.spyOn(console, 'log').mockImplementation(() => {});
+  jest.spyOn(console, 'error').mockImplementation(() => {});
+  jest.spyOn(console, 'warn').mockImplementation(() => {});
+  jest.spyOn(console, 'debug').mockImplementation(() => {});
+
   // Re-set fetch to a default no-op so tests don't accidentally share state
   global.fetch = jest.fn();
 
@@ -28,4 +33,8 @@ beforeEach(() => {
     global._sessionStorageMock.removeItem.mockImplementation(() => {});
     global._sessionStorageMock.clear.mockImplementation(() => {});
   }
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
 });

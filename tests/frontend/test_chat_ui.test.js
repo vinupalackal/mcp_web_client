@@ -229,6 +229,112 @@ describe('Chat UI — createNewSession (TC-FE-CHAT-09 to 14)', () => {
   });
 });
 
+describe('Chat UI — persisted screen state', () => {
+  let sessionStore;
+
+  beforeEach(() => {
+    setupChatDOM();
+    sessionStore = {};
+    sessionStorage.getItem.mockImplementation((key) => sessionStore[key] ?? null);
+    sessionStorage.setItem.mockImplementation((key, value) => { sessionStore[key] = String(value); });
+    sessionStorage.removeItem.mockImplementation((key) => { delete sessionStore[key]; });
+    sessionStorage.clear.mockImplementation(() => { sessionStore = {}; });
+    sessionStorage.clear();
+    localStorage.clear();
+    jest.resetModules();
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  test('TC-FE-CHAT-47: restores chat history and reuses restored session after returning to chat page', async () => {
+    sessionStorage.setItem('chatViewState', JSON.stringify({
+      sessionId: 'restored-chat-session',
+      messagesHtml: '<div class="message-wrapper user"><div class="message-content">Saved chat history</div></div>',
+    }));
+
+    global.fetch = jest.fn((url, options) => {
+      if (url === '/api/users/me') {
+        return Promise.resolve({ ok: false, status: 401, json: async () => ({}) });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/sessions/restored-chat-session/messages' && options?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            message: { content: 'Restored session reply' },
+            tool_executions: [],
+            initial_llm_response: '',
+          }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+    });
+
+    require('../../backend/static/app.js');
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+
+    expect(document.getElementById('chatMessages').innerHTML).toContain('Saved chat history');
+
+    const input = document.getElementById('messageInput');
+    input.value = 'Continue chat';
+    input.dispatchEvent(new Event('input'));
+    document.getElementById('sendBtn').click();
+    await new Promise(r => setTimeout(r, 0));
+    await new Promise(r => setTimeout(r, 0));
+
+    const sessionCreateCalls = global.fetch.mock.calls.filter(
+      ([url, options]) => url === '/api/sessions' && options?.method === 'POST'
+    );
+    expect(sessionCreateCalls).toHaveLength(0);
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/sessions/restored-chat-session/messages',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+
+  test('TC-FE-CHAT-48: pagehide event saves chat state to sessionStorage', async () => {
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/users/me') {
+        return Promise.resolve({ ok: false, status: 401, json: async () => ({}) });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({ provider: 'mock', model: 'm', base_url: 'http://x' }) });
+      }
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/sessions') {
+        return Promise.resolve({ ok: true, json: async () => ({ session_id: 'pagehide-session', created_at: new Date().toISOString() }) });
+      }
+      return Promise.resolve({ ok: false, status: 500, json: async () => ({}) });
+    });
+
+    require('../../backend/static/app.js');
+    document.dispatchEvent(new Event('DOMContentLoaded'));
+
+    // Simulate a new session being created (clears welcome message, adds system msg)
+    document.getElementById('newChatBtn').click();
+    await new Promise(r => setTimeout(r, 20));
+
+    // At this point sessionStorage should have state from addSystemMessage()
+    const stateAfterNewChat = JSON.parse(sessionStorage.getItem('chatViewState') || 'null');
+    expect(stateAfterNewChat).not.toBeNull();
+    expect(stateAfterNewChat.sessionId).toBe('pagehide-session');
+
+    // Now fire pagehide — should save again without throwing
+    window.dispatchEvent(new Event('pagehide'));
+
+    const stateAfterPagehide = JSON.parse(sessionStorage.getItem('chatViewState') || 'null');
+    expect(stateAfterPagehide).not.toBeNull();
+    expect(stateAfterPagehide.sessionId).toBe('pagehide-session');
+  });
+});
 
 describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
 
@@ -447,6 +553,7 @@ describe('Chat UI — Tools Sidebar (TC-FE-CHAT-39 to 46)', () => {
     const toolsCalls = global.fetch.mock.calls.filter(
       ([url]) => url && url.includes('/api/tools')
     );
+
     expect(toolsCalls.length).toBeGreaterThan(0);
   });
 

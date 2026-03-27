@@ -258,6 +258,49 @@ class LLMConfig(BaseModel):
             "Leave unset to use the environment default (128)."
         ),
     )
+    tiny_llm_mode_classifier_enabled: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Override for the tiny LLM request-mode classifier. "
+            "Set true/false to override the server default, or null to use the environment default."
+        ),
+    )
+    tiny_llm_mode_classifier_min_confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Override heuristic-confidence threshold below which the tiny mode-classifier runs. "
+            "Null uses the server default."
+        ),
+    )
+    tiny_llm_mode_classifier_min_score_gap: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "Override heuristic score-gap threshold below which the tiny mode-classifier runs. "
+            "Null uses the server default."
+        ),
+    )
+    tiny_llm_mode_classifier_accept_confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Override minimum tiny-classifier confidence required to replace heuristic routing. "
+            "Null uses the server default."
+        ),
+    )
+    tiny_llm_mode_classifier_max_tokens: Optional[int] = Field(
+        default=None,
+        ge=32,
+        le=512,
+        description=(
+            "Override max tokens reserved for the tiny mode-classifier response. "
+            "Null uses the server default."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_gateway_mode(self):
@@ -312,7 +355,12 @@ class LLMConfig(BaseModel):
                     "api_key": "sk-...",
                     "temperature": 0.7,
                     "llm_timeout_ms": 180000,
-                    "max_tokens": 2000
+                    "max_tokens": 2000,
+                    "tiny_llm_mode_classifier_enabled": None,
+                    "tiny_llm_mode_classifier_min_confidence": None,
+                    "tiny_llm_mode_classifier_min_score_gap": None,
+                    "tiny_llm_mode_classifier_accept_confidence": None,
+                    "tiny_llm_mode_classifier_max_tokens": None
                 }
             ]
         }
@@ -819,6 +867,10 @@ class SessionConfig(BaseModel):
     include_history: bool = Field(
         default=True,
         description="Whether prior chat history should be sent with each new user query"
+    )
+    history_mode: str = Field(
+        default="summary",
+        description="How prior context should be sent to the LLM: 'summary', 'full', or 'latest'"
     )
 
 

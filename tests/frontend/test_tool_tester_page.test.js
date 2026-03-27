@@ -256,6 +256,87 @@ describe('Tool Tester Page — DOM structure', () => {
   });
 });
 
+describe('Tool Tester Page — persisted screen state', () => {
+  let sessionStore;
+
+  beforeEach(() => {
+    setupToolTesterDOM();
+    sessionStore = {};
+    sessionStorage.getItem.mockImplementation((key) => sessionStore[key] ?? null);
+    sessionStorage.setItem.mockImplementation((key, value) => { sessionStore[key] = String(value); });
+    sessionStorage.removeItem.mockImplementation((key) => { delete sessionStore[key]; });
+    sessionStorage.clear.mockImplementation(() => { sessionStore = {}; });
+    sessionStorage.clear();
+    localStorage.clear();
+    global.fetch = buildFetchMock();
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  test('restores results history and reuses restored session after returning to tool tester', async () => {
+    sessionStorage.setItem('toolTesterViewState', JSON.stringify({
+      sessionId: 'restored-tool-session',
+      resultsHtml: '<article class="tool-tester-result-card"><div class="tool-tester-result-header"><div class="tool-tester-result-meta">Saved Result</div><div class="tool-tester-result-header-actions"><button type="button" class="btn btn-secondary btn-sm tool-tester-result-toggle" aria-expanded="true">Minimize</button></div></div><div class="tool-tester-result-body">Saved test history</div></article>',
+    }));
+
+    global.fetch = jest.fn((url, options) => {
+      if (url === '/api/tools' && !options) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(MOCK_TOOLS) });
+      }
+      if (url === '/api/tools/test-prompts' && !options) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(MOCK_PROMPTS) });
+      }
+      if (url?.startsWith('/api/sessions/restored-tool-session/messages') && options?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            message: { content: 'Restored tool session response' },
+            tool_executions: [
+              { tool: 'server_info', success: true, arguments: {}, result: 'Server v1.0' },
+            ],
+          }),
+        });
+      }
+      if (url === '/api/tools/test-results-output' && options?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+      }
+      if (url === '/api/llm/config' && !options) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(MOCK_LLM_CONFIG) });
+      }
+      if (url === '/api/servers' && !options) {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(MOCK_SERVERS) });
+      }
+      if (url === '/api/sessions' && options?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve(MOCK_SESSION) });
+      }
+      if (url === '/api/servers/refresh-tools' && options?.method === 'POST') {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+    });
+
+    loadModule();
+    await flushPromises();
+
+    expect(document.getElementById('toolTesterResults').innerHTML).toContain('Saved test history');
+
+    const testBtn = document.querySelector('.tool-tester-test-btn[data-tool-id="openwrt__server_info"]');
+    testBtn.click();
+    await flushPromises();
+
+    const sessionCreateCalls = global.fetch.mock.calls.filter(
+      ([url, options]) => url === '/api/sessions' && options?.method === 'POST'
+    );
+    expect(sessionCreateCalls).toHaveLength(0);
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/api/sessions/restored-tool-session/messages',
+      expect.objectContaining({ method: 'POST' })
+    );
+  });
+});
+
 describe('Tool Tester Page — response fallback', () => {
   beforeEach(() => {
     setupToolTesterDOM();

@@ -449,6 +449,38 @@ class TestVirtualRepeatedExecTool:
         assert tools[-1]["function"]["name"] == "mcp_repeated_exec"
         assert tools[0]["function"]["name"] == "svc__ping"
 
+    def test_catalog_can_be_filtered_to_allowed_tools(self, mgr):
+        """Only explicitly allowed tool names are returned when filtering is requested."""
+        tool_schema = __import__("backend.models", fromlist=["ToolSchema"]).ToolSchema
+        mgr.tools["svc__ping"] = tool_schema(
+            namespaced_id="svc__ping", server_alias="svc",
+            name="ping", description="Ping",
+        )
+        mgr.tools["svc__status"] = tool_schema(
+            namespaced_id="svc__status", server_alias="svc",
+            name="status", description="Status",
+        )
+
+        tools = mgr.get_tools_for_llm(allowed_tool_names=["svc__status"])
+        names = [t["function"]["name"] for t in tools]
+
+        assert names == ["svc__status", "mcp_repeated_exec"]
+
+    def test_catalog_filter_can_skip_virtual_tool(self, mgr):
+        """Filtered catalogs may omit the virtual repeated-exec tool for direct lookups."""
+        tool_schema = __import__("backend.models", fromlist=["ToolSchema"]).ToolSchema
+        mgr.tools["svc__status"] = tool_schema(
+            namespaced_id="svc__status", server_alias="svc",
+            name="status", description="Status",
+        )
+
+        tools = mgr.get_tools_for_llm(
+            allowed_tool_names=["svc__status"],
+            include_virtual_repeated=False,
+        )
+
+        assert [t["function"]["name"] for t in tools] == ["svc__status"]
+
     def test_virtual_tool_required_params(self, mgr):
         """TC-MCP-28: Schema declares target_tool, repeat_count, interval_ms as required."""
         tools = mgr.get_tools_for_llm()

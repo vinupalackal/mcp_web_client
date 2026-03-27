@@ -191,3 +191,63 @@ class SessionManager:
             llm_messages.append(msg_dict)
         
         return llm_messages
+
+    def build_history_summary(
+        self,
+        session_id: str,
+        *,
+        upto_index: Optional[int] = None,
+        max_messages: int = 6,
+        max_traces: int = 4,
+    ) -> Optional[str]:
+        """Build a compact summary of recent session context for LLM prompts."""
+
+        messages = self.get_messages(session_id)
+        if upto_index is not None:
+            messages = messages[:upto_index]
+
+        if not messages:
+            return None
+
+        recent_messages = messages[-max_messages:]
+        recent_user_requests = [
+            (msg.content or "").strip()
+            for msg in recent_messages
+            if msg.role == "user" and (msg.content or "").strip()
+        ]
+        recent_assistant_answers = [
+            (msg.content or "").strip()
+            for msg in recent_messages
+            if msg.role == "assistant" and (msg.content or "").strip()
+        ]
+
+        traces = self.get_tool_traces(session_id)
+        if upto_index is not None and upto_index < len(self.get_messages(session_id)):
+            tool_messages_before_index = sum(1 for msg in self.get_messages(session_id)[:upto_index] if msg.role == "tool")
+            traces = traces[:tool_messages_before_index]
+        recent_traces = traces[-max_traces:]
+
+        summary_parts: List[str] = []
+        if recent_user_requests:
+            summary_parts.append(
+                "Recent user requests: " + " | ".join(recent_user_requests[-3:])
+            )
+        if recent_assistant_answers:
+            summary_parts.append(
+                "Recent assistant findings: " + " | ".join(recent_assistant_answers[-2:])
+            )
+        if recent_traces:
+            rendered_traces = []
+            for trace in recent_traces:
+                tool_name = trace.get("tool_name", "unknown")
+                status = "success" if trace.get("success") else "failed"
+                result = trace.get("result")
+                result_preview = str(result)
+                result_preview = " ".join(result_preview.split())[:120]
+                rendered_traces.append(f"{tool_name} ({status}): {result_preview}")
+            summary_parts.append("Recent tool outcomes: " + " | ".join(rendered_traces))
+
+        if not summary_parts:
+            return None
+
+        return "\n".join(summary_parts)

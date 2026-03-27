@@ -407,12 +407,54 @@ class TestSendMessage:
         assert [msg["role"] for msg in second_messages] == ["system", "user"]
         assert second_messages[1]["content"] == "second"
 
+    @respx.mock
+    def test_summary_history_mode_injects_compact_context(self, client, llm_openai):
+        """Summary history mode keeps only the latest user turn in messages and moves prior context into the system prompt."""
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions", json={
+            "llm_config": llm_openai,
+            "enabled_servers": [],
+            "include_history": True,
+            "history_mode": "summary",
+        }).json()["session_id"]
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            return httpx.Response(200, json=_MOCK_LLM_STOP)
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "check memory"})
+        client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "what about now?"})
+
+        second_payload = captured_payloads[1]
+        assert [msg["role"] for msg in second_payload["messages"]] == ["system", "user"]
+        assert second_payload["messages"][1]["content"] == "what about now?"
+        system_content = second_payload["messages"][0]["content"]
+        assert "Conversation summary:" in system_content
+        assert "check memory" in system_content
+        assert "Request mode: follow_up" in system_content
+
 
 # ============================================================================
 # TR-CHAT-2: Tool Calling Flow
 # ============================================================================
 
 class TestToolCallingFlow:
+
+    def _register_tool(self, namespaced_id, description="Tool"):
+        from backend.models import ToolSchema
+
+        server_alias, tool_name = namespaced_id.split("__", 1)
+        main_module.mcp_manager.tools[namespaced_id] = ToolSchema(
+            namespaced_id=namespaced_id,
+            server_alias=server_alias,
+            name=tool_name,
+            description=description,
+        )
 
     def _setup_server_and_tool(self, client, monkeypatch):
         """Helper: add a server and pre-populate a tool in mcp_manager."""
@@ -428,12 +470,14 @@ class TestToolCallingFlow:
             base_url="https://mcp.example.com",
             auth_type="none",
         )
-        main_module.mcp_manager.tools["svc__ping"] = ToolSchema(
-            namespaced_id="svc__ping",
-            server_alias="svc",
-            name="ping",
-            description="Ping",
-        )
+        self._register_tool("svc__ping", "Ping")
+
+    def _setup_server_with_tools(self, client, monkeypatch, tool_names):
+        """Helper: add a server and register a list of namespaced tools."""
+        self._setup_server_and_tool(client, monkeypatch)
+        main_module.mcp_manager.tools.pop("svc__ping", None)
+        for tool_name in tool_names:
+            self._register_tool(tool_name, f"{tool_name} description")
 
     @respx.mock
     def test_tool_executed_on_tool_call_finish_reason(self, client, llm_openai, monkeypatch):
@@ -498,6 +542,213 @@ class TestToolCallingFlow:
         client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
         traces = main_module.session_manager.get_tool_traces(sid)
         assert any(t["success"] is True for t in traces)
+
+    @respx.mock
+    def test_direct_metric_query_uses_filtered_tools_and_latest_message_only(self, client, llm_openai, monkeypatch):
+        """Direct fact lookups skip classification, skip prior history, and expose only relevant tools."""
+        self._setup_server_with_tools(
+            client,
+            monkeypatch,
+            [
+                "svc__system_memory_free",
+                "svc__get_memory_info",
+                "svc__device_version",
+            ],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+        main_module.session_manager.add_message(
+            sid,
+            main_module.ChatMessage(role="user", content="old question"),
+        )
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            if len(captured_payloads) == 1:
+                return httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_mem_free",
+                                "type": "function",
+                                "function": {
+                                    "name": "svc__system_memory_free",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                })
+            return httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Free memory is 60 MB."},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
+            })
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"content": [{"type": "text", "text": "60"}], "isError": False},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "How much free memory does the device have?"},
+        )
+
+        assert response.status_code == 200
+        assert len(captured_payloads) == 2
+        first_payload = captured_payloads[0]
+        assert [message["role"] for message in first_payload["messages"]] == ["system", "user"]
+        assert first_payload["messages"][1]["content"] == "How much free memory does the device have?"
+        first_tool_names = [tool["function"]["name"] for tool in first_payload["tools"]]
+        assert "svc__system_memory_free" in first_tool_names
+        assert "svc__get_memory_info" in first_tool_names
+        assert "svc__device_version" not in first_tool_names
+        assert "mcp_repeated_exec" not in first_tool_names
+    
+    @respx.mock
+    def test_feature_flagged_tiny_llm_mode_classifier_runs_before_tool_flow(self, client, llm_openai, monkeypatch):
+        """Ambiguous requests can trigger the tiny LLM classifier before the normal tool workflow."""
+        monkeypatch.setenv("MCP_ENABLE_LLM_MODE_CLASSIFIER", "true")
+        self._setup_server_with_tools(
+            client,
+            monkeypatch,
+            ["svc__get_memory"],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        llm_route = respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"mode": "targeted_status", "confidence": 0.78, "reasoning": "single-domain short status request"}',
+                        },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {"prompt_tokens": 8, "completion_tokens": 8, "total_tokens": 16},
+                }),
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
+                httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_mem_status",
+                                "type": "function",
+                                "function": {
+                                    "name": "svc__get_memory",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+                }),
+                httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "Memory usage looks normal.",
+                        },
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+                }),
+            ]
+        )
+        mcp_route = respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"free_mb": 512},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "memory"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["message"]["content"] == "Memory usage looks normal."
+        assert len(llm_route.calls) == 4
+        assert len(mcp_route.calls) == 2
+
+        import json
+
+        first_payload = json.loads(llm_route.calls[0].request.content)
+        second_payload = json.loads(llm_route.calls[1].request.content)
+        third_payload = json.loads(llm_route.calls[2].request.content)
+
+        assert "tiny routing classifier" in first_payload["messages"][0]["content"]
+        assert "tools" not in first_payload
+        assert "device diagnostics classifier" in second_payload["messages"][0]["content"]
+        assert any(tool["function"]["name"] == "svc__get_memory" for tool in third_payload["tools"])
+
+    @respx.mock
+    def test_mcp_is_error_marks_tool_trace_failed(self, client, llm_openai, monkeypatch):
+        """Tool traces and API payloads mark MCP logical errors as unsuccessful."""
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
+                httpx.Response(200, json=_MOCK_LLM_TOOL_CALL),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {
+                        "content": [{"type": "text", "text": "tool failed"}],
+                        "isError": True,
+                    },
+                }),
+            ]
+        )
+
+        response = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "ping"})
+
+        assert response.status_code == 200
+        assert response.json()["tool_executions"][0]["success"] is False
+        traces = main_module.session_manager.get_tool_traces(sid)
+        assert any(trace["tool_name"] == "svc__ping" and trace["success"] is False for trace in traces)
 
     @respx.mock
     def test_response_includes_initial_llm_response_when_tool_call_has_content(self, client, llm_openai, monkeypatch):
@@ -654,7 +905,6 @@ class TestToolCallingFlow:
 
         respx.post("https://api.openai.com/v1/chat/completions").mock(
             side_effect=[
-                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
                 httpx.Response(200, json=_MOCK_LLM_EMBEDDED_BARE_NAME_TOOL_CALL),
                 httpx.Response(200, json={
                     "choices": [{

@@ -274,3 +274,34 @@ class TestGetMessagesForLLM:
         mgr.add_message(s.session_id, ChatMessage(role="user", content="new"))
         msgs = mgr.get_messages_for_llm(s.session_id, "openai", start_index=2)
         assert msgs == [{"role": "user", "content": "new"}]
+
+
+class TestHistorySummary:
+
+    def test_build_history_summary_includes_recent_messages_and_tools(self, mgr):
+        """Summary mode captures recent requests, answers, and tool outcomes."""
+        s = mgr.create_session()
+        mgr.add_message(s.session_id, ChatMessage(role="user", content="check memory"))
+        mgr.add_message(s.session_id, ChatMessage(role="assistant", content="Memory is low."))
+        mgr.add_tool_trace(s.session_id, "svc__system_memory_free", {}, {"value": 60}, True)
+
+        summary = mgr.build_history_summary(s.session_id)
+
+        assert summary is not None
+        assert "check memory" in summary
+        assert "Memory is low." in summary
+        assert "svc__system_memory_free" in summary
+
+    def test_build_history_summary_respects_upto_index(self, mgr):
+        """Summary mode excludes messages beyond the requested cutoff."""
+        s = mgr.create_session()
+        mgr.add_message(s.session_id, ChatMessage(role="user", content="first"))
+        mgr.add_message(s.session_id, ChatMessage(role="assistant", content="reply one"))
+        mgr.add_message(s.session_id, ChatMessage(role="user", content="second"))
+
+        summary = mgr.build_history_summary(s.session_id, upto_index=2)
+
+        assert summary is not None
+        assert "first" in summary
+        assert "reply one" in summary
+        assert "second" not in summary

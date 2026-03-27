@@ -1028,6 +1028,36 @@ describe('Settings modal — handleSaveLLMConfig', () => {
     const html = document.body.innerHTML;
     expect(html.includes('Error') || html.includes('error') || html.includes('Failed')).toBe(true);
   });
+
+  test('TC-FE-SET-49b: tiny classifier overrides POST when override toggle is enabled', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    });
+
+    document.getElementById('llmProvider').value = 'openai';
+    document.getElementById('llmModel').value = 'gpt-4o';
+    document.getElementById('llmBaseUrl').value = 'https://api.openai.com';
+    document.getElementById('tinyModeClassifierOverrideToggle').checked = true;
+    document.getElementById('tinyModeClassifierOverrideToggle').dispatchEvent(new Event('change', { bubbles: true }));
+    document.getElementById('tinyModeClassifierEnabledToggle').checked = true;
+    document.getElementById('tinyModeClassifierMinConfidence').value = '0.72';
+    document.getElementById('tinyModeClassifierMinScoreGap').value = '5';
+    document.getElementById('tinyModeClassifierAcceptConfidence').value = '0.66';
+    document.getElementById('tinyModeClassifierMaxTokens').value = '128';
+
+    const form = document.getElementById('llmConfigForm');
+    form.dispatchEvent(new Event('submit', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 0));
+
+    const calls = global.fetch.mock.calls.filter(([url]) => url && url.includes('/api/llm/config'));
+    const body = JSON.parse(calls[0][1].body);
+    expect(body.tiny_llm_mode_classifier_enabled).toBe(true);
+    expect(body.tiny_llm_mode_classifier_min_confidence).toBeCloseTo(0.72);
+    expect(body.tiny_llm_mode_classifier_min_score_gap).toBe(5);
+    expect(body.tiny_llm_mode_classifier_accept_confidence).toBeCloseTo(0.66);
+    expect(body.tiny_llm_mode_classifier_max_tokens).toBe(128);
+  });
 });
 
 
@@ -1097,5 +1127,40 @@ describe('Settings modal — loadLLMConfig', () => {
     );
     loadSettings();
     expect(document.getElementById('llmModel').value).toBeDefined();
+  });
+
+  test('TC-FE-SET-53b: tiny classifier override settings load into the form', async () => {
+    setupFullDOM();
+    global.fetch = jest.fn((url) => {
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: true, json: async () => ({
+          provider: 'openai',
+          model: 'gpt-4o',
+          base_url: 'https://api.openai.com',
+          temperature: 0.7,
+          tiny_llm_mode_classifier_enabled: true,
+          tiny_llm_mode_classifier_min_confidence: 0.72,
+          tiny_llm_mode_classifier_min_score_gap: 5,
+          tiny_llm_mode_classifier_accept_confidence: 0.66,
+          tiny_llm_mode_classifier_max_tokens: 128,
+        }) });
+      }
+      if (url === '/api/servers') return Promise.resolve({ ok: true, json: async () => [] });
+      if (url === '/api/tools') return Promise.resolve({ ok: true, json: async () => [] });
+      if (url === '/api/enterprise/token/status') return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    loadSettings();
+    await new Promise(r => setTimeout(r, 30));
+
+    expect(document.getElementById('tinyModeClassifierOverrideToggle').checked).toBe(true);
+    expect(document.getElementById('tinyModeClassifierOptionsGroup').classList.contains('is-open')).toBe(true);
+    expect(document.getElementById('tinyModeClassifierOptionsGroup').getAttribute('aria-hidden')).toBe('false');
+    expect(document.getElementById('tinyModeClassifierEnabledToggle').checked).toBe(true);
+    expect(document.getElementById('tinyModeClassifierMinConfidence').value).toBe('0.72');
+    expect(document.getElementById('tinyModeClassifierMinScoreGap').value).toBe('5');
+    expect(document.getElementById('tinyModeClassifierAcceptConfidence').value).toBe('0.66');
+    expect(document.getElementById('tinyModeClassifierMaxTokens').value).toBe('128');
   });
 });

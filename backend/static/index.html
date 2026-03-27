@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RDK MCP Triaging Tool</title>
-    <link rel="stylesheet" href="/static/style.css?v=23">
+    <link rel="stylesheet" href="/static/style.css?v=25">
 </head>
 <body>
     <!-- Main Container -->
@@ -362,38 +362,77 @@
                             <label for="llmTemperature">Temperature</label>
                             <input type="number" id="llmTemperature" min="0" max="2" step="0.1" value="0.7">
                         </div>
-                        <div class="form-group">
-                            <label class="switch-toggle" for="toolsSplitEnabledToggle">
-                                <input type="checkbox" id="toolsSplitEnabledToggle">
-                                <span class="switch-slider"></span>
-                                <span class="switch-label">Split Tools List across multiple LLM requests</span>
-                            </label>
-                            <small style="color: var(--text-secondary, #888); font-size: 0.8em;">
-                                When enabled and the total tool count exceeds the limit below, tools are chunked and queried per the mode selected below. All requested tools are then executed together.
-                            </small>
-                        </div>
-                        <div id="toolsSplitOptionsGroup" style="margin-left: 1.5rem; display: none;">
-                            <div class="form-group">
-                                <label for="toolsSplitMode">Split Request Mode</label>
-                                <select id="toolsSplitMode">
-                                    <option value="concurrent">Concurrent — all chunks fired simultaneously (fastest)</option>
-                                    <option value="sequential">Sequential — chunks sent one after another (rate-limit friendly)</option>
-                                </select>
+                        <div class="toggle-option-group">
+                            <div class="toggle-option-card">
+                                <label class="switch-toggle toggle-option" for="toolsSplitEnabledToggle">
+                                    <input type="checkbox" id="toolsSplitEnabledToggle">
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-label">Split Tools List across multiple LLM requests</span>
+                                    <span class="toggle-option-help">Chunk large tool lists and query them using the mode selected below.</span>
+                                </label>
+                                <div id="toolsSplitOptionsGroup" class="toggle-option-panel" aria-hidden="true">
+                                    <div class="form-group">
+                                        <label for="toolsSplitMode">Split Request Mode</label>
+                                        <select id="toolsSplitMode">
+                                            <option value="concurrent">Concurrent — all chunks fired simultaneously (fastest)</option>
+                                            <option value="sequential">Sequential — chunks sent one after another (rate-limit friendly)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="toolsSplitLimit">Tools Split Limit per Request</label>
+                                        <input type="number" id="toolsSplitLimit" min="1" max="512" step="1" placeholder="Default: 128 (MCP_MAX_TOOLS_PER_REQUEST)">
+                                        <small style="color: var(--text-secondary, #888); font-size: 0.8em;">
+                                            Max tools per LLM request chunk. Leave blank to use the server default.
+                                        </small>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="form-group">
-                                <label for="toolsSplitLimit">Tools Split Limit per Request</label>
-                                <input type="number" id="toolsSplitLimit" min="1" max="512" step="1" placeholder="Default: 128 (MCP_MAX_TOOLS_PER_REQUEST)">
-                                <small style="color: var(--text-secondary, #888); font-size: 0.8em;">
-                                    Max tools per LLM request chunk. Leave blank to use the server default.
-                                </small>
+                            <div class="toggle-option-card">
+                                <label class="switch-toggle toggle-option" for="tinyModeClassifierOverrideToggle">
+                                    <input type="checkbox" id="tinyModeClassifierOverrideToggle">
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-label">Override tiny request-mode classifier settings</span>
+                                    <span class="toggle-option-help">Store per-configuration classifier settings instead of using only server defaults.</span>
+                                </label>
+                                <div id="tinyModeClassifierOptionsGroup" class="toggle-option-panel" aria-hidden="true">
+                                    <div class="form-group">
+                                        <label class="switch-toggle toggle-option toggle-option-nested" for="tinyModeClassifierEnabledToggle">
+                                            <input type="checkbox" id="tinyModeClassifierEnabledToggle">
+                                            <span class="switch-slider"></span>
+                                            <span class="switch-label">Enable tiny LLM classifier for ambiguous requests</span>
+                                            <span class="toggle-option-help">Use the tiny model only when the heuristic routing result is uncertain.</span>
+                                        </label>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tinyModeClassifierMinConfidence">Heuristic Min Confidence</label>
+                                        <input type="number" id="tinyModeClassifierMinConfidence" min="0" max="1" step="0.01" value="0.60">
+                                        <small style="color: var(--text-secondary, #888); font-size: 0.8em;">Default: 0.60</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tinyModeClassifierMinScoreGap">Heuristic Min Score Gap</label>
+                                        <input type="number" id="tinyModeClassifierMinScoreGap" min="0" max="100" step="1" value="3">
+                                        <small style="color: var(--text-secondary, #888); font-size: 0.8em;">Default: 3</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tinyModeClassifierAcceptConfidence">Override Accept Confidence</label>
+                                        <input type="number" id="tinyModeClassifierAcceptConfidence" min="0" max="1" step="0.01" value="0.55">
+                                        <small style="color: var(--text-secondary, #888); font-size: 0.8em;">Default: 0.55</small>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="tinyModeClassifierMaxTokens">Tiny Classifier Max Tokens</label>
+                                        <input type="number" id="tinyModeClassifierMaxTokens" min="32" max="512" step="1" value="96">
+                                        <small style="color: var(--text-secondary, #888); font-size: 0.8em;">Default: 96</small>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                        <div class="form-group">
-                            <label class="switch-toggle" for="includeHistoryToggle">
-                                <input type="checkbox" id="includeHistoryToggle" checked>
-                                <span class="switch-slider"></span>
-                                <span class="switch-label">Send prior chat history with each new query</span>
-                            </label>
+                            <div class="toggle-option-card">
+                                <label class="switch-toggle toggle-option" for="includeHistoryToggle">
+                                    <input type="checkbox" id="includeHistoryToggle" checked>
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-label">Send prior chat history with each new query</span>
+                                    <span class="toggle-option-help">Include previous conversation context automatically in each new request.</span>
+                                </label>
+                            </div>
                         </div>
                         <button type="submit" class="btn btn-primary">Save Configuration</button>
                     </form>
@@ -410,8 +449,8 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=17"></script>
-    <script src="/static/settings.js?v=8"></script>
+    <script src="/static/app.js?v=20"></script>
+    <script src="/static/settings.js?v=9"></script>
     <script>
     // Show My Account tab when SSO user is present
     document.addEventListener('DOMContentLoaded', () => {

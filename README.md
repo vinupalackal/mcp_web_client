@@ -197,6 +197,11 @@ cd tests/frontend && npm install
 | `MCP_REQUEST_TIMEOUT_MS` | `20000` | Request timeout (milliseconds) |
 | `MCP_MAX_TOOL_CALLS_PER_TURN` | `8` | Max tool executions per turn |
 | `MCP_MAX_TOOLS_PER_REQUEST` | `128` | Max tools sent to the LLM per request (Azure OpenAI hard limit is 128) |
+| `MCP_ENABLE_LLM_MODE_CLASSIFIER` | `false` | Enable a tiny no-tools LLM pass to resolve ambiguous request-mode routing (can also be overridden per saved LLM config in Settings) |
+| `MCP_LLM_MODE_CLASSIFIER_MIN_CONFIDENCE` | `0.60` | Heuristic-confidence threshold below which the tiny LLM classifier is consulted |
+| `MCP_LLM_MODE_CLASSIFIER_MIN_SCORE_GAP` | `3` | Heuristic score-gap threshold below which the tiny LLM classifier is consulted |
+| `MCP_LLM_MODE_CLASSIFIER_ACCEPT_CONFIDENCE` | `0.55` | Minimum tiny-classifier confidence required before overriding heuristic routing |
+| `MCP_LLM_MODE_CLASSIFIER_MAX_TOKENS` | `96` | Max tokens reserved for the tiny classifier response |
 | `OPENAI_API_KEY` | - | OpenAI API key |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI endpoint |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama endpoint |
