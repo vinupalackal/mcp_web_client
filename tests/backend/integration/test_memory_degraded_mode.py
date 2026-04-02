@@ -34,6 +34,9 @@ class _FakeMemoryService:
     async def record_turn(self, **kwargs):
         self.record_turn_calls.append(kwargs)
 
+    async def resolve_tools_from_memory(self, *, user_message, user_id="", available_tool_names, request_id="", similarity_threshold=0.30):
+        return []  # No memory-based tool routing in degraded-mode tests.
+
     async def health_status(self):
         return {
             "enabled": True,

@@ -2887,6 +2887,33 @@ async def send_message(
                 direct_tool_route["route_name"],
                 ", ".join(allowed_tool_names),
             )
+        elif _memory_service is not None:
+            # Memory-based tool routing: search conversation_memory + tool_cache
+            # (never code_memory) for similar past turns and extract which tools
+            # were called.  If confident matches exist, use them to narrow the
+            # tool catalog without asking the LLM.
+            _memory_tool_names = await _memory_service.resolve_tools_from_memory(
+                user_message=message.content,
+                user_id=user_id or "",
+                available_tool_names=all_available_tool_names,
+                request_id=message_transaction_id,
+            )
+            if _memory_tool_names:
+                direct_tool_route = {
+                    "route_name": "memory_retrieval",
+                    "allowed_tool_names": _memory_tool_names,
+                    "include_virtual_repeated": False,
+                }
+                allowed_tool_names = _memory_tool_names
+                include_virtual_repeated = False
+                logger_internal.info(
+                    "Memory tool route selected: [%s]",
+                    ", ".join(_memory_tool_names),
+                )
+            else:
+                logger_internal.info(
+                    "Memory tool route: no confident match — falling back to LLM tool selection"
+                )
 
         # Get available tools
         tools_for_llm = mcp_manager.get_tools_for_llm(

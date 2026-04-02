@@ -413,6 +413,122 @@ class MemoryService:
         except Exception as error:
             logger_internal.warning("Failed to store tool cache entry: %s", error)
 
+    async def resolve_tools_from_memory(
+        self,
+        *,
+        user_message: str,
+        user_id: str = "",
+        available_tool_names: list[str],
+        request_id: str = "",
+        similarity_threshold: float = 0.30,
+    ) -> list[str]:
+        """Return tool names recalled from similar past turns that are still available.
+
+        Searches ``conversation_memory`` and ``tool_cache`` only — never
+        ``code_memory`` or ``doc_memory``, which hold code/document content
+        irrelevant to tool routing.
+
+        Returns an empty list when:
+        - Memory is disabled or ``user_id`` is empty (conversation memory is
+          user-scoped; anonymous sessions cannot benefit from prior turns).
+        - No past turns are found above the similarity threshold.
+        - None of the recalled tool names appear in ``available_tool_names``.
+
+        The caller should treat a non-empty return as a routing hint and only
+        fall back to LLM-based tool selection when this list is empty.
+        """
+        if not self.config.enabled:
+            return []
+        if not user_id:
+            return []
+        if not self.config.enable_conversation_memory and not self.config.enable_tool_cache:
+            return []
+
+        effective_request_id = request_id or self._request_id()
+        available_set = set(available_tool_names)
+
+        try:
+            embedding_result = await self.embedding_service.embed_texts([user_message])
+            query_vector = embedding_result.vectors[0]
+        except Exception as error:
+            logger_internal.warning(
+                "resolve_tools_from_memory: embedding failed request_id=%s error=%s",
+                effective_request_id,
+                error,
+            )
+            return []
+
+        tool_names_found: list[str] = []
+
+        # --- conversation_memory: extract tool_names from similar past turns ---
+        if self.config.enable_conversation_memory:
+            try:
+                filter_expr = self._build_conversation_filter_expression(
+                    user_id=user_id,
+                    workspace_scope="",
+                )
+                raw_hits = self.milvus_store.search(
+                    collection_key="conversation_memory",
+                    generation=self.config.collection_generation,
+                    query_vectors=[query_vector],
+                    limit=5,
+                    filter_expression=filter_expr,
+                    output_fields=["payload_ref", "tool_names", "user_message", "turn_number"],
+                )
+                for hit in self._flatten_hits(raw_hits):
+                    if self._score_for_hit(hit) > similarity_threshold:
+                        continue  # too dissimilar
+                    entity = hit.get("entity") if isinstance(hit, dict) else None
+                    raw_tool_names = self._field(hit, entity, "tool_names") or ""
+                    for name in (t.strip() for t in raw_tool_names.split(",") if t.strip()):
+                        if name in available_set and name not in tool_names_found:
+                            tool_names_found.append(name)
+            except Exception as error:
+                logger_internal.warning(
+                    "resolve_tools_from_memory: conversation_memory search failed request_id=%s error=%s",
+                    effective_request_id,
+                    error,
+                )
+
+        # --- tool_cache: extract tool_name from semantically similar cached calls ---
+        if self.config.enable_tool_cache:
+            try:
+                raw_hits = self.milvus_store.search(
+                    collection_key="tool_cache",
+                    generation=self.config.collection_generation,
+                    query_vectors=[query_vector],
+                    limit=5,
+                    filter_expression="",
+                    output_fields=["payload_ref", "tool_name", "server_alias"],
+                )
+                for hit in self._flatten_hits(raw_hits):
+                    if self._score_for_hit(hit) > similarity_threshold:
+                        continue
+                    entity = hit.get("entity") if isinstance(hit, dict) else None
+                    server_alias = self._field(hit, entity, "server_alias") or ""
+                    tool_name = self._field(hit, entity, "tool_name") or ""
+                    # Try namespaced form first (server_alias__tool_name), then bare name
+                    namespaced = f"{server_alias}__{tool_name}" if server_alias and tool_name else tool_name
+                    for candidate in (namespaced, tool_name):
+                        if candidate and candidate in available_set and candidate not in tool_names_found:
+                            tool_names_found.append(candidate)
+                            break
+            except Exception as error:
+                logger_internal.warning(
+                    "resolve_tools_from_memory: tool_cache search failed request_id=%s error=%s",
+                    effective_request_id,
+                    error,
+                )
+
+        logger_internal.info(
+            "Memory tool resolution: request_id=%s user=%s threshold=%.2f recalled=%s",
+            effective_request_id,
+            user_id,
+            similarity_threshold,
+            len(tool_names_found),
+        )
+        return tool_names_found
+
     def run_expiry_cleanup_if_due(
         self,
         *,
@@ -689,6 +805,8 @@ class MemoryService:
                 "assistant_summary",
                 "tool_names",
             ]
+        if collection_key == "tool_cache":
+            return ["payload_ref", "tool_name", "server_alias"]
         return ["payload_ref", "summary"]
 
     def _build_conversation_filter_expression(

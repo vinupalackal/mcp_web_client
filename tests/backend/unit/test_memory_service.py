@@ -1040,3 +1040,178 @@ class TestSafeToolCachePhase3:
         assert 'user_id == "user-42"' in expr
         assert 'workspace_scope == "ws-prod"' in expr
         assert "expires_at >" in expr
+
+
+class TestResolveToolsFromMemory:
+    """TC-MEM-TOOL-*: resolve_tools_from_memory selects tools from past turns."""
+
+    def _make_conv_hit(self, tool_names_str: str, distance: float) -> dict:
+        return {
+            "id": "turn-1",
+            "distance": distance,
+            "entity": {
+                "payload_ref": "conv://turn-1",
+                "tool_names": tool_names_str,
+                "user_message": "check status",
+                "turn_number": 3,
+            },
+        }
+
+    def _make_cache_hit(self, tool_name: str, server_alias: str, distance: float) -> dict:
+        return {
+            "id": "cache-1",
+            "distance": distance,
+            "entity": {
+                "payload_ref": "cache://cache-1",
+                "tool_name": tool_name,
+                "server_alias": server_alias,
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_returns_tools_from_similar_conversation_turn(self):
+        """TC-MEM-TOOL-01: Tools from a similar past turn (distance < threshold) are returned."""
+        hit = self._make_conv_hit("openwrt__get_memory,openwrt__get_cpu", distance=0.15)
+        store = _FakeMilvusStore(
+            search_results={"conversation_memory": [[hit]]}
+        )
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_conversation_memory=True,
+                enable_tool_cache=False,
+            ),
+        )
+
+        result = await service.resolve_tools_from_memory(
+            user_message="show memory usage",
+            user_id="user-1",
+            available_tool_names=["openwrt__get_memory", "openwrt__get_cpu", "openwrt__get_disk"],
+            request_id="chat-test",
+        )
+
+        assert result == ["openwrt__get_memory", "openwrt__get_cpu"]
+        # Only conversation_memory should be searched — not code_memory or doc_memory.
+        searched = [c["collection_key"] for c in store.search_calls]
+        assert "code_memory" not in searched
+        assert "doc_memory" not in searched
+        assert "conversation_memory" in searched
+
+    @pytest.mark.asyncio
+    async def test_skips_hits_above_similarity_threshold(self):
+        """TC-MEM-TOOL-02: Hits with distance > threshold are ignored."""
+        hit = self._make_conv_hit("openwrt__get_memory", distance=0.50)  # too dissimilar
+        store = _FakeMilvusStore(
+            search_results={"conversation_memory": [[hit]]}
+        )
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_conversation_memory=True),
+        )
+
+        result = await service.resolve_tools_from_memory(
+            user_message="show memory usage",
+            user_id="user-1",
+            available_tool_names=["openwrt__get_memory"],
+            similarity_threshold=0.30,
+        )
+
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_without_user_id(self):
+        """TC-MEM-TOOL-03: Anonymous sessions always return empty (conversation memory is user-scoped)."""
+        store = _FakeMilvusStore()
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_conversation_memory=True),
+        )
+
+        result = await service.resolve_tools_from_memory(
+            user_message="show memory usage",
+            user_id="",
+            available_tool_names=["openwrt__get_memory"],
+        )
+
+        assert result == []
+        assert store.search_calls == []  # No search should be attempted.
+
+    @pytest.mark.asyncio
+    async def test_filters_out_unavailable_tool_names(self):
+        """TC-MEM-TOOL-04: Tools not in available_tool_names are silently dropped."""
+        hit = self._make_conv_hit("openwrt__old_tool,openwrt__get_memory", distance=0.10)
+        store = _FakeMilvusStore(
+            search_results={"conversation_memory": [[hit]]}
+        )
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_conversation_memory=True),
+        )
+
+        result = await service.resolve_tools_from_memory(
+            user_message="show memory usage",
+            user_id="user-1",
+            available_tool_names=["openwrt__get_memory"],  # old_tool is not available
+        )
+
+        assert result == ["openwrt__get_memory"]
+
+    @pytest.mark.asyncio
+    async def test_tool_cache_hits_contribute_tool_names(self):
+        """TC-MEM-TOOL-05: tool_cache vector hits provide tool names when tool_cache is enabled."""
+        cache_hit = self._make_cache_hit("get_memory", "openwrt", distance=0.12)
+        store = _FakeMilvusStore(
+            search_results={"tool_cache": [[cache_hit]]}
+        )
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_conversation_memory=False,
+                enable_tool_cache=True,
+                tool_cache_allowlist=("get_memory",),
+            ),
+        )
+
+        result = await service.resolve_tools_from_memory(
+            user_message="show memory usage",
+            user_id="user-1",
+            available_tool_names=["openwrt__get_memory"],
+        )
+
+        # Namespaced form "openwrt__get_memory" should be resolved.
+        assert result == ["openwrt__get_memory"]
+        searched = [c["collection_key"] for c in store.search_calls]
+        assert "tool_cache" in searched
+        assert "code_memory" not in searched
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_memory_disabled(self):
+        """TC-MEM-TOOL-06: Disabled memory service always returns empty."""
+        store = _FakeMilvusStore()
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=False),
+        )
+
+        result = await service.resolve_tools_from_memory(
+            user_message="show memory usage",
+            user_id="user-1",
+            available_tool_names=["openwrt__get_memory"],
+        )
+
+        assert result == []
+        assert store.search_calls == []
