@@ -311,6 +311,43 @@ class TestMilvusStore:
         assert client.delete_calls[0]["ids"] == ["doc-1", "doc-2"]
         assert client.delete_calls[1]["filter"] == 'source_hash == "abc"'
 
+    def test_delete_by_ids_noop_on_missing_collection(self):
+        """TR-MVS-06b: delete_by_ids returns delete_count=0 silently when collection doesn't exist."""
+        client = _FakeMilvusClient()
+        store = MilvusStore(
+            milvus_uri="http://milvus.local",
+            client=client,
+            client_factory=_FakeMilvusClientFactory,
+        )
+        # No ensure_collection — collection does not exist.
+        result = store.delete_by_ids(
+            collection_key="code_memory",
+            generation="v1",
+            ids=["chunk-1", "chunk-2"],
+        )
+
+        assert result == {"delete_count": 0}
+        assert client.delete_calls == []  # Client never called.
+
+    def test_delete_by_filter_noop_on_missing_collection(self):
+        """TR-MVS-06c: delete_by_filter returns delete_count=0 silently when collection doesn't exist.
+        This is the startup expiry-cleanup path on a fresh Milvus instance."""
+        client = _FakeMilvusClient()
+        store = MilvusStore(
+            milvus_uri="http://milvus.local",
+            client=client,
+            client_factory=_FakeMilvusClientFactory,
+        )
+        # No ensure_collection — mirrors startup expiry cleanup on fresh Milvus.
+        result = store.delete_by_filter(
+            collection_key="conversation_memory",
+            generation="v1",
+            filter_expression="expires_at < 1775158286",
+        )
+
+        assert result == {"delete_count": 0}
+        assert client.delete_calls == []  # Client never called.
+
     def test_drop_collection_removes_existing_collection(self):
         """TR-MVS-07: drop_collection only targets known versioned collections."""
         client = _FakeMilvusClient()

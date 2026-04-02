@@ -286,6 +286,12 @@ class MilvusStore:
 
     def delete_by_ids(self, *, collection_key: str, generation: str, ids: list[str]) -> dict[str, int]:
         collection_name = self.build_collection_name(collection_key, generation)
+        if not self.client.has_collection(collection_name):
+            logger_internal.debug(
+                "Milvus delete-by-ids skipped: collection=%s does not exist (nothing to delete)",
+                collection_name,
+            )
+            return {"delete_count": 0}
         logger_internal.info(
             "Milvus delete-by-ids start: collection=%s key=%s generation=%s ids=%s",
             collection_name,
@@ -307,6 +313,12 @@ class MilvusStore:
         if not filter_expression:
             raise MilvusCollectionConfigError("filter_expression is required")
         collection_name = self.build_collection_name(collection_key, generation)
+        if not self.client.has_collection(collection_name):
+            logger_internal.debug(
+                "Milvus delete-by-filter skipped: collection=%s does not exist (nothing to delete)",
+                collection_name,
+            )
+            return {"delete_count": 0}
         logger_internal.info(
             "Milvus delete-by-filter start: collection=%s key=%s generation=%s filter=%s",
             collection_name,
