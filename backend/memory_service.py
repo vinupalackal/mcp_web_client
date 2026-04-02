@@ -448,6 +448,41 @@ class MemoryService:
         available_set = set(available_tool_names)
 
         try:
+            return await asyncio.wait_for(
+                self._resolve_tools_inner(
+                    user_message=user_message,
+                    user_id=user_id,
+                    available_set=available_set,
+                    similarity_threshold=similarity_threshold,
+                    effective_request_id=effective_request_id,
+                ),
+                timeout=max(self.config.retrieval_timeout_s, 0.001),
+            )
+        except asyncio.TimeoutError:
+            logger_internal.warning(
+                "resolve_tools_from_memory timed out after %.1fs request_id=%s",
+                self.config.retrieval_timeout_s,
+                effective_request_id,
+            )
+            return []
+        except Exception as error:
+            logger_internal.warning(
+                "resolve_tools_from_memory failed request_id=%s error=%s",
+                effective_request_id,
+                error,
+            )
+            return []
+
+    async def _resolve_tools_inner(
+        self,
+        *,
+        user_message: str,
+        user_id: str,
+        available_set: set[str],
+        similarity_threshold: float,
+        effective_request_id: str,
+    ) -> list[str]:
+        try:
             embedding_result = await self.embedding_service.embed_texts([user_message])
             query_vector = embedding_result.vectors[0]
         except Exception as error:

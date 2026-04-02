@@ -1215,3 +1215,25 @@ class TestResolveToolsFromMemory:
 
         assert result == []
         assert store.search_calls == []
+
+    @pytest.mark.asyncio
+    async def test_times_out_and_returns_empty(self):
+        """TC-MEM-TOOL-07: resolve_tools_from_memory returns empty on timeout, never raises."""
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(delay_s=2.0),
+            milvus_store=_FakeMilvusStore(),
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_conversation_memory=True,
+                retrieval_timeout_s=0.05,  # 50 ms << 2s embedding delay
+            ),
+        )
+
+        result = await service.resolve_tools_from_memory(
+            user_message="show memory usage",
+            user_id="user-1",
+            available_tool_names=["openwrt__get_memory"],
+        )
+
+        assert result == []  # Timeout must not propagate as an exception.
