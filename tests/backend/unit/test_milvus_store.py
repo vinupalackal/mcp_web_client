@@ -207,6 +207,31 @@ class TestMilvusStore:
         assert search_call["output_fields"] == ["id", "payload_ref"]
         assert search_call["anns_field"] == "embedding"
 
+    def test_search_auto_creates_collection_if_not_exists(self):
+        """TR-MVS-05d: search() implicitly calls ensure_collection so a fresh Milvus
+        instance does not raise 'collection not found' on the very first query."""
+        client = _FakeMilvusClient()
+        store = MilvusStore(
+            milvus_uri="http://milvus.local",
+            client=client,
+            client_factory=_FakeMilvusClientFactory,
+        )
+        # No explicit ensure_collection call — collection does not exist yet.
+        assert "mcp_client_code_memory_v1" not in client.collections
+
+        result = store.search(
+            collection_key="code_memory",
+            generation="v1",
+            query_vectors=[[0.1, 0.2, 0.3]],
+            limit=5,
+        )
+
+        # Collection was auto-created with dimension=3 (inferred from query vector length).
+        assert "mcp_client_code_memory_v1" in client.collections
+        assert len(client.created_calls) == 1
+        assert client.created_calls[0]["collection_name"] == "mcp_client_code_memory_v1"
+        assert result[0][0]["id"] == "chunk-1"
+
     def test_upsert_logs_transaction_details(self, caplog):
         """TR-MVS-05b: Upsert logs key Milvus transaction metadata for diagnostics."""
         client = _FakeMilvusClient()

@@ -249,7 +249,12 @@ class MilvusStore:
     ) -> list[list[dict[str, Any]]]:
         if not query_vectors:
             raise MilvusCollectionConfigError("query_vectors must not be empty")
-        collection_name = self.build_collection_name(collection_key, generation)
+        dimension = len(query_vectors[0])
+        collection_name = self.ensure_collection(
+            collection_key=collection_key,
+            generation=generation,
+            dimension=dimension,
+        )
         logger_internal.info(
             "Milvus search start: collection=%s key=%s generation=%s vectors=%s limit=%s filter=%s output_fields=%s",
             collection_name,
