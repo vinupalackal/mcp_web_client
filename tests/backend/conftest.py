@@ -24,6 +24,7 @@ def reset_backend_state(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "MCP_DATA_DIR", data_dir)
     main_module.servers_storage.clear()
     main_module.llm_config_storage = None
+    main_module.milvus_config_storage = None
     main_module.enterprise_token_cache.clear()
     main_module._memory_service = None
     main_module.session_manager = SessionManager()
@@ -31,6 +32,7 @@ def reset_backend_state(tmp_path, monkeypatch):
     yield
     main_module.servers_storage.clear()
     main_module.llm_config_storage = None
+    main_module.milvus_config_storage = None
     main_module.enterprise_token_cache.clear()
     main_module._memory_service = None
 
@@ -120,6 +122,27 @@ def llm_enterprise():
         "client_secret": "enterprise-secret",
         "token_endpoint_url": "https://auth.internal/v2/oauth/token",
         "temperature": 0.3,
+    }
+
+
+@pytest.fixture
+def milvus_config_payload():
+    return {
+        "enabled": True,
+        "milvus_uri": "http://127.0.0.1:19530",
+        "collection_prefix": "mcp_client",
+        "repo_id": "vinu/mcp-web-client",
+        "collection_generation": "v1",
+        "max_results": 6,
+        "retrieval_timeout_s": 4.5,
+        "degraded_mode": True,
+        "enable_conversation_memory": True,
+        "conversation_retention_days": 14,
+        "enable_tool_cache": True,
+        "tool_cache_ttl_s": 7200.0,
+        "tool_cache_allowlist": ["github__get_issue", "weather__get_forecast"],
+        "enable_expiry_cleanup": True,
+        "expiry_cleanup_interval_s": 120.0,
     }
 
 

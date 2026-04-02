@@ -212,6 +212,8 @@ cd tests/frontend && npm install
 
 The application can optionally index your codebase and documentation into a Milvus vector store and use retrieved context to improve LLM responses.  All memory features are **disabled by default** — the chat flow is unchanged when they are off.
 
+You can configure these runtime Milvus settings directly in Settings → Milvus Config, alongside the existing MCP Servers and LLM Config tabs.
+
 For day-to-day usage guidance, prompting tips, and Milvus-specific examples, see [docs/MILVUS-USER-GUIDE.md](docs/MILVUS-USER-GUIDE.md).
 
 ### Prerequisites

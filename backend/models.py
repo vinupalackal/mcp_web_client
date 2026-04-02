@@ -367,6 +367,145 @@ class LLMConfig(BaseModel):
     )
 
 
+class MilvusConfig(BaseModel):
+    """Milvus-backed memory subsystem configuration."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable the optional Milvus-backed memory subsystem",
+    )
+    milvus_uri: str = Field(
+        default="",
+        description="Milvus connection URI. Required when the subsystem is enabled.",
+    )
+    collection_prefix: str = Field(
+        default="mcp_client",
+        min_length=1,
+        max_length=64,
+        description="Prefix used when naming Milvus collections",
+    )
+    repo_id: str = Field(
+        default="",
+        max_length=256,
+        description="Repository or workspace identifier stored with indexed content",
+    )
+    collection_generation: str = Field(
+        default="v1",
+        min_length=1,
+        max_length=64,
+        description="Collection generation suffix used for active Milvus collections",
+    )
+    max_results: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="Maximum retrieval results returned per chat turn",
+    )
+    retrieval_timeout_s: float = Field(
+        default=5.0,
+        ge=0.1,
+        le=60.0,
+        description="Timeout in seconds for retrieval enrichment",
+    )
+    degraded_mode: bool = Field(
+        default=True,
+        description="Return degraded memory responses instead of failing the chat turn",
+    )
+    enable_conversation_memory: bool = Field(
+        default=False,
+        description="Store completed chat turns in conversation memory",
+    )
+    conversation_retention_days: int = Field(
+        default=7,
+        ge=1,
+        le=365,
+        description="Retention period in days for stored conversation turns",
+    )
+    enable_tool_cache: bool = Field(
+        default=False,
+        description="Enable safe allowlisted tool result caching",
+    )
+    tool_cache_ttl_s: float = Field(
+        default=3600.0,
+        ge=1.0,
+        le=2592000.0,
+        description="Time-to-live in seconds for cached tool results",
+    )
+    tool_cache_allowlist: List[str] = Field(
+        default_factory=list,
+        description="Explicit tool names that are eligible for safe caching",
+    )
+    enable_expiry_cleanup: bool = Field(
+        default=True,
+        description="Run expiry cleanup for conversation memory and tool cache records",
+    )
+    expiry_cleanup_interval_s: float = Field(
+        default=300.0,
+        ge=1.0,
+        le=86400.0,
+        description="Minimum interval in seconds between background expiry-cleanup passes",
+    )
+
+    @model_validator(mode="after")
+    def validate_milvus_config(self):
+        """Validate Milvus-specific runtime requirements and normalize allowlist entries."""
+        self.milvus_uri = self.milvus_uri.strip()
+        self.collection_prefix = self.collection_prefix.strip()
+        self.repo_id = self.repo_id.strip()
+        self.collection_generation = self.collection_generation.strip()
+        self.tool_cache_allowlist = [
+            tool.strip()
+            for tool in self.tool_cache_allowlist
+            if isinstance(tool, str) and tool.strip()
+        ]
+
+        if self.enabled and not self.milvus_uri:
+            raise ValueError("Milvus config requires milvus_uri when enabled=true")
+
+        return self
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "enabled": True,
+                    "milvus_uri": "http://127.0.0.1:19530",
+                    "collection_prefix": "mcp_client",
+                    "repo_id": "vinu/mcp-client",
+                    "collection_generation": "v1",
+                    "max_results": 5,
+                    "retrieval_timeout_s": 5.0,
+                    "degraded_mode": True,
+                    "enable_conversation_memory": True,
+                    "conversation_retention_days": 7,
+                    "enable_tool_cache": True,
+                    "tool_cache_ttl_s": 3600.0,
+                    "tool_cache_allowlist": ["weather__get_forecast", "github__get_issue"],
+                    "enable_expiry_cleanup": True,
+                    "expiry_cleanup_interval_s": 300.0,
+                },
+                {
+                    "enabled": False,
+                    "milvus_uri": "",
+                    "collection_prefix": "mcp_client",
+                    "repo_id": "",
+                    "collection_generation": "v1",
+                    "max_results": 5,
+                    "retrieval_timeout_s": 5.0,
+                    "degraded_mode": True,
+                    "enable_conversation_memory": False,
+                    "conversation_retention_days": 7,
+                    "enable_tool_cache": False,
+                    "tool_cache_ttl_s": 3600.0,
+                    "tool_cache_allowlist": [],
+                    "enable_expiry_cleanup": True,
+                    "expiry_cleanup_interval_s": 300.0,
+                },
+            ]
+        }
+    )
+
+
 class EnterpriseTokenRequest(BaseModel):
     """Enterprise OAuth token acquisition request"""
 

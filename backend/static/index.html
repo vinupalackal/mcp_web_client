@@ -175,6 +175,7 @@
                 <button class="tab-button" data-tab="account" id="accountTabBtn" style="display:none;">My Account</button>
                 <button class="tab-button active" data-tab="servers">MCP Servers</button>
                 <button class="tab-button" data-tab="llm">LLM Config</button>
+                <button class="tab-button" data-tab="milvus">Milvus Config</button>
                 <button class="tab-button" data-tab="tools">Tools</button>
             </div>
 
@@ -438,6 +439,106 @@
                     </form>
                 </div>
 
+                <!-- Milvus Config Tab -->
+                <div id="milvusTab" class="tab-content">
+                    <h3>Milvus Memory Configuration</h3>
+                    <form id="milvusConfigForm">
+                        <div class="toggle-option-group">
+                            <div class="toggle-option-card">
+                                <label class="switch-toggle toggle-option" for="milvusEnabledToggle">
+                                    <input type="checkbox" id="milvusEnabledToggle">
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-label">Enable Milvus-backed memory</span>
+                                    <span class="toggle-option-help">Turns on retrieval enrichment, conversation memory, and safe tool cache using the configuration below.</span>
+                                </label>
+                            </div>
+                            <div class="toggle-option-card">
+                                <label class="switch-toggle toggle-option" for="milvusDegradedModeToggle">
+                                    <input type="checkbox" id="milvusDegradedModeToggle" checked>
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-label">Use degraded mode on dependency failures</span>
+                                    <span class="toggle-option-help">Keeps chat available when Milvus or embeddings are temporarily unavailable.</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="milvusUri">Milvus URI</label>
+                            <input type="text" id="milvusUri" placeholder="http://127.0.0.1:19530">
+                        </div>
+                        <div class="form-group">
+                            <label for="milvusCollectionPrefix">Collection Prefix</label>
+                            <input type="text" id="milvusCollectionPrefix" value="mcp_client" placeholder="mcp_client">
+                        </div>
+                        <div class="form-group">
+                            <label for="milvusRepoId">Repo ID</label>
+                            <input type="text" id="milvusRepoId" placeholder="e.g., team/project or workspace identifier">
+                        </div>
+                        <div class="form-group">
+                            <label for="milvusCollectionGeneration">Collection Generation</label>
+                            <input type="text" id="milvusCollectionGeneration" value="v1" placeholder="v1">
+                        </div>
+                        <div class="form-group">
+                            <label for="milvusMaxResults">Max Retrieval Results</label>
+                            <input type="number" id="milvusMaxResults" min="1" max="50" step="1" value="5">
+                        </div>
+                        <div class="form-group">
+                            <label for="milvusRetrievalTimeoutS">Retrieval Timeout (s)</label>
+                            <input type="number" id="milvusRetrievalTimeoutS" min="0.1" max="60" step="0.1" value="5.0">
+                        </div>
+
+                        <div class="toggle-option-group">
+                            <div class="toggle-option-card">
+                                <label class="switch-toggle toggle-option" for="milvusConversationMemoryEnabledToggle">
+                                    <input type="checkbox" id="milvusConversationMemoryEnabledToggle">
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-label">Enable conversation memory</span>
+                                    <span class="toggle-option-help">Stores completed chat turns for follow-up recall and grounding.</span>
+                                </label>
+                            </div>
+                            <div class="toggle-option-card">
+                                <label class="switch-toggle toggle-option" for="milvusToolCacheEnabledToggle">
+                                    <input type="checkbox" id="milvusToolCacheEnabledToggle">
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-label">Enable safe tool cache</span>
+                                    <span class="toggle-option-help">Caches results for explicitly allowlisted tools only.</span>
+                                </label>
+                            </div>
+                            <div class="toggle-option-card">
+                                <label class="switch-toggle toggle-option" for="milvusExpiryCleanupEnabledToggle">
+                                    <input type="checkbox" id="milvusExpiryCleanupEnabledToggle" checked>
+                                    <span class="switch-slider"></span>
+                                    <span class="switch-label">Enable expiry cleanup</span>
+                                    <span class="toggle-option-help">Regularly prunes expired conversation-memory and tool-cache records.</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="milvusConversationRetentionDays">Conversation Retention (days)</label>
+                            <input type="number" id="milvusConversationRetentionDays" min="1" max="365" step="1" value="7">
+                        </div>
+                        <div class="form-group">
+                            <label for="milvusToolCacheTtlS">Tool Cache TTL (s)</label>
+                            <input type="number" id="milvusToolCacheTtlS" min="1" max="2592000" step="1" value="3600">
+                        </div>
+                        <div class="form-group">
+                            <label for="milvusToolCacheAllowlist">Tool Cache Allowlist</label>
+                            <input type="text" id="milvusToolCacheAllowlist" placeholder="tool_a, tool_b, server__tool_name">
+                        </div>
+                        <div class="form-group">
+                            <label for="milvusExpiryCleanupIntervalS">Expiry Cleanup Interval (s)</label>
+                            <input type="number" id="milvusExpiryCleanupIntervalS" min="1" max="86400" step="1" value="300">
+                        </div>
+
+                        <div class="security-notice">
+                            Milvus settings are stored on the host machine running this interface. Use trusted environments and service endpoints only.
+                        </div>
+
+                        <button type="submit" class="btn btn-primary">Save Configuration</button>
+                    </form>
+                </div>
+
                 <!-- Tools Tab -->
                 <div id="toolsTab" class="tab-content">
                     <h3>Discovered Tools</h3>
@@ -450,7 +551,7 @@
     </div>
 
     <script src="/static/app.js?v=21"></script>
-    <script src="/static/settings.js?v=9"></script>
+    <script src="/static/settings.js?v=10"></script>
     <script>
     // Show My Account tab when SSO user is present
     document.addEventListener('DOMContentLoaded', () => {

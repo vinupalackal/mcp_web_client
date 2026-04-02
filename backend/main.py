@@ -33,6 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from backend.models import (
     ServerConfig,
     LLMConfig,
+    MilvusConfig,
     EnterpriseTokenRequest,
     EnterpriseTokenResponse,
     EnterpriseTokenStatusResponse,
@@ -451,6 +452,7 @@ session_manager = SessionManager()
 # In-memory storage
 servers_storage: dict[str, ServerConfig] = {}
 llm_config_storage: Optional[LLMConfig] = None
+milvus_config_storage: Optional[MilvusConfig] = None
 enterprise_token_cache: dict[str, object] = {}
 _memory_service: Optional[Any] = None
 # Tools now managed by mcp_manager
@@ -585,6 +587,126 @@ def _load_servers_from_disk() -> "dict[str, ServerConfig]":
         return {}
 
 
+def _default_milvus_config_from_env() -> MilvusConfig:
+    """Build the effective Milvus config from environment defaults."""
+    try:
+        return MilvusConfig(
+            enabled=_get_bool_env("MEMORY_ENABLED", False),
+            milvus_uri=os.getenv("MEMORY_MILVUS_URI", ""),
+            collection_prefix=os.getenv("MEMORY_COLLECTION_PREFIX", "mcp_client"),
+            repo_id=os.getenv("MEMORY_REPO_ID", ""),
+            collection_generation=os.getenv("MEMORY_COLLECTION_GENERATION", "v1"),
+            max_results=_get_int_env("MEMORY_MAX_RESULTS", 5),
+            retrieval_timeout_s=_get_float_env("MEMORY_RETRIEVAL_TIMEOUT_S", 5.0),
+            degraded_mode=_get_bool_env("MEMORY_DEGRADED_MODE", True),
+            enable_conversation_memory=_get_bool_env("MEMORY_CONVERSATION_ENABLED", False),
+            conversation_retention_days=_get_int_env("MEMORY_CONVERSATION_RETENTION_DAYS", 7),
+            enable_tool_cache=_get_bool_env("MEMORY_TOOL_CACHE_ENABLED", False),
+            tool_cache_ttl_s=_get_float_env("MEMORY_TOOL_CACHE_TTL_S", 3600.0),
+            tool_cache_allowlist=[
+                t.strip()
+                for t in os.getenv("MEMORY_TOOL_CACHE_ALLOWLIST", "").split(",")
+                if t.strip()
+            ],
+            enable_expiry_cleanup=_get_bool_env("MEMORY_EXPIRY_CLEANUP_ENABLED", True),
+            expiry_cleanup_interval_s=_get_float_env("MEMORY_EXPIRY_CLEANUP_INTERVAL_S", 300.0),
+        )
+    except Exception as exc:
+        logger_internal.warning("Invalid Milvus env config; falling back to disabled defaults: %s", exc)
+        return MilvusConfig()
+
+
+def _save_milvus_config_to_disk(config: MilvusConfig) -> None:
+    """Persist Milvus config to server-side disk."""
+    try:
+        MCP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (MCP_DATA_DIR / "milvus_config.json").write_text(config.model_dump_json(indent=2))
+        logger_internal.info("Milvus config persisted to disk (enabled=%s)", config.enabled)
+    except Exception as exc:
+        logger_internal.error("Failed to persist Milvus config to disk: %s", exc)
+
+
+def _load_milvus_config_from_disk() -> "MilvusConfig | None":
+    """Load Milvus config from server-side disk on startup."""
+    config_file = MCP_DATA_DIR / "milvus_config.json"
+    if not config_file.exists():
+        return None
+    try:
+        config = MilvusConfig.model_validate_json(config_file.read_text())
+        logger_internal.info("Loaded Milvus config from disk (enabled=%s)", config.enabled)
+        return config
+    except Exception as exc:
+        logger_internal.warning("Failed to load Milvus config from disk: %s", exc)
+        return None
+
+
+def _get_effective_milvus_config() -> MilvusConfig:
+    """Return the active Milvus config, preferring persisted state over env defaults."""
+    return milvus_config_storage or _default_milvus_config_from_env()
+
+
+def _initialize_memory_service(config: Optional[MilvusConfig] = None) -> Optional[Any]:
+    """Create or tear down the in-process memory service using the active Milvus config."""
+    global milvus_config_storage, _memory_service
+
+    if config is not None:
+        milvus_config_storage = config
+
+    effective_config = _get_effective_milvus_config()
+    _memory_service = None
+
+    if not effective_config.enabled:
+        logger_internal.info("Memory subsystem disabled")
+        return None
+
+    if llm_config_storage is None:
+        logger_internal.warning(
+            "Memory subsystem enabled but no LLM config is loaded; skipping memory initialisation"
+        )
+        return None
+
+    try:
+        from backend.embedding_service import EmbeddingService
+        from backend.memory_persistence import MemoryPersistence
+        from backend.memory_service import MemoryService, MemoryServiceConfig
+        from backend.milvus_store import MilvusStore
+
+        _memory_service = MemoryService(
+            embedding_service=EmbeddingService(
+                llm_config_storage,
+                enterprise_access_token=_get_cached_enterprise_token(),
+            ),
+            milvus_store=MilvusStore(
+                milvus_uri=effective_config.milvus_uri,
+                collection_prefix=effective_config.collection_prefix,
+            ),
+            memory_persistence=MemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                repo_id=effective_config.repo_id,
+                collection_generation=effective_config.collection_generation,
+                max_results=effective_config.max_results,
+                retrieval_timeout_s=effective_config.retrieval_timeout_s,
+                degraded_mode=effective_config.degraded_mode,
+                enable_conversation_memory=effective_config.enable_conversation_memory,
+                conversation_retention_days=effective_config.conversation_retention_days,
+                enable_tool_cache=effective_config.enable_tool_cache,
+                tool_cache_ttl_s=effective_config.tool_cache_ttl_s,
+                tool_cache_allowlist=tuple(effective_config.tool_cache_allowlist),
+                enable_expiry_cleanup=effective_config.enable_expiry_cleanup,
+                expiry_cleanup_interval_s=effective_config.expiry_cleanup_interval_s,
+            ),
+        )
+        if hasattr(_memory_service, "run_expiry_cleanup_if_due"):
+            _memory_service.run_expiry_cleanup_if_due(force=True)
+        logger_internal.info("Memory subsystem initialized")
+        return _memory_service
+    except Exception as exc:
+        logger_internal.warning("Memory subsystem initialization failed: %s", exc)
+        _memory_service = None
+        return None
+
+
 def _get_enterprise_token_status() -> EnterpriseTokenStatusResponse:
     """Return current enterprise token cache status."""
     if not enterprise_token_cache.get("access_token"):
@@ -618,7 +740,7 @@ def _redacted_token_request_curl(token_request: EnterpriseTokenRequest) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
-    global llm_config_storage, _memory_service
+    global llm_config_storage, milvus_config_storage
     logger_internal.info("🚀 MCP Client Web starting up")
     logger_internal.info(f"Environment: MCP_ALLOW_HTTP_INSECURE={os.getenv('MCP_ALLOW_HTTP_INSECURE', 'false')}")
     logger_internal.info(f"Data directory: {MCP_DATA_DIR.resolve()}")
@@ -646,54 +768,8 @@ async def lifespan(app: FastAPI):
     if loaded_servers:
         servers_storage.update(loaded_servers)
 
-    _memory_service = None
-    if _get_bool_env("MEMORY_ENABLED", False):
-        try:
-            if llm_config_storage is None:
-                logger_internal.warning(
-                    "Memory subsystem enabled but no LLM config is loaded; skipping memory initialisation"
-                )
-            else:
-                from backend.embedding_service import EmbeddingService
-                from backend.memory_persistence import MemoryPersistence
-                from backend.memory_service import MemoryService, MemoryServiceConfig
-                from backend.milvus_store import MilvusStore
-
-                _memory_service = MemoryService(
-                    embedding_service=EmbeddingService(
-                        llm_config_storage,
-                        enterprise_access_token=_get_cached_enterprise_token(),
-                    ),
-                    milvus_store=MilvusStore(milvus_uri=os.getenv("MEMORY_MILVUS_URI", "")),
-                    memory_persistence=MemoryPersistence(),
-                    config=MemoryServiceConfig(
-                        enabled=True,
-                        repo_id=os.getenv("MEMORY_REPO_ID", ""),
-                        collection_generation=os.getenv("MEMORY_COLLECTION_GENERATION", "v1"),
-                        max_results=_get_int_env("MEMORY_MAX_RESULTS", 5),
-                        retrieval_timeout_s=_get_float_env("MEMORY_RETRIEVAL_TIMEOUT_S", 5.0),
-                        degraded_mode=_get_bool_env("MEMORY_DEGRADED_MODE", True),
-                        enable_conversation_memory=_get_bool_env("MEMORY_CONVERSATION_ENABLED", False),
-                        conversation_retention_days=_get_int_env("MEMORY_CONVERSATION_RETENTION_DAYS", 7),
-                        enable_tool_cache=_get_bool_env("MEMORY_TOOL_CACHE_ENABLED", False),
-                        tool_cache_ttl_s=_get_float_env("MEMORY_TOOL_CACHE_TTL_S", 3600.0),
-                        tool_cache_allowlist=tuple(
-                            t.strip()
-                            for t in os.getenv("MEMORY_TOOL_CACHE_ALLOWLIST", "").split(",")
-                            if t.strip()
-                        ),
-                        enable_expiry_cleanup=_get_bool_env("MEMORY_EXPIRY_CLEANUP_ENABLED", True),
-                        expiry_cleanup_interval_s=_get_float_env("MEMORY_EXPIRY_CLEANUP_INTERVAL_S", 300.0),
-                    ),
-                )
-                if hasattr(_memory_service, "run_expiry_cleanup_if_due"):
-                    _memory_service.run_expiry_cleanup_if_due(force=True)
-                logger_internal.info("Memory subsystem initialized")
-        except Exception as exc:
-            logger_internal.warning("Memory subsystem initialization failed: %s", exc)
-            _memory_service = None
-    else:
-        logger_internal.info("Memory subsystem disabled")
+    milvus_config_storage = _load_milvus_config_from_disk() or _default_milvus_config_from_env()
+    _initialize_memory_service()
 
     yield
     logger_internal.info("👋 MCP Client Web shutting down")
@@ -2507,6 +2583,49 @@ async def save_llm_config(
     llm_config_storage = config
     logger_external.info(f"← 200 OK")
     _save_llm_config_to_disk(config)
+    _initialize_memory_service()
+    return config
+
+
+@app.get(
+    "/api/milvus/config",
+    response_model=MilvusConfig,
+    tags=["Memory"],
+    summary="Get Milvus configuration",
+    responses={
+        200: {"description": "Current Milvus configuration"},
+    }
+)
+async def get_milvus_config() -> MilvusConfig:
+    """Get the current effective Milvus memory configuration."""
+    logger_external.info("→ GET /api/milvus/config")
+    config = _get_effective_milvus_config()
+    logger_external.info("← 200 OK (enabled=%s)", config.enabled)
+    return config
+
+
+@app.post(
+    "/api/milvus/config",
+    response_model=MilvusConfig,
+    tags=["Memory"],
+    summary="Save Milvus configuration",
+    description="Configure the optional Milvus-backed memory subsystem",
+    responses={
+        200: {"description": "Configuration saved successfully"},
+        422: {"model": ErrorResponse, "description": "Validation error"},
+    }
+)
+async def save_milvus_config(
+    config: MilvusConfig = Body(..., description="Milvus memory configuration")
+) -> MilvusConfig:
+    """Save the current Milvus memory configuration and apply it immediately."""
+    global milvus_config_storage
+
+    logger_external.info("→ POST /api/milvus/config (enabled=%s)", config.enabled)
+    milvus_config_storage = config
+    _save_milvus_config_to_disk(config)
+    _initialize_memory_service(config)
+    logger_external.info("← 200 OK")
     return config
 
 

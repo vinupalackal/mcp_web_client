@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from backend.models import (
     ServerConfig,
     LLMConfig,
+    MilvusConfig,
     ChatMessage,
     ToolSchema,
     FunctionCall,
@@ -259,6 +260,165 @@ class TestLLMConfig:
         """TC-MODEL-09b: temperature -0.1 rejected."""
         with pytest.raises(ValidationError):
             LLMConfig(provider="mock", model="m", base_url="https://x.com", temperature=-0.1)
+
+
+# ============================================================================
+# TR-MODEL-2b: MilvusConfig
+# ============================================================================
+
+class TestMilvusConfig:
+
+    def test_disabled_config_allows_blank_uri(self):
+        """TC-MODEL-09c: Disabled Milvus config can keep an empty URI."""
+        cfg = MilvusConfig(enabled=False)
+        assert cfg.enabled is False
+        assert cfg.milvus_uri == ""
+
+    def test_enabled_config_requires_uri(self):
+        """TC-MODEL-09d: Enabled Milvus config without URI is rejected."""
+        with pytest.raises(ValidationError):
+            MilvusConfig(enabled=True, milvus_uri="")
+
+    def test_allowlist_is_trimmed_and_empty_values_removed(self):
+        """TC-MODEL-09e: Tool-cache allowlist is normalized on input."""
+        cfg = MilvusConfig(
+            enabled=True,
+            milvus_uri=" http://127.0.0.1:19530 ",
+            tool_cache_allowlist=[" github__get_issue ", "", "  ", "weather__get_forecast"],
+        )
+        assert cfg.milvus_uri == "http://127.0.0.1:19530"
+        assert cfg.tool_cache_allowlist == ["github__get_issue", "weather__get_forecast"]
+
+    def test_numeric_boundaries_enforced(self):
+        """TC-MODEL-09f: Milvus numeric fields enforce documented bounds."""
+        MilvusConfig(
+            enabled=True,
+            milvus_uri="http://127.0.0.1:19530",
+            max_results=50,
+            retrieval_timeout_s=60.0,
+            conversation_retention_days=365,
+            tool_cache_ttl_s=2592000.0,
+            expiry_cleanup_interval_s=86400.0,
+        )
+        with pytest.raises(ValidationError):
+            MilvusConfig(enabled=True, milvus_uri="http://127.0.0.1:19530", max_results=0)
+
+    def test_default_values_match_spec(self):
+        """TC-MODEL-09g: Default MilvusConfig matches documented default spec."""
+        cfg = MilvusConfig()
+        assert cfg.enabled is False
+        assert cfg.milvus_uri == ""
+        assert cfg.collection_prefix == "mcp_client"
+        assert cfg.repo_id == ""
+        assert cfg.collection_generation == "v1"
+        assert cfg.max_results == 5
+        assert cfg.retrieval_timeout_s == 5.0
+        assert cfg.degraded_mode is True
+        assert cfg.enable_conversation_memory is False
+        assert cfg.conversation_retention_days == 7
+        assert cfg.enable_tool_cache is False
+        assert cfg.tool_cache_ttl_s == 3600.0
+        assert cfg.tool_cache_allowlist == []
+        assert cfg.enable_expiry_cleanup is True
+        assert cfg.expiry_cleanup_interval_s == 300.0
+
+    def test_enabled_with_valid_uri_accepted(self):
+        """TC-MODEL-09h: Enabled config with a non-empty URI constructs without error."""
+        cfg = MilvusConfig(enabled=True, milvus_uri="http://127.0.0.1:19530")
+        assert cfg.enabled is True
+        assert cfg.milvus_uri == "http://127.0.0.1:19530"
+
+    def test_collection_prefix_whitespace_stripped(self):
+        """TC-MODEL-09i: Leading/trailing whitespace is stripped from collection_prefix."""
+        cfg = MilvusConfig(collection_prefix="  my_prefix  ")
+        assert cfg.collection_prefix == "my_prefix"
+
+    def test_collection_prefix_empty_rejected(self):
+        """TC-MODEL-09j: Literal empty string for collection_prefix is rejected (min_length=1)."""
+        with pytest.raises(ValidationError):
+            MilvusConfig(collection_prefix="")
+
+    def test_collection_prefix_max_length_boundary(self):
+        """TC-MODEL-09k: collection_prefix of exactly 64 chars is valid; 65 chars is rejected."""
+        MilvusConfig(collection_prefix="a" * 64)
+        with pytest.raises(ValidationError):
+            MilvusConfig(collection_prefix="a" * 65)
+
+    def test_repo_id_whitespace_stripped(self):
+        """TC-MODEL-09l: Leading/trailing whitespace is stripped from repo_id."""
+        cfg = MilvusConfig(repo_id="  owner/repo  ")
+        assert cfg.repo_id == "owner/repo"
+
+    def test_repo_id_max_length_boundary(self):
+        """TC-MODEL-09m: repo_id of exactly 256 chars is valid; 257 chars is rejected."""
+        MilvusConfig(repo_id="a" * 256)
+        with pytest.raises(ValidationError):
+            MilvusConfig(repo_id="a" * 257)
+
+    def test_collection_generation_empty_rejected(self):
+        """TC-MODEL-09n: Empty collection_generation is rejected (min_length=1)."""
+        with pytest.raises(ValidationError):
+            MilvusConfig(collection_generation="")
+
+    def test_max_results_min_boundary(self):
+        """TC-MODEL-09o: max_results=1 is valid; max_results=0 is rejected."""
+        MilvusConfig(max_results=1)
+        with pytest.raises(ValidationError):
+            MilvusConfig(max_results=0)
+
+    def test_max_results_max_boundary(self):
+        """TC-MODEL-09p: max_results=50 is valid; max_results=51 is rejected."""
+        MilvusConfig(max_results=50)
+        with pytest.raises(ValidationError):
+            MilvusConfig(max_results=51)
+
+    def test_retrieval_timeout_min_boundary(self):
+        """TC-MODEL-09q: retrieval_timeout_s=0.1 is valid; 0.09 is rejected."""
+        MilvusConfig(retrieval_timeout_s=0.1)
+        with pytest.raises(ValidationError):
+            MilvusConfig(retrieval_timeout_s=0.09)
+
+    def test_retrieval_timeout_max_boundary(self):
+        """TC-MODEL-09r: retrieval_timeout_s=60.0 is valid; 60.1 is rejected."""
+        MilvusConfig(retrieval_timeout_s=60.0)
+        with pytest.raises(ValidationError):
+            MilvusConfig(retrieval_timeout_s=60.1)
+
+    def test_conversation_retention_days_min_boundary(self):
+        """TC-MODEL-09s: conversation_retention_days=1 is valid; 0 is rejected."""
+        MilvusConfig(conversation_retention_days=1)
+        with pytest.raises(ValidationError):
+            MilvusConfig(conversation_retention_days=0)
+
+    def test_conversation_retention_days_max_boundary(self):
+        """TC-MODEL-09t: conversation_retention_days=365 is valid; 366 is rejected."""
+        MilvusConfig(conversation_retention_days=365)
+        with pytest.raises(ValidationError):
+            MilvusConfig(conversation_retention_days=366)
+
+    def test_tool_cache_ttl_min_boundary(self):
+        """TC-MODEL-09u: tool_cache_ttl_s=1.0 is valid; 0.9 is rejected."""
+        MilvusConfig(tool_cache_ttl_s=1.0)
+        with pytest.raises(ValidationError):
+            MilvusConfig(tool_cache_ttl_s=0.9)
+
+    def test_tool_cache_ttl_max_boundary(self):
+        """TC-MODEL-09v: tool_cache_ttl_s=2592000 is valid; 2592001 is rejected."""
+        MilvusConfig(tool_cache_ttl_s=2592000.0)
+        with pytest.raises(ValidationError):
+            MilvusConfig(tool_cache_ttl_s=2592001.0)
+
+    def test_expiry_cleanup_interval_min_boundary(self):
+        """TC-MODEL-09w: expiry_cleanup_interval_s=1.0 is valid; 0.9 is rejected."""
+        MilvusConfig(expiry_cleanup_interval_s=1.0)
+        with pytest.raises(ValidationError):
+            MilvusConfig(expiry_cleanup_interval_s=0.9)
+
+    def test_expiry_cleanup_interval_max_boundary(self):
+        """TC-MODEL-09x: expiry_cleanup_interval_s=86400.0 is valid; 86400.1 is rejected."""
+        MilvusConfig(expiry_cleanup_interval_s=86400.0)
+        with pytest.raises(ValidationError):
+            MilvusConfig(expiry_cleanup_interval_s=86400.1)
 
     def test_temperature_above_two_rejected(self):
         """TC-MODEL-09c: temperature 2.1 rejected."""

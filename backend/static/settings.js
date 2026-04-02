@@ -53,6 +53,7 @@ const closeSettings = document.getElementById('closeSettings');
 const tabButtons = document.querySelectorAll('.tab-button');
 const addServerForm = document.getElementById('addServerForm');
 const llmConfigForm = document.getElementById('llmConfigForm');
+const milvusConfigForm = document.getElementById('milvusConfigForm');
 const authTypeSelect = document.getElementById('authType');
 const llmProviderSelect = document.getElementById('llmProvider');
 const refreshToolsBtn = document.getElementById('refreshToolsBtn');
@@ -70,6 +71,10 @@ const refreshServerHealthBtn = document.getElementById('refreshServerHealthBtn')
 const autoRefreshHealthToggle = document.getElementById('autoRefreshHealthToggle');
 const includeHistoryToggle = document.getElementById('includeHistoryToggle');
 const tinyModeClassifierOverrideToggle = document.getElementById('tinyModeClassifierOverrideToggle');
+const milvusEnabledToggle = document.getElementById('milvusEnabledToggle');
+const milvusConversationMemoryEnabledToggle = document.getElementById('milvusConversationMemoryEnabledToggle');
+const milvusToolCacheEnabledToggle = document.getElementById('milvusToolCacheEnabledToggle');
+const milvusExpiryCleanupEnabledToggle = document.getElementById('milvusExpiryCleanupEnabledToggle');
 
 document.addEventListener('DOMContentLoaded', () => {
     console.log('⚙️ Settings: DOM loaded');
@@ -78,6 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadServersFromBackend();
     }, 0);
     loadLLMConfigFromBackend();
+    loadMilvusConfigFromBackend();
     loadEnterpriseTokenStatus();
     loadTools();
 });
@@ -109,6 +115,7 @@ function initializeSettings() {
 
     addServerForm?.addEventListener('submit', handleAddServer);
     llmConfigForm?.addEventListener('submit', handleSaveLLMConfig);
+    milvusConfigForm?.addEventListener('submit', handleSaveMilvusConfig);
     refreshToolsBtn?.addEventListener('click', handleRefreshTools);
     refreshServerHealthBtn?.addEventListener('click', () => refreshServerHealth());
     addEnterpriseModelBtn?.addEventListener('click', () => toggleEnterpriseModelForm(true));
@@ -121,6 +128,10 @@ function initializeSettings() {
     tinyModeClassifierOverrideToggle?.addEventListener('change', (event) => {
         applyTinyModeClassifierOverrideState(event.target.checked);
     });
+    milvusEnabledToggle?.addEventListener('change', () => applyMilvusConfigState());
+    milvusConversationMemoryEnabledToggle?.addEventListener('change', () => applyMilvusConfigState());
+    milvusToolCacheEnabledToggle?.addEventListener('change', () => applyMilvusConfigState());
+    milvusExpiryCleanupEnabledToggle?.addEventListener('change', () => applyMilvusConfigState());
 
     updateServerAuthUI();
     updateStandardProviderUI();
@@ -129,6 +140,7 @@ function initializeSettings() {
     setGatewayMode(getGatewayMode(), false);
     initializeServerHealthAutoRefresh();
     initializeChatHistoryPreference();
+    applyMilvusConfigState();
 
     console.log('⚙️ Settings: Initialized');
 }
@@ -456,6 +468,44 @@ async function loadServersFromBackend() {
     } catch (error) {
         console.error('⚙️ Settings: Failed to load servers from backend', error);
         renderServersList([]);
+    }
+}
+
+async function loadMilvusConfigFromBackend() {
+    try {
+        const response = await fetch('/api/milvus/config');
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const config = await response.json();
+        loadMilvusConfig(config);
+    } catch (error) {
+        console.error('⚙️ Settings: Failed to load Milvus config from backend', error);
+        loadMilvusConfig(null);
+    }
+}
+
+function applyMilvusConfigState() {
+    const milvusUri = document.getElementById('milvusUri');
+    const conversationRetentionDays = document.getElementById('milvusConversationRetentionDays');
+    const toolCacheTtl = document.getElementById('milvusToolCacheTtlS');
+    const toolCacheAllowlist = document.getElementById('milvusToolCacheAllowlist');
+    const expiryCleanupInterval = document.getElementById('milvusExpiryCleanupIntervalS');
+
+    if (milvusUri) {
+        milvusUri.toggleAttribute('required', milvusEnabledToggle?.checked ?? false);
+    }
+    if (conversationRetentionDays) {
+        conversationRetentionDays.disabled = !(milvusConversationMemoryEnabledToggle?.checked ?? false);
+    }
+    if (toolCacheTtl) {
+        toolCacheTtl.disabled = !(milvusToolCacheEnabledToggle?.checked ?? false);
+    }
+    if (toolCacheAllowlist) {
+        toolCacheAllowlist.disabled = !(milvusToolCacheEnabledToggle?.checked ?? false);
+    }
+    if (expiryCleanupInterval) {
+        expiryCleanupInterval.disabled = !(milvusExpiryCleanupEnabledToggle?.checked ?? false);
     }
 }
 
@@ -827,6 +877,107 @@ function renderToolsList(tools) {
 }
 
 // ============================================================================
+// Milvus Configuration
+// ============================================================================
+
+async function handleSaveMilvusConfig(e) {
+    e.preventDefault();
+
+    const milvusConfig = {
+        enabled: milvusEnabledToggle?.checked ?? false,
+        milvus_uri: document.getElementById('milvusUri')?.value?.trim() || '',
+        collection_prefix: document.getElementById('milvusCollectionPrefix')?.value?.trim() || 'mcp_client',
+        repo_id: document.getElementById('milvusRepoId')?.value?.trim() || '',
+        collection_generation: document.getElementById('milvusCollectionGeneration')?.value?.trim() || 'v1',
+        max_results: parseInt(document.getElementById('milvusMaxResults')?.value || '5', 10),
+        retrieval_timeout_s: parseFloat(document.getElementById('milvusRetrievalTimeoutS')?.value || '5.0'),
+        degraded_mode: document.getElementById('milvusDegradedModeToggle')?.checked ?? true,
+        enable_conversation_memory: milvusConversationMemoryEnabledToggle?.checked ?? false,
+        conversation_retention_days: parseInt(document.getElementById('milvusConversationRetentionDays')?.value || '7', 10),
+        enable_tool_cache: milvusToolCacheEnabledToggle?.checked ?? false,
+        tool_cache_ttl_s: parseFloat(document.getElementById('milvusToolCacheTtlS')?.value || '3600'),
+        tool_cache_allowlist: (document.getElementById('milvusToolCacheAllowlist')?.value || '')
+            .split(',')
+            .map(value => value.trim())
+            .filter(Boolean),
+        enable_expiry_cleanup: milvusExpiryCleanupEnabledToggle?.checked ?? true,
+        expiry_cleanup_interval_s: parseFloat(document.getElementById('milvusExpiryCleanupIntervalS')?.value || '300'),
+    };
+
+    try {
+        console.log('🔌 API: POST /api/milvus/config', {
+            ...milvusConfig,
+            milvus_uri: milvusConfig.milvus_uri ? '[CONFIGURED]' : '',
+        });
+        const response = await fetch('/api/milvus/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(milvusConfig),
+        });
+
+        if (!response.ok) {
+            const error = await safeReadJson(response);
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+
+        const saved = await response.json();
+        loadMilvusConfig(saved);
+        showSuccess('Milvus configuration saved!');
+    } catch (error) {
+        console.error('⚙️ Settings: Save Milvus config failed', error);
+        showFormError(milvusConfigForm, error.message);
+    }
+}
+
+function loadMilvusConfig(config) {
+    const effectiveConfig = config || {
+        enabled: false,
+        milvus_uri: '',
+        collection_prefix: 'mcp_client',
+        repo_id: '',
+        collection_generation: 'v1',
+        max_results: 5,
+        retrieval_timeout_s: 5.0,
+        degraded_mode: true,
+        enable_conversation_memory: false,
+        conversation_retention_days: 7,
+        enable_tool_cache: false,
+        tool_cache_ttl_s: 3600.0,
+        tool_cache_allowlist: [],
+        enable_expiry_cleanup: true,
+        expiry_cleanup_interval_s: 300.0,
+    };
+
+    if (milvusEnabledToggle) {
+        milvusEnabledToggle.checked = effectiveConfig.enabled;
+    }
+    document.getElementById('milvusUri').value = effectiveConfig.milvus_uri || '';
+    document.getElementById('milvusCollectionPrefix').value = effectiveConfig.collection_prefix || 'mcp_client';
+    document.getElementById('milvusRepoId').value = effectiveConfig.repo_id || '';
+    document.getElementById('milvusCollectionGeneration').value = effectiveConfig.collection_generation || 'v1';
+    document.getElementById('milvusMaxResults').value = String(effectiveConfig.max_results ?? 5);
+    document.getElementById('milvusRetrievalTimeoutS').value = String(effectiveConfig.retrieval_timeout_s ?? 5.0);
+    document.getElementById('milvusDegradedModeToggle').checked = effectiveConfig.degraded_mode ?? true;
+    if (milvusConversationMemoryEnabledToggle) {
+        milvusConversationMemoryEnabledToggle.checked = effectiveConfig.enable_conversation_memory ?? false;
+    }
+    document.getElementById('milvusConversationRetentionDays').value = String(effectiveConfig.conversation_retention_days ?? 7);
+    if (milvusToolCacheEnabledToggle) {
+        milvusToolCacheEnabledToggle.checked = effectiveConfig.enable_tool_cache ?? false;
+    }
+    document.getElementById('milvusToolCacheTtlS').value = String(effectiveConfig.tool_cache_ttl_s ?? 3600.0);
+    document.getElementById('milvusToolCacheAllowlist').value = Array.isArray(effectiveConfig.tool_cache_allowlist)
+        ? effectiveConfig.tool_cache_allowlist.join(', ')
+        : '';
+    if (milvusExpiryCleanupEnabledToggle) {
+        milvusExpiryCleanupEnabledToggle.checked = effectiveConfig.enable_expiry_cleanup ?? true;
+    }
+    document.getElementById('milvusExpiryCleanupIntervalS').value = String(effectiveConfig.expiry_cleanup_interval_s ?? 300.0);
+
+    applyMilvusConfigState();
+}
+
+// ============================================================================
 // LLM Configuration
 // ============================================================================
 
@@ -1079,6 +1230,7 @@ async function loadSettings() {
     console.log('⚙️ Settings: Loading from backend...');
     await loadServersFromBackend();
     await loadLLMConfigFromBackend();
+    await loadMilvusConfigFromBackend();
     await loadEnterpriseTokenStatus();
     loadTools();
 }

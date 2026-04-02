@@ -492,6 +492,237 @@ describe('Settings modal — enterprise gateway mode', () => {
 
 
 // ============================================================================
+// Milvus config (TC-FE-SET-19 to 20)
+// ============================================================================
+describe('Settings modal — Milvus config', () => {
+
+  function mockSettingsFetch(overrides = {}) {
+    const milvusConfig = overrides.milvusConfig ?? {
+      enabled: true,
+      milvus_uri: 'http://127.0.0.1:19530',
+      collection_prefix: 'mcp_client',
+      repo_id: 'workspace/repo',
+      collection_generation: 'v2',
+      max_results: 7,
+      retrieval_timeout_s: 4.5,
+      degraded_mode: true,
+      enable_conversation_memory: true,
+      conversation_retention_days: 21,
+      enable_tool_cache: true,
+      tool_cache_ttl_s: 900,
+      tool_cache_allowlist: ['github__get_issue', 'weather__get_forecast'],
+      enable_expiry_cleanup: true,
+      expiry_cleanup_interval_s: 180,
+    };
+
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url === '/api/servers') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/llm/config') {
+        return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+      }
+      if (url === '/api/milvus/config' && (!options.method || options.method === 'GET')) {
+        return Promise.resolve({ ok: true, json: async () => milvusConfig });
+      }
+      if (url === '/api/tools') {
+        return Promise.resolve({ ok: true, json: async () => [] });
+      }
+      if (url === '/api/enterprise/token/status') {
+        return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      }
+      if (url === '/api/milvus/config' && options.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => JSON.parse(options.body) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+  }
+
+  test('TC-FE-SET-19: backend Milvus config populates the form', async () => {
+    setupFullDOM();
+    mockSettingsFetch();
+    loadSettings();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(document.getElementById('milvusEnabledToggle').checked).toBe(true);
+    expect(document.getElementById('milvusUri').value).toBe('http://127.0.0.1:19530');
+    expect(document.getElementById('milvusCollectionGeneration').value).toBe('v2');
+    expect(document.getElementById('milvusToolCacheAllowlist').value).toContain('github__get_issue');
+  });
+
+  test('TC-FE-SET-20: saving Milvus config POSTs normalized payload', async () => {
+    setupFullDOM();
+    mockSettingsFetch();
+    loadSettings();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    document.getElementById('milvusEnabledToggle').checked = true;
+    document.getElementById('milvusUri').value = 'http://localhost:19530';
+    document.getElementById('milvusToolCacheEnabledToggle').checked = true;
+    document.getElementById('milvusToolCacheAllowlist').value = 'tool_a, tool_b';
+
+    document.getElementById('milvusConfigForm').dispatchEvent(new Event('submit'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const postCall = global.fetch.mock.calls.find(([url, options]) => url === '/api/milvus/config' && options?.method === 'POST');
+    expect(postCall).toBeTruthy();
+    const payload = JSON.parse(postCall[1].body);
+    expect(payload.milvus_uri).toBe('http://localhost:19530');
+    expect(payload.enable_tool_cache).toBe(true);
+    expect(payload.tool_cache_allowlist).toEqual(['tool_a', 'tool_b']);
+  });
+});
+
+
+// ============================================================================
+// Milvus config state management (TC-FE-SET-21 to 27)
+// ============================================================================
+describe('Settings modal — Milvus config state management', () => {
+
+  function mountWithMilvusDefaults(overrides = {}) {
+    setupFullDOM();
+    global.fetch = jest.fn((url, options = {}) => {
+      if (url === '/api/milvus/config' && (!options.method || options.method === 'GET')) {
+        return Promise.resolve({ ok: true, json: async () => ({
+          enabled: false,
+          milvus_uri: '',
+          collection_prefix: 'mcp_client',
+          repo_id: '',
+          collection_generation: 'v1',
+          max_results: 5,
+          retrieval_timeout_s: 5.0,
+          degraded_mode: true,
+          enable_conversation_memory: false,
+          conversation_retention_days: 7,
+          enable_tool_cache: false,
+          tool_cache_ttl_s: 3600,
+          tool_cache_allowlist: [],
+          enable_expiry_cleanup: true,
+          expiry_cleanup_interval_s: 300,
+          ...overrides,
+        }) });
+      }
+      if (url === '/api/servers') return Promise.resolve({ ok: true, json: async () => [] });
+      if (url === '/api/llm/config') return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
+      if (url === '/api/tools') return Promise.resolve({ ok: true, json: async () => [] });
+      if (url === '/api/enterprise/token/status') return Promise.resolve({ ok: true, json: async () => ({ token_cached: false }) });
+      if (url === '/api/milvus/config' && options.method === 'POST') {
+        return Promise.resolve({ ok: true, json: async () => JSON.parse(options.body) });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    loadSettings();
+  }
+
+  test('TC-FE-SET-21: enabling milvus toggle adds "required" attribute to URI field', async () => {
+    mountWithMilvusDefaults({ enabled: false });
+    await Promise.resolve(); await Promise.resolve();
+
+    const toggle = document.getElementById('milvusEnabledToggle');
+    const uriInput = document.getElementById('milvusUri');
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+
+    expect(uriInput.hasAttribute('required')).toBe(true);
+  });
+
+  test('TC-FE-SET-22: disabling milvus toggle removes "required" attribute from URI field', async () => {
+    mountWithMilvusDefaults({ enabled: true, milvus_uri: 'http://127.0.0.1:19530' });
+    await Promise.resolve(); await Promise.resolve();
+
+    const toggle = document.getElementById('milvusEnabledToggle');
+    const uriInput = document.getElementById('milvusUri');
+
+    // Start enabled
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+    expect(uriInput.hasAttribute('required')).toBe(true);
+
+    // Disable
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('change'));
+    expect(uriInput.hasAttribute('required')).toBe(false);
+  });
+
+  test('TC-FE-SET-23: disabling conversation memory toggle disables retention days field', async () => {
+    mountWithMilvusDefaults({ enable_conversation_memory: true });
+    await Promise.resolve(); await Promise.resolve();
+
+    const memToggle = document.getElementById('milvusConversationMemoryEnabledToggle');
+    const retentionField = document.getElementById('milvusConversationRetentionDays');
+
+    memToggle.checked = false;
+    memToggle.dispatchEvent(new Event('change'));
+
+    expect(retentionField.disabled).toBe(true);
+  });
+
+  test('TC-FE-SET-24: enabling conversation memory toggle enables retention days field', async () => {
+    mountWithMilvusDefaults({ enable_conversation_memory: false });
+    await Promise.resolve(); await Promise.resolve();
+
+    const memToggle = document.getElementById('milvusConversationMemoryEnabledToggle');
+    const retentionField = document.getElementById('milvusConversationRetentionDays');
+
+    memToggle.checked = true;
+    memToggle.dispatchEvent(new Event('change'));
+
+    expect(retentionField.disabled).toBe(false);
+  });
+
+  test('TC-FE-SET-25: disabling tool cache toggle disables TTL and allowlist fields', async () => {
+    mountWithMilvusDefaults({ enable_tool_cache: true });
+    await Promise.resolve(); await Promise.resolve();
+
+    const cacheToggle = document.getElementById('milvusToolCacheEnabledToggle');
+    const ttlField = document.getElementById('milvusToolCacheTtlS');
+    const allowlistField = document.getElementById('milvusToolCacheAllowlist');
+
+    cacheToggle.checked = false;
+    cacheToggle.dispatchEvent(new Event('change'));
+
+    expect(ttlField.disabled).toBe(true);
+    expect(allowlistField.disabled).toBe(true);
+  });
+
+  test('TC-FE-SET-26: disabling expiry cleanup toggle disables interval field', async () => {
+    mountWithMilvusDefaults({ enable_expiry_cleanup: true });
+    await Promise.resolve(); await Promise.resolve();
+
+    const cleanupToggle = document.getElementById('milvusExpiryCleanupEnabledToggle');
+    const intervalField = document.getElementById('milvusExpiryCleanupIntervalS');
+
+    cleanupToggle.checked = false;
+    cleanupToggle.dispatchEvent(new Event('change'));
+
+    expect(intervalField.disabled).toBe(true);
+  });
+
+  test('TC-FE-SET-27: loadMilvusConfig with null populates all fields with safe defaults', async () => {
+    setupFullDOM();
+    global.fetch = jest.fn(() => Promise.resolve({ ok: false, status: 500, json: async () => ({}) }));
+    loadSettings();
+    await Promise.resolve(); await Promise.resolve();
+
+    // After a fetch failure, loadMilvusConfig(null) should have run
+    expect(document.getElementById('milvusEnabledToggle').checked).toBe(false);
+    expect(document.getElementById('milvusUri').value).toBe('');
+    expect(document.getElementById('milvusCollectionPrefix').value).toBe('mcp_client');
+    expect(document.getElementById('milvusMaxResults').value).toBe('5');
+    expect(document.getElementById('milvusRetrievalTimeoutS').value).toBe('5');
+    expect(document.getElementById('milvusDegradedModeToggle').checked).toBe(true);
+    expect(document.getElementById('milvusConversationMemoryEnabledToggle').checked).toBe(false);
+    expect(document.getElementById('milvusToolCacheEnabledToggle').checked).toBe(false);
+    expect(document.getElementById('milvusExpiryCleanupEnabledToggle').checked).toBe(true);
+  });
+});
+
+
+// ============================================================================
 // handleAddServer (TC-FE-SET-19 to 23)
 // ============================================================================
 describe('Settings modal — handleAddServer', () => {

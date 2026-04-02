@@ -74,11 +74,13 @@ function setupSettingsDOM() {
         <!-- Tabs -->
         <button class="tab-button active" data-tab="servers">Servers</button>
         <button class="tab-button" data-tab="llm">LLM</button>
+        <button class="tab-button" data-tab="milvus">Milvus</button>
         <button class="tab-button" data-tab="tools">Tools</button>
 
         <!-- Tab content -->
         <div id="serversTab" class="tab-content active"></div>
         <div id="llmTab" class="tab-content"></div>
+        <div id="milvusTab" class="tab-content"></div>
         <div id="toolsTab" class="tab-content"></div>
 
         <!-- Server form -->
@@ -159,6 +161,25 @@ function setupSettingsDOM() {
           <button type="submit">Save</button>
         </form>
 
+        <form id="milvusConfigForm">
+          <input id="milvusEnabledToggle" type="checkbox" />
+          <input id="milvusUri" />
+          <input id="milvusCollectionPrefix" value="mcp_client" />
+          <input id="milvusRepoId" />
+          <input id="milvusCollectionGeneration" value="v1" />
+          <input id="milvusMaxResults" type="number" value="5" />
+          <input id="milvusRetrievalTimeoutS" type="number" value="5.0" />
+          <input id="milvusDegradedModeToggle" type="checkbox" checked />
+          <input id="milvusConversationMemoryEnabledToggle" type="checkbox" />
+          <input id="milvusConversationRetentionDays" type="number" value="7" />
+          <input id="milvusToolCacheEnabledToggle" type="checkbox" />
+          <input id="milvusToolCacheTtlS" type="number" value="3600" />
+          <input id="milvusToolCacheAllowlist" />
+          <input id="milvusExpiryCleanupEnabledToggle" type="checkbox" checked />
+          <input id="milvusExpiryCleanupIntervalS" type="number" value="300" />
+          <button type="submit">Save Milvus</button>
+        </form>
+
         <!-- Tools tab -->
         <div id="toolsList"></div>
         <button id="refreshToolsBtn">Refresh Tools</button>
@@ -233,9 +254,11 @@ function setupFullDOM() {
         <button id="closeSettings"></button>
         <button class="tab-button active" data-tab="servers">Servers</button>
         <button class="tab-button" data-tab="llm">LLM</button>
+        <button class="tab-button" data-tab="milvus">Milvus</button>
         <button class="tab-button" data-tab="tools">Tools</button>
         <div id="serversTab" class="tab-content active"></div>
         <div id="llmTab" class="tab-content"></div>
+        <div id="milvusTab" class="tab-content"></div>
         <div id="toolsTab" class="tab-content"></div>
         <form id="addServerForm">
           <input id="serverAlias" />
@@ -304,6 +327,24 @@ function setupFullDOM() {
           </div>
           <input id="includeHistoryToggle" type="checkbox" checked />
           <button type="submit">Save</button>
+        </form>
+        <form id="milvusConfigForm">
+          <input id="milvusEnabledToggle" type="checkbox" />
+          <input id="milvusUri" />
+          <input id="milvusCollectionPrefix" value="mcp_client" />
+          <input id="milvusRepoId" />
+          <input id="milvusCollectionGeneration" value="v1" />
+          <input id="milvusMaxResults" type="number" value="5" />
+          <input id="milvusRetrievalTimeoutS" type="number" value="5.0" />
+          <input id="milvusDegradedModeToggle" type="checkbox" checked />
+          <input id="milvusConversationMemoryEnabledToggle" type="checkbox" />
+          <input id="milvusConversationRetentionDays" type="number" value="7" />
+          <input id="milvusToolCacheEnabledToggle" type="checkbox" />
+          <input id="milvusToolCacheTtlS" type="number" value="3600" />
+          <input id="milvusToolCacheAllowlist" />
+          <input id="milvusExpiryCleanupEnabledToggle" type="checkbox" checked />
+          <input id="milvusExpiryCleanupIntervalS" type="number" value="300" />
+          <button type="submit">Save Milvus</button>
         </form>
         <div id="toolsList"></div>
         <button id="refreshToolsBtn">Refresh Tools</button>

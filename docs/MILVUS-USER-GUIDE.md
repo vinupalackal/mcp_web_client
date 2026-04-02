@@ -10,6 +10,7 @@ This guide explains how to use the repository's Milvus-backed memory features ef
 - prompt patterns that improve retrieval quality.
 
 This is a user-facing guide for operating and prompting the feature set after it has been implemented.
+You can enter or adjust the Milvus runtime configuration from Settings → Milvus Config in the web UI instead of editing the memory environment variables by hand.
 
 ---
 
