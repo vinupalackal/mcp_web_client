@@ -18,6 +18,46 @@ You can enter or adjust the Milvus runtime configuration from Settings → Milvu
 
 When memory features are enabled, the backend can use Milvus to improve responses in three ways:
 
+### 1.0 Vector Search in Plain English
+
+If you are new to embeddings and vector databases, this is the simplest mental model:
+
+1. You send a user message.
+2. The embedding model converts that message into a numeric vector.
+3. Milvus compares that vector with stored vectors.
+4. The closest matches are returned.
+5. Their text/tool hints are added to the LLM input.
+6. The LLM answers with better repo-specific context.
+
+Example:
+
+- User message: "show memory usage"
+- Embedding step: convert that text into a vector
+- Milvus search: find nearby vectors from previous similar turns or indexed content
+- Result: the app may recall a past tool like `openwrt__get_memory` or retrieve a relevant code/doc snippet
+
+Useful definitions:
+
+- **Embedding**: a numeric representation of text meaning
+- **Vector search**: semantic nearest-neighbour search over those numeric representations
+- **Distance**: the score returned by Milvus; smaller distance means a better match here
+- **Context injection**: adding retrieved snippets into the prompt before the LLM responds
+- **Degraded mode**: embedding/search failed or timed out, so the app answers without retrieval context
+
+Typical distance interpretation in this app:
+
+- `0.05` to `0.15` — strong match
+- around `0.30` — moderate match
+- `0.50+` — weak or likely unrelated match
+
+Tool-routing priority is:
+
+1. direct route match,
+2. memory-based route from `conversation_memory` and `tool_cache`,
+3. LLM fallback.
+
+For memory-based tool routing, `code_memory` is skipped on purpose.  Code and doc matches are useful for answer enrichment, but past tool usage is a better signal for picking tools.
+
 ### 1.1 Retrieval Enrichment
 The app can search indexed code and documentation and inject the most relevant snippets into the LLM context before it answers.
 

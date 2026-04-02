@@ -216,6 +216,32 @@ You can configure these runtime Milvus settings directly in Settings → Milvus 
 
 For day-to-day usage guidance, prompting tips, and Milvus-specific examples, see [docs/MILVUS-USER-GUIDE.md](docs/MILVUS-USER-GUIDE.md).
 
+### How Vector Retrieval Works
+
+In plain English, the memory flow looks like this:
+
+1. **User message** — you ask something like "show memory usage".
+2. **Embed message** — the embedding model converts that text into a numeric vector.
+3. **Vector search** — Milvus compares that vector with stored vectors from code/doc memory, conversation memory, or tool cache.
+4. **Retrieve nearest matches** — lower distance means a closer semantic match.
+5. **Inject context** — the best matching snippets are added to the LLM input.
+6. **Answer or tool decision** — the app then uses that context to improve tool selection and the final response.
+
+Important terms:
+
+- **Embedding**: turning text into coordinates that capture meaning.
+- **Vector search**: finding stored items with nearby coordinates.
+- **Distance**: the similarity score Milvus returns; lower is better in this app.
+- **Degraded mode**: retrieval timed out or failed, so chat continues without memory context.
+
+Tool selection follows this order:
+
+1. direct route match,
+2. memory-based tool route from `conversation_memory` and `tool_cache`,
+3. LLM fallback if the first two do not produce a confident result.
+
+For tool routing, `code_memory` is intentionally skipped because code/document matches are useful for answer synthesis but not reliable evidence for which tool should run.
+
 ### Prerequisites
 
 - A running [Milvus](https://milvus.io/) instance (v2.4+).  Standalone mode on a local or remote machine is sufficient for development.
@@ -307,7 +333,7 @@ When `MEMORY_DEGRADED_MODE=true` or when Milvus is temporarily unreachable:
 | `MEMORY_REPO_ID` | `""` | Default workspace/repo scope for retrieval |
 | `MEMORY_COLLECTION_GENERATION` | `v1` | Active collection generation to search and ingest into |
 | `MEMORY_MAX_RESULTS` | `5` | Maximum context blocks returned per chat turn |
-| `MEMORY_RETRIEVAL_TIMEOUT_S` | `5.0` | Per-turn retrieval timeout in seconds |
+| `MEMORY_RETRIEVAL_TIMEOUT_S` | `15.0` | Per-turn retrieval timeout in seconds |
 | `MEMORY_DEGRADED_MODE` | `false` | Force degraded (no retrieval) mode without disabling the subsystem |
 | `MEMORY_CONVERSATION_ENABLED` | `false` | Enable same-user conversation memory recall and storage |
 | `MEMORY_CONVERSATION_RETENTION_DAYS` | `7` | TTL for persisted conversation-memory turns |

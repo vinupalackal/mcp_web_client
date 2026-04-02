@@ -69,6 +69,20 @@ logger_internal = logging.getLogger("mcp_client.internal")
 logger_external = logging.getLogger("mcp_client.external")
 
 
+def _log_transaction_banner(source: str, target: str, operation: str, state: str) -> None:
+    logger_external.info(
+        "******* %s to %s %s TRANSACTION ****** %s",
+        source,
+        target,
+        operation.upper(),
+        state.upper(),
+    )
+
+
+def _log_transaction_detail(logger: logging.Logger, message: str, *args: Any) -> None:
+    logger.info(f"  {message}", *args)
+
+
 class MCPManager:
     """Manages MCP server connections and tool operations via JSON-RPC 2.0"""
     
@@ -109,7 +123,8 @@ class MCPManager:
         headers = self._build_headers(server)
         
         try:
-            logger_external.info(f"→ POST {rpc_url} (initialize)")
+            _log_transaction_banner("MCP CLIENT", "MCP SERVER", "initialize", "start")
+            _log_transaction_detail(logger_external, "→ POST %s (initialize)", rpc_url)
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -120,7 +135,8 @@ class MCPManager:
                 response.raise_for_status()
                 result = response.json()
             
-            logger_external.info(f"← {response.status_code} (initialize success)")
+            _log_transaction_detail(logger_external, "← %s (initialize success)", response.status_code)
+            _log_transaction_banner("MCP SERVER", "MCP CLIENT", "initialize", "end")
             
             # Check for JSON-RPC error
             if "error" in result:
@@ -165,7 +181,8 @@ class MCPManager:
         headers = self._build_headers(server)
         
         try:
-            logger_external.info(f"→ POST {rpc_url} (tools/list)")
+            _log_transaction_banner("MCP CLIENT", "MCP SERVER", "tools/list", "start")
+            _log_transaction_detail(logger_external, "→ POST %s (tools/list)", rpc_url)
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -176,7 +193,8 @@ class MCPManager:
                 response.raise_for_status()
                 result = response.json()
             
-            logger_external.info(f"← {response.status_code} (tools/list success)")
+            _log_transaction_detail(logger_external, "← %s (tools/list success)", response.status_code)
+            _log_transaction_banner("MCP SERVER", "MCP CLIENT", "tools/list", "end")
             
             # Check for JSON-RPC error
             if "error" in result:
@@ -283,13 +301,11 @@ class MCPManager:
         """
         logger_internal.info(f"Executing tool: {server.alias}__{tool_name}")
         logger_internal.info(f"Tool arguments: {arguments}")
-        
-        # Ensure server is initialized
+
         if server.server_id not in self.initialized_servers:
             await self.initialize_server(server)
-        
+
         rpc_url = f"{server.base_url.rstrip('/')}/mcp"
-        
         payload = {
             "jsonrpc": "2.0",
             "id": 3,
@@ -299,17 +315,16 @@ class MCPManager:
                 "arguments": arguments
             }
         }
-        
         headers = self._build_headers(server)
-        
         call_timeout = self._compute_tool_timeout(execution_hints)
 
         try:
-            logger_external.info(f"→ MCP Server Request: POST {rpc_url} (tools/call: {tool_name})")
-            logger_internal.info(f"JSON-RPC Payload to MCP Server: {payload}")
-            logger_internal.info(f"Request headers: {headers}")
+            _log_transaction_banner("MCP CLIENT", "MCP SERVER", f"tools/call {tool_name}", "start")
+            _log_transaction_detail(logger_external, "→ POST %s (tools/call: %s)", rpc_url, tool_name)
+            logger_internal.info(f"  JSON-RPC Payload to MCP Server: {payload}")
+            logger_internal.info(f"  Request headers: {headers}")
             logger_internal.info(
-                f"MCP call timeout: read={call_timeout.read:.1f}s "
+                f"  MCP call timeout: read={call_timeout.read:.1f}s "
                 f"({'hints-derived' if execution_hints else 'global default'})"
             )
 
@@ -321,38 +336,42 @@ class MCPManager:
                 )
                 response.raise_for_status()
                 result = response.json()
-            
-            logger_external.info(f"← MCP Server Response: {response.status_code} (tool execution complete)")
-            logger_internal.info(f"JSON-RPC Response from MCP Server: {result}")
-            
-            # Check for JSON-RPC error
+
+            _log_transaction_detail(logger_external, "← %s (tool execution complete)", response.status_code)
+            _log_transaction_banner("MCP SERVER", "MCP CLIENT", f"tools/call {tool_name}", "end")
+            logger_internal.info(f"  JSON-RPC Response from MCP Server: {result}")
+
             if "error" in result:
                 error_info = result["error"]
                 error_msg = error_info.get('message', 'Unknown error')
                 error_code = error_info.get('code', 'N/A')
                 error_data = error_info.get('data', {})
-                
+
                 logger_internal.error(f"MCP server error for {tool_name}:")
                 logger_internal.error(f"  Code: {error_code}")
                 logger_internal.error(f"  Message: {error_msg}")
                 logger_internal.error(f"  Data: {error_data}")
-                
+                _log_transaction_banner("MCP SERVER", "MCP CLIENT", f"tools/call {tool_name}", "failed")
+
                 raise Exception(
                     f"Tool execution error: {error_msg}"
                 )
-            
+
             execution_result = result.get("result", {})
             logger_internal.info(f"Tool executed successfully: {tool_name}")
-            
+
             return execution_result
-            
+
         except httpx.TimeoutException as e:
+            _log_transaction_banner("MCP CLIENT", "MCP SERVER", f"tools/call {tool_name}", "failed")
             logger_internal.error(f"Timeout executing tool {tool_name}: {e}")
             raise Exception(f"Timeout executing {tool_name}")
         except httpx.HTTPError as e:
+            _log_transaction_banner("MCP CLIENT", "MCP SERVER", f"tools/call {tool_name}", "failed")
             logger_internal.error(f"HTTP error executing tool {tool_name}: {e}")
             raise Exception(f"HTTP error: {str(e)}")
         except Exception as e:
+            _log_transaction_banner("MCP CLIENT", "MCP SERVER", f"tools/call {tool_name}", "failed")
             logger_internal.error(f"Failed to execute tool {tool_name}: {e}")
             raise
     
@@ -364,7 +383,7 @@ class MCPManager:
         repeat_count: int,
         interval_ms: int,
         execution_hints: Optional[ExecutionHints] = None,
-    ) -> RepeatedExecSummary:
+    ) -> tuple[RepeatedExecSummary, List[Path]]:
         """Execute a tool N times sequentially with a configurable interval.
 
         Writes one JSON file per run immediately after each run completes.
@@ -520,8 +539,6 @@ class MCPManager:
         )
 
         return summary, written_files
-
-    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -615,7 +632,6 @@ class MCPManager:
             for tool in self.tools.values()
             if allowed_tool_name_set is None or tool.namespaced_id in allowed_tool_name_set
         ]
-
         # Reserve one slot per chunk for VIRTUAL_REPEATED_EXEC_TOOL
         effective_chunk_size = max(1, chunk_size - (1 if include_virtual_repeated else 0))
 

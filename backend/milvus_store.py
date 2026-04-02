@@ -10,6 +10,17 @@ from pymilvus import DataType, MilvusClient
 
 
 logger_internal = logging.getLogger("mcp_client.internal")
+logger_external = logging.getLogger("mcp_client.external")
+
+
+def _log_transaction_banner(source: str, target: str, operation: str, state: str) -> None:
+    logger_external.info(
+        "******* %s to %s %s TRANSACTION ****** %s",
+        source,
+        target,
+        operation.upper(),
+        state.upper(),
+    )
 
 
 class MilvusStoreError(Exception):
@@ -163,8 +174,9 @@ class MilvusStore:
         spec = COLLECTION_SPECS[collection_key]
         schema = self._build_schema(spec, dimension)
         index_params = self._build_index_params(spec)
+        _log_transaction_banner("MCP CLIENT", "MILVUS", f"create collection {collection_key}", "start")
         logger_internal.info(
-            "Milvus collection create start: collection=%s key=%s generation=%s dimension=%s",
+            "  Milvus collection create start: collection=%s key=%s generation=%s dimension=%s",
             collection_name,
             collection_key,
             generation,
@@ -181,8 +193,9 @@ class MilvusStore:
             schema=schema,
             index_params=index_params,
         )
+        _log_transaction_banner("MILVUS", "MCP CLIENT", f"create collection {collection_key}", "end")
         logger_internal.info(
-            "Milvus collection create complete: collection=%s key=%s generation=%s dimension=%s fields=%s",
+            "  Milvus collection create complete: collection=%s key=%s generation=%s dimension=%s fields=%s",
             collection_name,
             collection_key,
             generation,
@@ -215,8 +228,9 @@ class MilvusStore:
             dimension=dimension,
         )
         self._validate_records(records, dimension=dimension)
+        _log_transaction_banner("MCP CLIENT", "MILVUS", f"upsert {collection_key}", "start")
         logger_internal.info(
-            "Milvus upsert start: collection=%s key=%s generation=%s records=%s dimension=%s ids=%s payload_refs=%s",
+            "  Milvus upsert start: collection=%s key=%s generation=%s records=%s dimension=%s ids=%s payload_refs=%s",
             collection_name,
             collection_key,
             generation,
@@ -226,8 +240,9 @@ class MilvusStore:
             self._preview_record_values(records, "payload_ref"),
         )
         result = self.client.upsert(collection_name=collection_name, data=records)
+        _log_transaction_banner("MILVUS", "MCP CLIENT", f"upsert {collection_key}", "end")
         logger_internal.info(
-            "Milvus upsert complete: collection=%s key=%s generation=%s records=%s result=%s",
+            "  Milvus upsert complete: collection=%s key=%s generation=%s records=%s result=%s",
             collection_name,
             collection_key,
             generation,
@@ -255,8 +270,9 @@ class MilvusStore:
             generation=generation,
             dimension=dimension,
         )
+        _log_transaction_banner("MCP CLIENT", "MILVUS", f"search {collection_key}", "start")
         logger_internal.info(
-            "Milvus search start: collection=%s key=%s generation=%s vectors=%s limit=%s filter=%s output_fields=%s",
+            "  Milvus search start: collection=%s key=%s generation=%s vectors=%s limit=%s filter=%s output_fields=%s",
             collection_name,
             collection_key,
             generation,
@@ -274,8 +290,9 @@ class MilvusStore:
             search_params=search_params or {"metric_type": COLLECTION_SPECS[collection_key].metric_type},
             anns_field=COLLECTION_SPECS[collection_key].vector_field,
         )
+        _log_transaction_banner("MILVUS", "MCP CLIENT", f"search {collection_key}", "end")
         logger_internal.info(
-            "Milvus search complete: collection=%s key=%s generation=%s vectors=%s hit_count=%s",
+            "  Milvus search complete: collection=%s key=%s generation=%s vectors=%s hit_count=%s",
             collection_name,
             collection_key,
             generation,
@@ -292,16 +309,18 @@ class MilvusStore:
                 collection_name,
             )
             return {"delete_count": 0}
+        _log_transaction_banner("MCP CLIENT", "MILVUS", f"delete-by-ids {collection_key}", "start")
         logger_internal.info(
-            "Milvus delete-by-ids start: collection=%s key=%s generation=%s ids=%s",
+            "  Milvus delete-by-ids start: collection=%s key=%s generation=%s ids=%s",
             collection_name,
             collection_key,
             generation,
             self._preview_text(ids),
         )
         result = self.client.delete(collection_name=collection_name, ids=ids)
+        _log_transaction_banner("MILVUS", "MCP CLIENT", f"delete-by-ids {collection_key}", "end")
         logger_internal.info(
-            "Milvus delete-by-ids complete: collection=%s key=%s generation=%s result=%s",
+            "  Milvus delete-by-ids complete: collection=%s key=%s generation=%s result=%s",
             collection_name,
             collection_key,
             generation,
@@ -319,16 +338,18 @@ class MilvusStore:
                 collection_name,
             )
             return {"delete_count": 0}
+        _log_transaction_banner("MCP CLIENT", "MILVUS", f"delete-by-filter {collection_key}", "start")
         logger_internal.info(
-            "Milvus delete-by-filter start: collection=%s key=%s generation=%s filter=%s",
+            "  Milvus delete-by-filter start: collection=%s key=%s generation=%s filter=%s",
             collection_name,
             collection_key,
             generation,
             self._preview_text(filter_expression),
         )
         result = self.client.delete(collection_name=collection_name, filter=filter_expression)
+        _log_transaction_banner("MILVUS", "MCP CLIENT", f"delete-by-filter {collection_key}", "end")
         logger_internal.info(
-            "Milvus delete-by-filter complete: collection=%s key=%s generation=%s result=%s",
+            "  Milvus delete-by-filter complete: collection=%s key=%s generation=%s result=%s",
             collection_name,
             collection_key,
             generation,

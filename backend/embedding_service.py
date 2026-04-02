@@ -16,6 +16,18 @@ logger_internal = logging.getLogger("mcp_client.internal")
 logger_external = logging.getLogger("mcp_client.external")
 
 
+def _transaction_label(target: str, operation: str) -> str:
+    return f"******* MCP CLIENT to {target.upper()} {operation.upper()} TRANSACTION ******"
+
+
+def _log_transaction_banner(target: str, operation: str, state: str) -> None:
+    logger_external.info("%s %s", _transaction_label(target, operation), state.upper())
+
+
+def _log_transaction_detail(logger: logging.Logger, message: str, *args: Any) -> None:
+    logger.info(f"  {message}", *args)
+
+
 class EmbeddingServiceError(Exception):
     """Base error for embedding-service failures."""
 
@@ -171,29 +183,46 @@ class EmbeddingService:
         input_count = len(payload.get("input", [])) if isinstance(payload.get("input"), list) else 1
 
         try:
-            logger_external.info(f"→ POST {url} ({provider_name})")
+            _log_transaction_banner(provider_name, "embeddings", "start")
+            _log_transaction_detail(logger_external, "→ POST %s (%s)", url, provider_name)
+            _log_transaction_detail(
+                logger_internal,
+                "%s payload: inputs=%s payload_bytes=%s",
+                provider_name,
+                input_count,
+                payload_bytes,
+            )
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
                 result = response.json()
-            logger_external.info(f"← {response.status_code} ({provider_name} response)")
+            _log_transaction_detail(
+                logger_external,
+                "← %s (%s response)",
+                response.status_code,
+                provider_name,
+            )
+            _log_transaction_banner(provider_name, "embeddings", "end")
             return result
         except httpx.TimeoutException as error:
             self._log_timeout(provider_name, url, error, payload_bytes, input_count)
+            _log_transaction_banner(provider_name, "embeddings", "failed")
             raise EmbeddingProviderError(self._format_timeout_error(error))
         except httpx.HTTPStatusError as error:
             status_code = error.response.status_code if error.response is not None else None
             response_body = error.response.text[:2000] if error.response is not None else ""
             logger_internal.error(
-                "%s HTTP error: status=%s body=%s error=%s",
+                "  %s HTTP error: status=%s body=%s error=%s",
                 provider_name,
                 status_code,
                 response_body,
                 error,
             )
+            _log_transaction_banner(provider_name, "embeddings", "failed")
             raise EmbeddingProviderError(f"Embedding HTTP error: {str(error)}")
         except httpx.HTTPError as error:
-            logger_internal.error("%s HTTP error: %s", provider_name, error)
+            logger_internal.error("  %s HTTP error: %s", provider_name, error)
+            _log_transaction_banner(provider_name, "embeddings", "failed")
             raise EmbeddingProviderError(f"Embedding HTTP error: {str(error)}")
 
     async def _embed_openai(self, texts: List[str]) -> List[List[float]]:

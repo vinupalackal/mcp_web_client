@@ -15,6 +15,18 @@ logger_internal = logging.getLogger("mcp_client.internal")
 logger_external = logging.getLogger("mcp_client.external")
 
 
+def _transaction_label(target: str, operation: str) -> str:
+    return f"******* MCP CLIENT to {target.upper()} {operation.upper()} TRANSACTION ******"
+
+
+def _log_transaction_banner(target: str, operation: str, state: str) -> None:
+    logger_external.info("%s %s", _transaction_label(target, operation), state.upper())
+
+
+def _log_transaction_detail(logger: logging.Logger, message: str, *args: Any) -> None:
+    logger.info(f"  {message}", *args)
+
+
 class BaseLLMClient(ABC):
     """Base class for LLM providers"""
     
@@ -117,19 +129,31 @@ class BaseLLMClient(ABC):
             payload_bytes = self._estimate_payload_bytes(payload)
 
             try:
-                logger_external.info(f"→ POST {url} ({provider_name} chat)")
+                _log_transaction_banner(provider_name, "chat", "start")
+                _log_transaction_detail(logger_external, "→ POST %s (%s chat)", url, provider_name)
 
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     response = await client.post(url, json=payload, headers=headers)
                     response.raise_for_status()
                     result = response.json()
 
-                logger_external.info(f"← {response.status_code} ({provider_name} response)")
-                logger_internal.info(f"{provider_name} tokens: {result.get('usage', {})}")
+                _log_transaction_detail(
+                    logger_external,
+                    "← %s (%s response)",
+                    response.status_code,
+                    provider_name,
+                )
+                _log_transaction_detail(
+                    logger_internal,
+                    "%s tokens: %s",
+                    provider_name,
+                    result.get('usage', {}),
+                )
+                _log_transaction_banner(provider_name, "chat", "end")
 
                 if omitted_fields:
                     logger_internal.warning(
-                        "%s request succeeded after omitting compatibility fields: %s",
+                        "  %s request succeeded after omitting compatibility fields: %s",
                         provider_name,
                         ", ".join(omitted_fields),
                     )
@@ -138,6 +162,7 @@ class BaseLLMClient(ABC):
 
             except httpx.TimeoutException as e:
                 self._log_timeout(provider_name, url, e, payload_bytes, len(messages), len(tools))
+                _log_transaction_banner(provider_name, "chat", "failed")
                 raise Exception(self._format_timeout_error(e))
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code if e.response is not None else None
@@ -146,7 +171,7 @@ class BaseLLMClient(ABC):
                 if status_code == 422 and attempt_index < len(payload_variants):
                     next_omitted_fields = payload_variants[attempt_index][1]
                     logger_internal.warning(
-                        "%s returned 422 for %s. body=%s. Retrying with reduced compatibility fields: %s",
+                        "  %s returned 422 for %s. body=%s. Retrying with reduced compatibility fields: %s",
                         provider_name,
                         url,
                         response_body,
@@ -155,15 +180,17 @@ class BaseLLMClient(ABC):
                     continue
 
                 logger_internal.error(
-                    "%s HTTP error: status=%s body=%s error=%s",
+                    "  %s HTTP error: status=%s body=%s error=%s",
                     provider_name,
                     status_code,
                     response_body,
                     e,
                 )
+                _log_transaction_banner(provider_name, "chat", "failed")
                 raise Exception(f"LLM HTTP error: {str(e)}")
             except httpx.HTTPError as e:
-                logger_internal.error(f"{provider_name} HTTP error: {e}")
+                logger_internal.error("  %s HTTP error: %s", provider_name, e)
+                _log_transaction_banner(provider_name, "chat", "failed")
                 raise Exception(f"LLM HTTP error: {str(e)}")
 
         raise Exception("LLM HTTP error: request failed after compatibility retries")
@@ -209,7 +236,7 @@ class BaseLLMClient(ABC):
         phase = self._timeout_phase(error)
         timeout_seconds = self._timeout_seconds_for_phase(phase)
         logger_internal.error(
-            "%s timeout: phase=%s timeout_s=%.1f model=%s url=%s messages=%s tools=%s payload_bytes=%s raw_error=%r",
+            "  %s timeout: phase=%s timeout_s=%.1f model=%s url=%s messages=%s tools=%s payload_bytes=%s raw_error=%r",
             provider_name,
             phase,
             timeout_seconds,
@@ -358,19 +385,34 @@ class OllamaClient(BaseLLMClient):
         payload_bytes = self._estimate_payload_bytes(payload)
         
         try:
-            logger_external.info(f"→ POST {url} (Ollama chat)")
-            logger_internal.info(f"Ollama payload: {len(messages)} messages, {len(tools)} tools, {payload_bytes} bytes")
+            _log_transaction_banner("Ollama", "chat", "start")
+            _log_transaction_detail(logger_external, "→ POST %s (Ollama chat)", url)
+            _log_transaction_detail(
+                logger_internal,
+                "Ollama payload: %s messages, %s tools, %s bytes",
+                len(messages),
+                len(tools),
+                payload_bytes,
+            )
             
             # Log each message for debugging
             for i, msg in enumerate(messages):
-                logger_internal.info(f"Message {i}: role={msg.get('role')}, content_length={len(str(msg.get('content', '')))}, has_tool_calls={'tool_calls' in msg}, has_tool_call_id={'tool_call_id' in msg}")
+                _log_transaction_detail(
+                    logger_internal,
+                    "Message %s: role=%s, content_length=%s, has_tool_calls=%s, has_tool_call_id=%s",
+                    i,
+                    msg.get('role'),
+                    len(str(msg.get('content', ''))),
+                    'tool_calls' in msg,
+                    'tool_call_id' in msg,
+                )
             
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(url, json=payload, headers=headers)
                 response.raise_for_status()
                 ollama_result = response.json()
             
-            logger_external.info(f"← {response.status_code} (Ollama response)")
+            _log_transaction_detail(logger_external, "← %s (Ollama response)", response.status_code)
             
             # Normalize Ollama response to OpenAI format
             # Ollama format: {"message": {...}, "done": true, ...}
@@ -392,30 +434,41 @@ class OllamaClient(BaseLLMClient):
             message = ollama_result.get("message", {})
             if "tool_calls" in message:
                 normalized_result["choices"][0]["finish_reason"] = "tool_calls"
+
+            _log_transaction_detail(
+                logger_internal,
+                "Ollama tokens: %s",
+                normalized_result.get("usage", {}),
+            )
+            _log_transaction_banner("Ollama", "chat", "end")
             
             return normalized_result
             
         except httpx.HTTPStatusError as e:
-            logger_internal.error(f"Ollama HTTP error: {e}")
-            logger_internal.error(f"Request payload keys: {list(payload.keys())}")
-            logger_internal.error(f"Number of messages: {len(messages)}")
+            logger_internal.error("  Ollama HTTP error: %s", e)
+            logger_internal.error("  Request payload keys: %s", list(payload.keys()))
+            logger_internal.error("  Number of messages: %s", len(messages))
             if messages:
-                logger_internal.error(f"Last message role: {messages[-1].get('role')}")
-                logger_internal.error(f"Last message keys: {list(messages[-1].keys())}")
+                logger_internal.error("  Last message role: %s", messages[-1].get('role'))
+                logger_internal.error("  Last message keys: %s", list(messages[-1].keys()))
                 # Dump all messages for debugging
                 for i, msg in enumerate(messages):
-                    logger_internal.error(f"Message {i}: {msg}")
-            logger_internal.error(f"Response status: {e.response.status_code}")
-            logger_internal.error(f"Response body: {e.response.text}")
+                    logger_internal.error("  Message %s: %s", i, msg)
+            logger_internal.error("  Response status: %s", e.response.status_code)
+            logger_internal.error("  Response body: %s", e.response.text)
+            _log_transaction_banner("Ollama", "chat", "failed")
             raise Exception(f"LLM HTTP error: {str(e)}")
         except httpx.TimeoutException as e:
             self._log_timeout("Ollama", url, e, payload_bytes, len(messages), len(tools))
+            _log_transaction_banner("Ollama", "chat", "failed")
             raise Exception(self._format_timeout_error(e))
         except httpx.HTTPError as e:
-            logger_internal.error(f"Ollama HTTP error: {e}")
+            logger_internal.error("  Ollama HTTP error: %s", e)
+            _log_transaction_banner("Ollama", "chat", "failed")
             raise Exception(f"LLM HTTP error: {str(e)}")
         except Exception as e:
-            logger_internal.error(f"Ollama error: {e}")
+            logger_internal.error("  Ollama error: %s", e)
+            _log_transaction_banner("Ollama", "chat", "failed")
             raise
     
     def format_tool_result(

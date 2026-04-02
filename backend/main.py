@@ -598,7 +598,7 @@ def _default_milvus_config_from_env() -> MilvusConfig:
             repo_id=os.getenv("MEMORY_REPO_ID", ""),
             collection_generation=os.getenv("MEMORY_COLLECTION_GENERATION", "v1"),
             max_results=_get_int_env("MEMORY_MAX_RESULTS", 5),
-            retrieval_timeout_s=_get_float_env("MEMORY_RETRIEVAL_TIMEOUT_S", 5.0),
+            retrieval_timeout_s=_get_float_env("MEMORY_RETRIEVAL_TIMEOUT_S", 15.0),
             degraded_mode=_get_bool_env("MEMORY_DEGRADED_MODE", True),
             enable_conversation_memory=_get_bool_env("MEMORY_CONVERSATION_ENABLED", False),
             conversation_retention_days=_get_int_env("MEMORY_CONVERSATION_RETENTION_DAYS", 7),
@@ -617,12 +617,38 @@ def _default_milvus_config_from_env() -> MilvusConfig:
         return MilvusConfig()
 
 
+def _redacted_milvus_uri(uri: str) -> str:
+    """Mask credentials in a Milvus URI while leaving host/port visible for diagnostics."""
+    if not uri:
+        return "<empty>"
+    return re.sub(r"://[^/@]+@", "://[REDACTED]@", uri)
+
+
+def _memory_config_summary(config: MilvusConfig) -> str:
+    """Return a compact, operator-friendly summary of active memory settings."""
+    return (
+        "enabled=%s uri=%s prefix=%s generation=%s timeout_s=%.1f repo_id=%s "
+        "conversation=%s tool_cache=%s degraded_mode=%s"
+    ) % (
+        config.enabled,
+        _redacted_milvus_uri(config.milvus_uri),
+        config.collection_prefix,
+        config.collection_generation,
+        config.retrieval_timeout_s,
+        config.repo_id or "<none>",
+        config.enable_conversation_memory,
+        config.enable_tool_cache,
+        config.degraded_mode,
+    )
+
+
 def _save_milvus_config_to_disk(config: MilvusConfig) -> None:
     """Persist Milvus config to server-side disk."""
     try:
         MCP_DATA_DIR.mkdir(parents=True, exist_ok=True)
         (MCP_DATA_DIR / "milvus_config.json").write_text(config.model_dump_json(indent=2))
-        logger_internal.info("Milvus config persisted to disk (enabled=%s)", config.enabled)
+        logger_internal.info("Milvus config persisted to disk")
+        logger_internal.info("  %s", _memory_config_summary(config))
     except Exception as exc:
         logger_internal.error("Failed to persist Milvus config to disk: %s", exc)
 
@@ -634,7 +660,8 @@ def _load_milvus_config_from_disk() -> "MilvusConfig | None":
         return None
     try:
         config = MilvusConfig.model_validate_json(config_file.read_text())
-        logger_internal.info("Loaded Milvus config from disk (enabled=%s)", config.enabled)
+        logger_internal.info("Loaded Milvus config from disk")
+        logger_internal.info("  %s", _memory_config_summary(config))
         return config
     except Exception as exc:
         logger_internal.warning("Failed to load Milvus config from disk: %s", exc)
@@ -656,14 +683,19 @@ def _initialize_memory_service(config: Optional[MilvusConfig] = None) -> Optiona
     effective_config = _get_effective_milvus_config()
     _memory_service = None
 
+    logger_internal.info("Memory subsystem init requested")
+    logger_internal.info("  %s", _memory_config_summary(effective_config))
+
     if not effective_config.enabled:
         logger_internal.info("Memory subsystem disabled")
+        logger_internal.info("  Memory-backed retrieval, conversation memory, and tool cache are inactive")
         return None
 
     if llm_config_storage is None:
         logger_internal.warning(
             "Memory subsystem enabled but no LLM config is loaded; skipping memory initialisation"
         )
+        logger_internal.warning("  Startup continues without memory features")
         return None
 
     try:
@@ -701,9 +733,20 @@ def _initialize_memory_service(config: Optional[MilvusConfig] = None) -> Optiona
         if hasattr(_memory_service, "run_expiry_cleanup_if_due"):
             _memory_service.run_expiry_cleanup_if_due(force=True)
         logger_internal.info("Memory subsystem initialized")
+        logger_internal.info(
+            "  Milvus reachable at %s; memory features are active",
+            _redacted_milvus_uri(effective_config.milvus_uri),
+        )
         return _memory_service
     except Exception as exc:
         logger_internal.warning("Memory subsystem initialization failed: %s", exc)
+        logger_internal.warning(
+            "  Milvus connection failed for %s",
+            _redacted_milvus_uri(effective_config.milvus_uri),
+        )
+        logger_internal.warning(
+            "  Continuing startup without memory features; chat stays available but retrieval, conversation memory, and tool cache are inactive"
+        )
         _memory_service = None
         return None
 
