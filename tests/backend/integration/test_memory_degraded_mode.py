@@ -77,9 +77,13 @@ class TestMemoryDegradedMode:
         data = response.json()
         assert data["message"]["role"] == "assistant"
         assert data["message"]["content"] == "Answer without retrieval context."
+        assert data["transaction_id"].startswith("chat-")
+        assert data["retrieval_trace"]["request_id"] == data["transaction_id"]
+        assert data["retrieval_trace"]["degraded"] is True
 
         traces = main_module.session_manager.get_retrieval_traces(session_id)
         assert len(traces) == 1
+        assert traces[0]["request_id"] == data["transaction_id"]
         assert traces[0]["degraded"] is True
         assert traces[0]["degraded_reason"] == "fake degraded"
 

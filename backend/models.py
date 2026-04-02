@@ -1057,6 +1057,17 @@ class ChatResponse(BaseModel):
         default=None,
         description="Initial assistant response before any tool execution, if present"
     )
+    transaction_id: Optional[str] = Field(
+        default=None,
+        description="Request-scoped chat transaction identifier for diagnostics correlation"
+    )
+    retrieval_trace: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Retrieval diagnostics for this chat turn when memory augmentation runs. "
+            "Includes request_id, query_hash, collection_keys, result_count, degraded status, and latency."
+        )
+    )
     context_sources: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description=(
@@ -1076,6 +1087,8 @@ class ChatResponse(BaseModel):
                         "content": "The current weather in NYC is 72°F and partly cloudy."
                     },
                     "initial_llm_response": "I'll check the live weather and summarize it for you.",
+                    "transaction_id": "chat-0d3b519a-20f2-467d-9a49-f1d50961f3c5",
+                    "retrieval_trace": None,
                     "tool_executions": [
                         {
                             "tool": "weather_api__get_weather",

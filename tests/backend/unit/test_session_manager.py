@@ -135,19 +135,23 @@ class TestRetrievalTrace:
         s = mgr.create_session()
         mgr.add_retrieval_trace(
             s.session_id,
+            request_id="chat-1",
             query_hash="abc123",
             collection_keys=["code_memory", "doc_memory"],
             result_count=2,
             degraded=False,
             latency_ms=42.5,
+            message_preview="explain the code",
         )
 
         traces = mgr.get_retrieval_traces(s.session_id)
         assert len(traces) == 1
+        assert traces[0]["request_id"] == "chat-1"
         assert traces[0]["query_hash"] == "abc123"
         assert traces[0]["collection_keys"] == ["code_memory", "doc_memory"]
         assert traces[0]["result_count"] == 2
         assert traces[0]["degraded"] is False
+        assert traces[0]["message_preview"] == "explain the code"
         assert "recorded_at" in traces[0]
 
     def test_get_retrieval_traces_empty_for_unknown_session(self, mgr):

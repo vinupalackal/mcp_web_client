@@ -124,12 +124,14 @@ class SessionManager:
         self,
         session_id: str,
         *,
+        request_id: str = "",
         query_hash: str,
         collection_keys: List[str],
         result_count: int,
         degraded: bool,
         degraded_reason: str = "",
         latency_ms: float = 0.0,
+        message_preview: str = "",
     ) -> None:
         """Add retrieval trace for a session."""
 
@@ -138,12 +140,14 @@ class SessionManager:
 
         self.retrieval_traces[session_id].append(
             {
+                "request_id": request_id,
                 "query_hash": query_hash,
                 "collection_keys": list(collection_keys),
                 "result_count": result_count,
                 "degraded": degraded,
                 "degraded_reason": degraded_reason,
                 "latency_ms": latency_ms,
+                "message_preview": message_preview,
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
             }
         )

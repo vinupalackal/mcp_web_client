@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Callable, Optional
 
 from pymilvus import DataType, MilvusClient
+
+
+logger_internal = logging.getLogger("mcp_client.internal")
 
 
 class MilvusStoreError(Exception):
@@ -147,11 +151,25 @@ class MilvusStore:
 
         collection_name = self.build_collection_name(collection_key, generation)
         if self.client.has_collection(collection_name):
+            logger_internal.debug(
+                "Milvus collection ready: collection=%s key=%s generation=%s dimension=%s status=existing",
+                collection_name,
+                collection_key,
+                generation,
+                dimension,
+            )
             return collection_name
 
         spec = COLLECTION_SPECS[collection_key]
         schema = self._build_schema(spec, dimension)
         index_params = self._build_index_params(spec)
+        logger_internal.info(
+            "Milvus collection create start: collection=%s key=%s generation=%s dimension=%s",
+            collection_name,
+            collection_key,
+            generation,
+            dimension,
+        )
         self.client.create_collection(
             collection_name=collection_name,
             dimension=dimension,
@@ -163,10 +181,24 @@ class MilvusStore:
             schema=schema,
             index_params=index_params,
         )
+        logger_internal.info(
+            "Milvus collection create complete: collection=%s key=%s generation=%s dimension=%s fields=%s",
+            collection_name,
+            collection_key,
+            generation,
+            dimension,
+            len(spec.fields),
+        )
         return collection_name
 
     def describe_collection(self, *, collection_key: str, generation: str) -> Any:
         collection_name = self.build_collection_name(collection_key, generation)
+        logger_internal.debug(
+            "Milvus describe collection: collection=%s key=%s generation=%s",
+            collection_name,
+            collection_key,
+            generation,
+        )
         return self.client.describe_collection(collection_name)
 
     def upsert(
@@ -183,7 +215,26 @@ class MilvusStore:
             dimension=dimension,
         )
         self._validate_records(records, dimension=dimension)
-        return self.client.upsert(collection_name=collection_name, data=records)
+        logger_internal.info(
+            "Milvus upsert start: collection=%s key=%s generation=%s records=%s dimension=%s ids=%s payload_refs=%s",
+            collection_name,
+            collection_key,
+            generation,
+            len(records),
+            dimension,
+            self._preview_record_values(records, "id"),
+            self._preview_record_values(records, "payload_ref"),
+        )
+        result = self.client.upsert(collection_name=collection_name, data=records)
+        logger_internal.info(
+            "Milvus upsert complete: collection=%s key=%s generation=%s records=%s result=%s",
+            collection_name,
+            collection_key,
+            generation,
+            len(records),
+            self._preview_text(result),
+        )
+        return result
 
     def search(
         self,
@@ -199,7 +250,17 @@ class MilvusStore:
         if not query_vectors:
             raise MilvusCollectionConfigError("query_vectors must not be empty")
         collection_name = self.build_collection_name(collection_key, generation)
-        return self.client.search(
+        logger_internal.info(
+            "Milvus search start: collection=%s key=%s generation=%s vectors=%s limit=%s filter=%s output_fields=%s",
+            collection_name,
+            collection_key,
+            generation,
+            len(query_vectors),
+            limit,
+            self._preview_text(filter_expression or "<none>"),
+            self._preview_text(output_fields or []),
+        )
+        result = self.client.search(
             collection_name=collection_name,
             data=query_vectors,
             filter=filter_expression,
@@ -208,24 +269,71 @@ class MilvusStore:
             search_params=search_params or {"metric_type": COLLECTION_SPECS[collection_key].metric_type},
             anns_field=COLLECTION_SPECS[collection_key].vector_field,
         )
+        logger_internal.info(
+            "Milvus search complete: collection=%s key=%s generation=%s vectors=%s hit_count=%s",
+            collection_name,
+            collection_key,
+            generation,
+            len(query_vectors),
+            self._count_hits(result),
+        )
+        return result
 
     def delete_by_ids(self, *, collection_key: str, generation: str, ids: list[str]) -> dict[str, int]:
         collection_name = self.build_collection_name(collection_key, generation)
-        return self.client.delete(collection_name=collection_name, ids=ids)
+        logger_internal.info(
+            "Milvus delete-by-ids start: collection=%s key=%s generation=%s ids=%s",
+            collection_name,
+            collection_key,
+            generation,
+            self._preview_text(ids),
+        )
+        result = self.client.delete(collection_name=collection_name, ids=ids)
+        logger_internal.info(
+            "Milvus delete-by-ids complete: collection=%s key=%s generation=%s result=%s",
+            collection_name,
+            collection_key,
+            generation,
+            self._preview_text(result),
+        )
+        return result
 
     def delete_by_filter(self, *, collection_key: str, generation: str, filter_expression: str) -> dict[str, int]:
         if not filter_expression:
             raise MilvusCollectionConfigError("filter_expression is required")
         collection_name = self.build_collection_name(collection_key, generation)
-        return self.client.delete(collection_name=collection_name, filter=filter_expression)
+        logger_internal.info(
+            "Milvus delete-by-filter start: collection=%s key=%s generation=%s filter=%s",
+            collection_name,
+            collection_key,
+            generation,
+            self._preview_text(filter_expression),
+        )
+        result = self.client.delete(collection_name=collection_name, filter=filter_expression)
+        logger_internal.info(
+            "Milvus delete-by-filter complete: collection=%s key=%s generation=%s result=%s",
+            collection_name,
+            collection_key,
+            generation,
+            self._preview_text(result),
+        )
+        return result
 
     def drop_collection(self, *, collection_key: str, generation: str) -> None:
         collection_name = self.build_collection_name(collection_key, generation)
         if self.client.has_collection(collection_name):
+            logger_internal.info(
+                "Milvus drop collection: collection=%s key=%s generation=%s",
+                collection_name,
+                collection_key,
+                generation,
+            )
             self.client.drop_collection(collection_name)
 
     def list_collections(self) -> list[str]:
-        return list(self.client.list_collections())
+        collections = list(self.client.list_collections())
+        logger_internal.debug("Milvus list collections: count=%s", len(collections))
+        return collections
 
     def _build_schema(self, spec: CollectionSpec, dimension: int) -> Any:
         schema = self._client_factory.create_schema(auto_id=False, enable_dynamic_field=False)
@@ -257,3 +365,39 @@ class MilvusStore:
                 )
             if not record.get("id"):
                 raise MilvusCollectionConfigError("record id is required")
+
+    def _preview_record_values(
+        self,
+        records: list[dict[str, Any]],
+        field_name: str,
+        *,
+        limit: int = 3,
+    ) -> str:
+        values = []
+        for record in records:
+            value = record.get(field_name)
+            if value:
+                values.append(str(value))
+            if len(values) >= limit:
+                break
+        if not values:
+            return "[]"
+        suffix = "…" if len(records) > len(values) else ""
+        return self._preview_text(values) + suffix
+
+    def _count_hits(self, raw_hits: Any) -> int:
+        if not isinstance(raw_hits, list):
+            return 0
+        hit_count = 0
+        for item in raw_hits:
+            if isinstance(item, list):
+                hit_count += sum(1 for nested in item if isinstance(nested, dict))
+            elif isinstance(item, dict):
+                hit_count += 1
+        return hit_count
+
+    def _preview_text(self, value: Any, *, max_length: int = 160) -> str:
+        text = str(value)
+        if len(text) <= max_length:
+            return text
+        return f"{text[: max_length - 1]}…"

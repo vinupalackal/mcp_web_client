@@ -11,6 +11,7 @@ import json
 import re
 import sys
 import asyncio
+import uuid
 import httpx
 from pathlib import Path as PathLib
 from contextlib import asynccontextmanager
@@ -2798,10 +2799,17 @@ async def send_message(
     message: ChatMessage = Body(..., description="User message")
 ) -> ChatResponse:
     """Process user message through LLM with tool execution"""
+    message_transaction_id = f"chat-{uuid.uuid4()}"
     logger_external.info(f"→ POST /api/sessions/{session_id}/messages")
-    logger_internal.info(f"Processing message in session {session_id}: {message.content[:50] if message.content else ''}...")
+    logger_internal.info(
+        "Chat transaction started: request_id=%s session=%s message=%s",
+        message_transaction_id,
+        session_id,
+        (message.content[:50] if message.content else ""),
+    )
 
     user_id = _user_id_or_none(request)
+    retrieval_trace_payload: Optional[Dict[str, Any]] = None
 
     if _memory_service is not None and hasattr(_memory_service, "run_expiry_cleanup_if_due"):
         _memory_service.run_expiry_cleanup_if_due()
@@ -2837,7 +2845,9 @@ async def send_message(
             session_id=session_id,
             message=response_message,
             tool_executions=[],
-            initial_llm_response=None
+            initial_llm_response=None,
+            transaction_id=message_transaction_id,
+            retrieval_trace=None,
         )
     
     try:
@@ -2856,7 +2866,9 @@ async def send_message(
                     session_id=session_id,
                     message=response_message,
                     tool_executions=[],
-                    initial_llm_response=None
+                    initial_llm_response=None,
+                    transaction_id=message_transaction_id,
+                    retrieval_trace=None,
                 )
 
         llm_client = LLMClientFactory.create(
@@ -3309,17 +3321,30 @@ async def send_message(
             retrieval_result = await _memory_service.enrich_for_turn(
                 user_message=message.content,
                 session_id=session_id,
+                request_id=message_transaction_id,
                 user_id=user_id or "",
             )
             session_manager.add_retrieval_trace(
                 session_id,
+                request_id=message_transaction_id,
                 query_hash=retrieval_result.query_hash,
                 collection_keys=list(retrieval_result.collection_keys),
                 result_count=len(retrieval_result.blocks),
                 degraded=retrieval_result.degraded,
                 degraded_reason=retrieval_result.degraded_reason,
                 latency_ms=retrieval_result.latency_ms,
+                message_preview=(message.content or "")[:120],
             )
+            retrieval_trace_payload = {
+                "request_id": message_transaction_id,
+                "query_hash": retrieval_result.query_hash,
+                "collection_keys": list(retrieval_result.collection_keys),
+                "result_count": len(retrieval_result.blocks),
+                "degraded": retrieval_result.degraded,
+                "degraded_reason": retrieval_result.degraded_reason,
+                "latency_ms": retrieval_result.latency_ms,
+                "message_preview": (message.content or "")[:120],
+            }
             if retrieval_result.degraded:
                 logger_internal.warning("Retrieval degraded: %s", retrieval_result.degraded_reason)
             elif retrieval_result.blocks:
@@ -4076,7 +4101,13 @@ async def send_message(
                     content=assistant_msg.get("content", "")
                 )
                 session_manager.add_message(session_id, final_response)
-                logger_internal.info("Conversation turn completed")
+                logger_internal.info(
+                    "Chat transaction completed: request_id=%s session=%s tool_executions=%s response_length=%s",
+                    message_transaction_id,
+                    session_id,
+                    len(tool_executions),
+                    len(final_response.content or ""),
+                )
                 logger_external.info("← 200 OK")
                 if _memory_service is not None:
                     _tool_names = [te["tool"] for te in tool_executions if "tool" in te]
@@ -4093,6 +4124,8 @@ async def send_message(
                     message=final_response,
                     tool_executions=tool_executions,
                     initial_llm_response=initial_llm_response,
+                    transaction_id=message_transaction_id,
+                    retrieval_trace=retrieval_trace_payload,
                     context_sources=retrieval_sources,
                 )
         logger_internal.warning(f"Max tool call turns ({max_turns}) reached")
@@ -4101,6 +4134,14 @@ async def send_message(
             content="I've reached the maximum number of tool calls. Please start a new conversation."
         )
         session_manager.add_message(session_id, fallback)
+        logger_internal.info(
+            "Chat transaction completed: request_id=%s session=%s tool_executions=%s response_length=%s fallback=%s",
+            message_transaction_id,
+            session_id,
+            len(tool_executions),
+            len(fallback.content or ""),
+            True,
+        )
         logger_external.info("← 200 OK")
         if _memory_service is not None:
             _tool_names = [te["tool"] for te in tool_executions if "tool" in te]
@@ -4117,11 +4158,18 @@ async def send_message(
             message=fallback,
             tool_executions=tool_executions,
             initial_llm_response=initial_llm_response,
+            transaction_id=message_transaction_id,
+            retrieval_trace=retrieval_trace_payload,
             context_sources=retrieval_sources,
         )
         
     except Exception as e:
-        logger_internal.error(f"Error processing message: {e}")
+        logger_internal.error(
+            "Chat transaction failed: request_id=%s session=%s reason=%s",
+            message_transaction_id,
+            session_id,
+            e,
+        )
         error_response = ChatMessage(
             role="assistant",
             content=f"Sorry, I encountered an error: {str(e)}"
@@ -4134,7 +4182,9 @@ async def send_message(
             message=error_response,
             tool_executions=[],
             context_sources=None,
-            initial_llm_response=None
+            initial_llm_response=None,
+            transaction_id=message_transaction_id,
+            retrieval_trace=retrieval_trace_payload,
         )
 
 

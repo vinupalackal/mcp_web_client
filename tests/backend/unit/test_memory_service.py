@@ -1,6 +1,7 @@
 """Unit tests for retrieval orchestration service (TC-MEM-*)."""
 
 import asyncio
+import logging
 
 import pytest
 
@@ -126,6 +127,39 @@ class TestMemoryService:
         assert embedding.calls == []
         assert store.search_calls == []
         assert persistence.provenance_calls == []
+
+    @pytest.mark.asyncio
+    async def test_enrich_for_turn_logs_transaction_metadata(self, caplog):
+        """TC-MEM-01b: Retrieval logging includes request, message, and result metadata."""
+        embedding = _FakeEmbeddingService(vectors=[[0.1, 0.2, 0.3]])
+        store = _FakeMilvusStore(
+            search_results={
+                "code_memory": [[{"entity": {"payload_ref": "chunk-1", "relative_path": "src/main.py", "summary": "main entry"}, "distance": 0.01}]],
+                "doc_memory": [[]],
+            }
+        )
+        persistence = _FakeMemoryPersistence()
+        service = MemoryService(
+            embedding_service=embedding,
+            milvus_store=store,
+            memory_persistence=persistence,
+            config=MemoryServiceConfig(enabled=True),
+        )
+
+        with caplog.at_level(logging.INFO, logger="mcp_client.internal"):
+            result = await service.enrich_for_turn(
+                user_message="find the main entry point",
+                session_id="sess-1",
+                request_id="chat-123",
+                user_id="user-1",
+            )
+
+        assert len(result.blocks) == 1
+        assert "Memory retrieval transaction started" in caplog.text
+        assert "chat-123" in caplog.text
+        assert "find the main entry point" in caplog.text
+        assert "Memory retrieval transaction completed" in caplog.text
+        assert "result_count=1" in caplog.text
 
     @pytest.mark.asyncio
     async def test_happy_path_embeds_searches_caps_and_records_provenance(self):

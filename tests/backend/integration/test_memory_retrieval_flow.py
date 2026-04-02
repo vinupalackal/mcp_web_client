@@ -103,9 +103,14 @@ class TestMemoryRetrievalFlow:
         )
 
         assert response.status_code == 200
-        assert response.json()["message"]["content"] == "Retrieved context was used."
+        payload = response.json()
+        assert payload["message"]["content"] == "Retrieved context was used."
+        assert payload["transaction_id"].startswith("chat-")
+        assert payload["retrieval_trace"]["request_id"] == payload["transaction_id"]
+        assert payload["retrieval_trace"]["result_count"] == 2
         traces = main_module.session_manager.get_retrieval_traces(session_id)
         assert len(traces) == 1
+        assert traces[0]["request_id"] == payload["transaction_id"]
         assert traces[0]["result_count"] == 2
         assert traces[0]["degraded"] is False
         assert traces[0]["query_hash"] == "hash1234"
@@ -140,7 +145,12 @@ class TestMemoryRetrievalFlow:
         )
 
         assert response.status_code == 200
+        payload = response.json()
+        assert payload["transaction_id"].startswith("chat-")
+        assert payload["retrieval_trace"]["request_id"] == payload["transaction_id"]
+        assert payload["retrieval_trace"]["result_count"] == 0
         traces = main_module.session_manager.get_retrieval_traces(session_id)
         assert len(traces) == 1
+        assert traces[0]["request_id"] == payload["transaction_id"]
         assert traces[0]["result_count"] == 0
         assert traces[0]["degraded"] is False

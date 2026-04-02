@@ -1,5 +1,9 @@
 """Unit tests for Milvus store abstraction (TR-MVS-*)."""
 
+import logging
+
+import pytest
+
 from backend.milvus_store import MilvusCollectionConfigError, MilvusStore
 
 
@@ -202,6 +206,59 @@ class TestMilvusStore:
         assert search_call["filter"] == 'repo_id == "repo1"'
         assert search_call["output_fields"] == ["id", "payload_ref"]
         assert search_call["anns_field"] == "embedding"
+
+    def test_upsert_logs_transaction_details(self, caplog):
+        """TR-MVS-05b: Upsert logs key Milvus transaction metadata for diagnostics."""
+        client = _FakeMilvusClient()
+        store = MilvusStore(
+            milvus_uri="http://milvus.local",
+            client=client,
+            client_factory=_FakeMilvusClientFactory,
+        )
+
+        with caplog.at_level(logging.INFO, logger="mcp_client.internal"):
+            store.upsert(
+                collection_key="doc_memory",
+                generation="v1",
+                dimension=3,
+                records=[
+                    {
+                        "id": "doc-1",
+                        "embedding": [0.1, 0.2, 0.3],
+                        "payload_ref": "payload://doc-1",
+                    }
+                ],
+            )
+
+        assert "Milvus upsert start" in caplog.text
+        assert "mcp_client_doc_memory_v1" in caplog.text
+        assert "payload://doc-1" in caplog.text
+        assert "Milvus upsert complete" in caplog.text
+
+    def test_search_logs_transaction_details(self, caplog):
+        """TR-MVS-05c: Search logs collection, filter, and hit counts for diagnostics."""
+        client = _FakeMilvusClient()
+        store = MilvusStore(
+            milvus_uri="http://milvus.local",
+            client=client,
+            client_factory=_FakeMilvusClientFactory,
+        )
+        store.ensure_collection(collection_key="code_memory", generation="v1", dimension=3)
+
+        with caplog.at_level(logging.INFO, logger="mcp_client.internal"):
+            store.search(
+                collection_key="code_memory",
+                generation="v1",
+                query_vectors=[[0.1, 0.2, 0.3]],
+                filter_expression='repo_id == "repo1"',
+                output_fields=["id", "payload_ref"],
+                limit=4,
+            )
+
+        assert "Milvus search start" in caplog.text
+        assert 'repo_id == "repo1"' in caplog.text
+        assert "Milvus search complete" in caplog.text
+        assert "hit_count=1" in caplog.text
 
     def test_delete_by_ids_and_filter_forward_to_client(self):
         """TR-MVS-06: Delete helpers cover both id-based and filter-based removal."""

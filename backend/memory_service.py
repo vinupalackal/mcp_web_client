@@ -120,6 +120,18 @@ class MemoryService:
         query_text = self._build_query(user_message)
         query_hash = self._query_hash(query_text)
         effective_repo_id = repo_id if repo_id is not None else self.config.repo_id
+        effective_request_id = request_id or self._request_id()
+        collections_to_search = tuple(self._collections_to_search(user_id))
+
+        logger_internal.info(
+            "Memory retrieval transaction started: request_id=%s session=%s user=%s collections=%s query_hash=%s message=%s",
+            effective_request_id,
+            session_id,
+            user_id or "<anonymous>",
+            ",".join(collections_to_search),
+            query_hash,
+            self._preview_text(query_text),
+        )
 
         try:
             blocks = await asyncio.wait_for(
@@ -133,7 +145,7 @@ class MemoryService:
             )
             latency_ms = (time.perf_counter() - started) * 1000.0
             self._record_provenance(
-                request_id=request_id or self._request_id(),
+                request_id=effective_request_id,
                 session_id=session_id,
                 repo_id=effective_repo_id,
                 query_text=query_text,
@@ -141,37 +153,59 @@ class MemoryService:
                 blocks=blocks,
                 latency_ms=latency_ms,
             )
+            logger_internal.info(
+                "Memory retrieval transaction completed: request_id=%s session=%s result_count=%s latency_ms=%.1f degraded=%s",
+                effective_request_id,
+                session_id,
+                len(blocks),
+                latency_ms,
+                False,
+            )
             return RetrievalResult(
                 blocks=blocks,
                 degraded=False,
                 degraded_reason="",
                 latency_ms=latency_ms,
                 query_hash=query_hash,
-                collection_keys=self.config.collection_keys,
+                collection_keys=collections_to_search,
             )
         except asyncio.TimeoutError:
             latency_ms = (time.perf_counter() - started) * 1000.0
             reason = (
                 f"Retrieval timeout after {max(self.config.retrieval_timeout_s, 0.001):.3f}s"
             )
-            logger_internal.warning("Memory retrieval degraded: %s", reason)
+            logger_internal.warning(
+                "Memory retrieval transaction degraded: request_id=%s session=%s query_hash=%s latency_ms=%.1f reason=%s",
+                effective_request_id,
+                session_id,
+                query_hash,
+                latency_ms,
+                reason,
+            )
             return RetrievalResult(
                 degraded=True,
                 degraded_reason=reason,
                 latency_ms=latency_ms,
                 query_hash=query_hash,
-                collection_keys=self.config.collection_keys,
+                collection_keys=collections_to_search,
             )
         except Exception as error:
             latency_ms = (time.perf_counter() - started) * 1000.0
             reason = str(error)
-            logger_internal.warning("Memory retrieval degraded: %s", reason)
+            logger_internal.warning(
+                "Memory retrieval transaction degraded: request_id=%s session=%s query_hash=%s latency_ms=%.1f reason=%s",
+                effective_request_id,
+                session_id,
+                query_hash,
+                latency_ms,
+                reason,
+            )
             return RetrievalResult(
                 degraded=True,
                 degraded_reason=reason,
                 latency_ms=latency_ms,
                 query_hash=query_hash,
-                collection_keys=self.config.collection_keys,
+                collection_keys=collections_to_search,
             )
 
     async def record_turn(
@@ -202,15 +236,26 @@ class MemoryService:
             )
             return
 
+        turn_id = self._request_id().replace("retrieval-", "turn-")
+
         try:
             combined_text = f"{user_message} {assistant_response[:512]}"
             embedding_result = await self.embedding_service.embed_texts([combined_text])
             vector = embedding_result.vectors[0]
 
-            turn_id = self._request_id().replace("retrieval-", "turn-")
             import time as _time
             now_ts = int(_time.time())
             expires_ts = now_ts + self.config.conversation_retention_days * 86400
+
+            logger_internal.info(
+                "Conversation memory transaction started: turn_id=%s session=%s user=%s turn_number=%s tool_count=%s message=%s",
+                turn_id,
+                session_id,
+                user_id,
+                turn_number,
+                len(tool_names or []),
+                self._preview_text(user_message),
+            )
 
             record = {
                 "id": turn_id,
@@ -249,14 +294,21 @@ class MemoryService:
                 ),
             )
 
-            logger_internal.debug(
-                "Conversation turn recorded: turn_id=%s session=%s user=%s",
+            logger_internal.info(
+                "Conversation memory transaction completed: turn_id=%s session=%s user=%s expires_at=%s",
                 turn_id,
                 session_id,
                 user_id,
+                expires_ts,
             )
         except Exception as error:
-            logger_internal.warning("Failed to record conversation turn: %s", error)
+            logger_internal.warning(
+                "Conversation memory transaction failed: turn_id=%s session=%s user=%s reason=%s",
+                turn_id,
+                session_id,
+                user_id,
+                error,
+            )
 
     # ------------------------------------------------------------------ #
     # Phase 3: Safe tool cache                                             #
@@ -532,13 +584,7 @@ class MemoryService:
         # Determine which collection keys to search:
         # - Always search code/doc memory collections from config.collection_keys
         # - Optionally search conversation_memory if enabled AND user_id is known
-        collections_to_search = list(self.config.collection_keys)
-        if (
-            self.config.enable_conversation_memory
-            and user_id
-            and "conversation_memory" not in collections_to_search
-        ):
-            collections_to_search.append("conversation_memory")
+        collections_to_search = self._collections_to_search(user_id)
 
         for collection_key in collections_to_search:
             if collection_key == "conversation_memory":
@@ -598,6 +644,16 @@ class MemoryService:
 
     def _build_query(self, text: str) -> str:
         return " ".join((text or "").split())[:512]
+
+    def _collections_to_search(self, user_id: str) -> list[str]:
+        collections_to_search = list(self.config.collection_keys)
+        if (
+            self.config.enable_conversation_memory
+            and user_id
+            and "conversation_memory" not in collections_to_search
+        ):
+            collections_to_search.append("conversation_memory")
+        return collections_to_search
 
     def _build_filter_expression(self, repo_id: str) -> str:
         if not repo_id:
@@ -711,6 +767,12 @@ class MemoryService:
 
     def _request_id(self) -> str:
         return f"retrieval-{uuid.uuid4()}"
+
+    def _preview_text(self, value: Any, *, max_length: int = 120) -> str:
+        text = str(value or "")
+        if len(text) <= max_length:
+            return text
+        return f"{text[: max_length - 1]}…"
 
     def _build_params_hash(self, tool_name: str, arguments: dict) -> str:
         """Deterministic SHA-256 prefix over (tool_name, sorted-JSON arguments).
