@@ -200,7 +200,8 @@
 [data-theme="teal"] .welcome-message .message-content,
 [data-theme="teal"] .tool-execution-card,
 [data-theme="teal"] .tool-exec-details,
-[data-theme="teal"] .assistant-meta-details {
+[data-theme="teal"] .assistant-meta-details,
+[data-theme="teal"] .retrieval-sources-details {
     background: linear-gradient(180deg, rgba(22, 56, 64, 0.98) 0%, rgba(17, 47, 54, 0.98) 100%);
     border-color: rgba(30, 80, 96, 0.95);
 }
@@ -555,6 +556,13 @@
 [data-theme="dark"] .assistant-meta-body {
     border-top-color: rgba(51,65,85,0.7);
     color: var(--text-secondary);
+}
+[data-theme="dark"] .retrieval-sources-details {
+    background: linear-gradient(180deg, rgba(15,30,60,0.92) 0%, rgba(10,22,50,0.95) 100%);
+    border-color: rgba(37,55,100,0.95);
+}
+[data-theme="dark"] .retrieval-sources-body {
+    border-top-color: rgba(37,55,100,0.7);
 }
 [data-theme="dark"] .tool-exec-details.error {
     background: linear-gradient(180deg, rgba(127,29,29,0.2) 0%, rgba(153,27,27,0.15) 100%);
@@ -1202,6 +1210,87 @@ body::selection {
     border-top: 1px solid rgba(219,227,239,0.7);
     color: var(--text-secondary);
     line-height: 1.6;
+}
+
+/* Retrieval sources indicator — lightweight collapsed meta block */
+.retrieval-sources-details {
+    margin-top: 0.5rem;
+    background: linear-gradient(180deg, rgba(239,246,255,0.97) 0%, rgba(219,234,254,0.5) 100%);
+    border: 1px solid rgba(147,197,253,0.7);
+    border-radius: 0.9rem;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+    font-size: 0.82rem;
+}
+
+.retrieval-sources-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.9rem;
+    cursor: pointer;
+    list-style: none;
+    font-weight: 600;
+    color: var(--text-secondary);
+    user-select: none;
+}
+
+.retrieval-sources-summary::-webkit-details-marker { display: none; }
+
+.retrieval-sources-summary::before {
+    content: '▶';
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+}
+
+.retrieval-sources-details[open] > .retrieval-sources-summary::before { transform: rotate(90deg); }
+
+.retrieval-sources-icon {
+    font-size: 0.88rem;
+}
+
+.retrieval-sources-title {
+    flex: 1;
+    font-size: 0.8rem;
+}
+
+.retrieval-sources-body {
+    padding: 0.25rem 0.9rem 0.65rem;
+    border-top: 1px solid rgba(147,197,253,0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}
+
+.retrieval-source-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+
+.retrieval-source-collection {
+    flex-shrink: 0;
+    padding: 0.1rem 0.4rem;
+    background: rgba(59,130,246,0.12);
+    color: #3b82f6;
+    border-radius: 0.3rem;
+    font-weight: 700;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.retrieval-source-path {
+    font-family: monospace;
+    font-size: 0.77rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .tool-exec-details {

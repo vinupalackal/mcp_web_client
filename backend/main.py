@@ -56,6 +56,8 @@ from backend.models import (
     UserSettingsPatch,
     AdminUserPatch,
     UserListResponse,
+    MemoryMaintenanceRequest,
+    MemoryMaintenanceResponse,
 )
 
 # SSO imports (v0.4.0-sso-user-settings)
@@ -450,6 +452,7 @@ session_manager = SessionManager()
 servers_storage: dict[str, ServerConfig] = {}
 llm_config_storage: Optional[LLMConfig] = None
 enterprise_token_cache: dict[str, object] = {}
+_memory_service: Optional[Any] = None
 # Tools now managed by mcp_manager
 
 # Persistent storage directory (credentials live here, not in the browser)
@@ -615,7 +618,7 @@ def _redacted_token_request_curl(token_request: EnterpriseTokenRequest) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events"""
-    global llm_config_storage
+    global llm_config_storage, _memory_service
     logger_internal.info("🚀 MCP Client Web starting up")
     logger_internal.info(f"Environment: MCP_ALLOW_HTTP_INSECURE={os.getenv('MCP_ALLOW_HTTP_INSECURE', 'false')}")
     logger_internal.info(f"Data directory: {MCP_DATA_DIR.resolve()}")
@@ -642,6 +645,55 @@ async def lifespan(app: FastAPI):
     loaded_servers = _load_servers_from_disk()
     if loaded_servers:
         servers_storage.update(loaded_servers)
+
+    _memory_service = None
+    if _get_bool_env("MEMORY_ENABLED", False):
+        try:
+            if llm_config_storage is None:
+                logger_internal.warning(
+                    "Memory subsystem enabled but no LLM config is loaded; skipping memory initialisation"
+                )
+            else:
+                from backend.embedding_service import EmbeddingService
+                from backend.memory_persistence import MemoryPersistence
+                from backend.memory_service import MemoryService, MemoryServiceConfig
+                from backend.milvus_store import MilvusStore
+
+                _memory_service = MemoryService(
+                    embedding_service=EmbeddingService(
+                        llm_config_storage,
+                        enterprise_access_token=_get_cached_enterprise_token(),
+                    ),
+                    milvus_store=MilvusStore(milvus_uri=os.getenv("MEMORY_MILVUS_URI", "")),
+                    memory_persistence=MemoryPersistence(),
+                    config=MemoryServiceConfig(
+                        enabled=True,
+                        repo_id=os.getenv("MEMORY_REPO_ID", ""),
+                        collection_generation=os.getenv("MEMORY_COLLECTION_GENERATION", "v1"),
+                        max_results=_get_int_env("MEMORY_MAX_RESULTS", 5),
+                        retrieval_timeout_s=_get_float_env("MEMORY_RETRIEVAL_TIMEOUT_S", 5.0),
+                        degraded_mode=_get_bool_env("MEMORY_DEGRADED_MODE", True),
+                        enable_conversation_memory=_get_bool_env("MEMORY_CONVERSATION_ENABLED", False),
+                        conversation_retention_days=_get_int_env("MEMORY_CONVERSATION_RETENTION_DAYS", 7),
+                        enable_tool_cache=_get_bool_env("MEMORY_TOOL_CACHE_ENABLED", False),
+                        tool_cache_ttl_s=_get_float_env("MEMORY_TOOL_CACHE_TTL_S", 3600.0),
+                        tool_cache_allowlist=tuple(
+                            t.strip()
+                            for t in os.getenv("MEMORY_TOOL_CACHE_ALLOWLIST", "").split(",")
+                            if t.strip()
+                        ),
+                        enable_expiry_cleanup=_get_bool_env("MEMORY_EXPIRY_CLEANUP_ENABLED", True),
+                        expiry_cleanup_interval_s=_get_float_env("MEMORY_EXPIRY_CLEANUP_INTERVAL_S", 300.0),
+                    ),
+                )
+                if hasattr(_memory_service, "run_expiry_cleanup_if_due"):
+                    _memory_service.run_expiry_cleanup_if_due(force=True)
+                logger_internal.info("Memory subsystem initialized")
+        except Exception as exc:
+            logger_internal.warning("Memory subsystem initialization failed: %s", exc)
+            _memory_service = None
+    else:
+        logger_internal.info("Memory subsystem disabled")
 
     yield
     logger_internal.info("👋 MCP Client Web shutting down")
@@ -987,6 +1039,35 @@ def _resolve_int_override(value: Optional[int], env_name: str, default: int) -> 
     if value is not None:
         return int(value)
     return _get_int_env(env_name, default)
+
+
+def _format_retrieval_context(blocks: List[Any]) -> str:
+    """Render retrieval blocks into a compact system-context section."""
+    lines = ["## Retrieved context"]
+    for block in blocks:
+        source_path = getattr(block, "source_path", "") or "unknown"
+        collection = getattr(block, "collection", "memory") or "memory"
+        snippet = getattr(block, "snippet", "") or ""
+        lines.append(f"### {source_path} ({collection})")
+        lines.append(snippet)
+    return "\n\n".join(lines)
+
+
+def _inject_context_section(messages: List[dict], context_section: Optional[str]) -> List[dict]:
+    """Append context to a copied provider message list without mutating session history."""
+    provider_messages = list(messages)
+    if not context_section:
+        return provider_messages
+
+    if provider_messages and provider_messages[0].get("role") == "system":
+        original_content = provider_messages[0].get("content", "")
+        provider_messages[0] = {
+            **provider_messages[0],
+            "content": f"{original_content}\n\n{context_section}" if original_content else context_section,
+        }
+    else:
+        provider_messages.insert(0, {"role": "system", "content": context_section})
+    return provider_messages
 
 
 def _should_consult_llm_mode_classifier(
@@ -1907,6 +1988,38 @@ async def admin_reset_user_settings(
     return DeleteResponse(success=True, message=f"Settings reset for user {user_id}")
 
 
+@app.post(
+    "/api/admin/memory/maintenance",
+    response_model=MemoryMaintenanceResponse,
+    tags=["Admin"],
+    summary="Run memory maintenance (admin only)",
+    responses={
+        200: {"description": "Manual memory maintenance completed"},
+        403: {"description": "Admin role required"},
+        503: {"description": "Memory subsystem not available"},
+    },
+)
+async def admin_run_memory_maintenance(
+    request: Request,
+    payload: MemoryMaintenanceRequest = Body(...),
+) -> MemoryMaintenanceResponse:
+    """Run a manual expiry-cleanup pass for the optional memory subsystem."""
+    _require_admin(request)
+    if _memory_service is None or not hasattr(_memory_service, "run_expiry_cleanup_if_due"):
+        raise HTTPException(status_code=503, detail="Memory subsystem is not available")
+
+    summary = _memory_service.run_expiry_cleanup_if_due(
+        force=payload.force,
+        cleanup_expired_conversation_memory=payload.cleanup_expired_conversation_memory,
+        cleanup_expired_tool_cache=payload.cleanup_expired_tool_cache,
+    )
+    return MemoryMaintenanceResponse(
+        success=True,
+        message="Memory maintenance completed",
+        summary=summary,
+    )
+
+
 # ============================================================================
 # Health Check
 # ============================================================================
@@ -1920,10 +2033,29 @@ async def admin_reset_user_settings(
 )
 async def health_check() -> HealthResponse:
     """Get API health status and version information"""
+    memory_status = {"enabled": False}
+    if _memory_service is not None:
+        try:
+            memory_status = await _memory_service.health_status()
+        except Exception as exc:
+            logger_internal.warning("Memory health check failed: %s", exc)
+            memory_status = {
+                "enabled": True,
+                "healthy": False,
+                "degraded": True,
+                "status": "degraded",
+                "reason": str(exc),
+                "warnings": ["Memory health probe failed"],
+                "milvus_reachable": False,
+                "embedding_available": None,
+                "active_collections": [],
+            }
+
     return HealthResponse(
         status="healthy",
         version="0.2.0-jsonrpc",
-        timestamp=datetime.utcnow()
+        timestamp=datetime.utcnow(),
+        memory=memory_status,
     )
 
 
@@ -2552,6 +2684,9 @@ async def send_message(
 
     user_id = _user_id_or_none(request)
 
+    if _memory_service is not None and hasattr(_memory_service, "run_expiry_cleanup_if_due"):
+        _memory_service.run_expiry_cleanup_if_due()
+
     # Ownership check when SSO is active
     if user_id and _sso_enabled():
         sess = session_manager.get_session(session_id)
@@ -2790,6 +2925,8 @@ async def send_message(
         issue_classification: Optional[str] = None
         latest_assistant_tool_guidance: Optional[str] = None
         layer2_context_messages: List[dict] = []
+        retrieval_context_section: Optional[str] = None
+        retrieval_sources: Optional[List[Dict[str, Any]]] = None
         has_real_tools = any(tool_name != "mcp_repeated_exec" for tool_name in tool_names)
 
         def build_runtime_system_message() -> dict:
@@ -2852,7 +2989,7 @@ async def send_message(
                 provider_messages[0] = runtime_system_message
             else:
                 provider_messages.insert(0, runtime_system_message)
-            return provider_messages
+            return _inject_context_section(provider_messages, retrieval_context_section)
 
         def build_classification_messages() -> List[dict]:
             provider_messages = session_manager.get_messages_for_llm(
@@ -3048,6 +3185,40 @@ async def send_message(
 
         if layer2_context_messages:
             messages_for_llm.extend(layer2_context_messages)
+
+        if _memory_service is not None:
+            retrieval_result = await _memory_service.enrich_for_turn(
+                user_message=message.content,
+                session_id=session_id,
+                user_id=user_id or "",
+            )
+            session_manager.add_retrieval_trace(
+                session_id,
+                query_hash=retrieval_result.query_hash,
+                collection_keys=list(retrieval_result.collection_keys),
+                result_count=len(retrieval_result.blocks),
+                degraded=retrieval_result.degraded,
+                degraded_reason=retrieval_result.degraded_reason,
+                latency_ms=retrieval_result.latency_ms,
+            )
+            if retrieval_result.degraded:
+                logger_internal.warning("Retrieval degraded: %s", retrieval_result.degraded_reason)
+            elif retrieval_result.blocks:
+                retrieval_context_section = _format_retrieval_context(retrieval_result.blocks)
+                retrieval_sources = [
+                    {
+                        "source_path": block.source_path,
+                        "collection": block.collection,
+                        "score": round(block.score, 4),
+                    }
+                    for block in retrieval_result.blocks
+                ]
+                messages_for_llm = _inject_context_section(messages_for_llm, retrieval_context_section)
+                logger_internal.debug(
+                    "Retrieval context injected: %s block(s) in %.1f ms",
+                    len(retrieval_result.blocks),
+                    retrieval_result.latency_ms,
+                )
 
         # ------------------------------------------------------------------ #
         # Split-phase pre-collection                                           #
@@ -3339,6 +3510,21 @@ async def send_message(
                             )
                     import time as _time_mod
                     _start = _time_mod.time()
+                    # ---- Phase 3: safe tool cache lookup ---- #
+                    if _memory_service is not None:
+                        _cache_result = _memory_service.lookup_tool_cache(
+                            tool_name=_name,
+                            arguments=_args if isinstance(_args, dict) else {},
+                            user_id=user_id or "",
+                        )
+                        if _cache_result.hit and _cache_result.approved:
+                            _dur = int((_time_mod.time() - _start) * 1000)
+                            logger_internal.info(
+                                "Tool cache HIT: %s (cache_id=%s)", _name, _cache_result.cache_id
+                            )
+                            return {**pc, "result_content": _cache_result.result_text,
+                                    "tool_result": {"content": _cache_result.result_text},
+                                    "success": True, "duration_ms": _dur, "cache_hit": True}
                     try:
                         _result = await mcp_manager.execute_tool(
                             server=_server,
@@ -3352,6 +3538,14 @@ async def send_message(
                         if len(_res_str) > _max_chars:
                             _res_str = _res_str[:_max_chars] + "... [truncated]"
                         _success = not bool(_result.get("isError")) if isinstance(_result, dict) else True
+                        # ---- Phase 3: store in cache if allowlisted and successful ---- #
+                        if _success and _memory_service is not None:
+                            _memory_service.record_tool_cache(
+                                tool_name=_name,
+                                arguments=_args if isinstance(_args, dict) else {},
+                                result_text=_res_str,
+                                user_id=user_id or "",
+                            )
                         return {**pc, "result_content": _res_str, "tool_result": _result,
                                 "success": _success, "duration_ms": _dur}
                     except Exception as _exc:
@@ -3765,15 +3959,23 @@ async def send_message(
                 session_manager.add_message(session_id, final_response)
                 logger_internal.info("Conversation turn completed")
                 logger_external.info("← 200 OK")
-                
+                if _memory_service is not None:
+                    _tool_names = [te["tool"] for te in tool_executions if "tool" in te]
+                    await _memory_service.record_turn(
+                        user_message=message.content,
+                        assistant_response=final_response.content or "",
+                        session_id=session_id,
+                        user_id=user_id or "",
+                        tool_names=_tool_names,
+                        turn_number=existing_message_count,
+                    )
                 return ChatResponse(
                     session_id=session_id,
                     message=final_response,
                     tool_executions=tool_executions,
-                    initial_llm_response=initial_llm_response
+                    initial_llm_response=initial_llm_response,
+                    context_sources=retrieval_sources,
                 )
-        
-        # Max turns reached
         logger_internal.warning(f"Max tool call turns ({max_turns}) reached")
         fallback = ChatMessage(
             role="assistant",
@@ -3781,12 +3983,22 @@ async def send_message(
         )
         session_manager.add_message(session_id, fallback)
         logger_external.info("← 200 OK")
-        
+        if _memory_service is not None:
+            _tool_names = [te["tool"] for te in tool_executions if "tool" in te]
+            await _memory_service.record_turn(
+                user_message=message.content,
+                assistant_response=fallback.content or "",
+                session_id=session_id,
+                user_id=user_id or "",
+                tool_names=_tool_names,
+                turn_number=existing_message_count,
+            )
         return ChatResponse(
             session_id=session_id,
             message=fallback,
             tool_executions=tool_executions,
-            initial_llm_response=initial_llm_response
+            initial_llm_response=initial_llm_response,
+            context_sources=retrieval_sources,
         )
         
     except Exception as e:
@@ -3802,6 +4014,7 @@ async def send_message(
             session_id=session_id,
             message=error_response,
             tool_executions=[],
+            context_sources=None,
             initial_llm_response=None
         )
 

@@ -918,7 +918,15 @@ class ChatResponse(BaseModel):
         default=None,
         description="Initial assistant response before any tool execution, if present"
     )
-    
+    context_sources: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Retrieved context sources used to augment this response when the optional "
+            "memory/retrieval feature is enabled. Each entry contains source_path, "
+            "collection ('code_memory' or 'doc_memory'), and similarity score."
+        )
+    )
+
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
@@ -935,7 +943,8 @@ class ChatResponse(BaseModel):
                             "duration_ms": 1234,
                             "status": "success"
                         }
-                    ]
+                    ],
+                    "context_sources": None
                 }
             ]
         }
@@ -1138,6 +1147,10 @@ class HealthResponse(BaseModel):
         default_factory=datetime.utcnow,
         description="Current server time"
     )
+    memory: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional memory subsystem status",
+    )
     
     model_config = ConfigDict(
         json_schema_extra={
@@ -1145,8 +1158,461 @@ class HealthResponse(BaseModel):
                 {
                     "status": "healthy",
                     "version": "0.2.0-jsonrpc",
-                    "timestamp": "2026-03-07T12:00:00Z"
+                    "timestamp": "2026-03-07T12:00:00Z",
+                    "memory": {"enabled": False}
                 }
             ]
+        }
+    )
+
+
+class MemoryFeatureFlags(BaseModel):
+    """Effective feature toggles for the optional memory subsystem."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Master enable flag for the memory subsystem",
+    )
+    retrieval_enabled: bool = Field(
+        default=False,
+        description="Enable code and document retrieval enrichment",
+    )
+    conversation_enabled: bool = Field(
+        default=False,
+        description="Enable long-term conversation memory",
+    )
+    tool_cache_enabled: bool = Field(
+        default=False,
+        description="Enable allowlisted tool cache behavior",
+    )
+    ingestion_enabled: bool = Field(
+        default=False,
+        description="Enable ingestion jobs",
+    )
+    degraded_mode: bool = Field(
+        default=True,
+        description="Continue serving without retrieval when the memory backend fails",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "enabled": True,
+                "retrieval_enabled": True,
+                "conversation_enabled": False,
+                "tool_cache_enabled": False,
+                "ingestion_enabled": False,
+                "degraded_mode": True,
+            }
+        }
+    )
+
+
+class MemoryConfigSummary(BaseModel):
+    """Safe, structured summary of effective memory configuration."""
+
+    milvus_uri_configured: bool = Field(
+        default=False,
+        description="Whether a Milvus URI is configured without exposing its full value",
+    )
+    collection_prefix: str = Field(
+        default="mcp_client",
+        description="Prefix used for versioned collection names",
+    )
+    embedding_provider: Optional[str] = Field(
+        default=None,
+        description="Embedding backend provider identifier",
+    )
+    embedding_model: Optional[str] = Field(
+        default=None,
+        description="Embedding model identifier",
+    )
+    max_code_results: int = Field(
+        default=5,
+        ge=0,
+        description="Maximum code chunks injected per turn",
+    )
+    max_doc_results: int = Field(
+        default=5,
+        ge=0,
+        description="Maximum documentation chunks injected per turn",
+    )
+    max_conversation_results: int = Field(
+        default=3,
+        ge=0,
+        description="Maximum long-term conversation memories recalled per turn",
+    )
+    code_threshold: float = Field(
+        default=0.72,
+        ge=0.0,
+        le=1.0,
+        description="Similarity threshold for code retrieval",
+    )
+    doc_threshold: float = Field(
+        default=0.68,
+        ge=0.0,
+        le=1.0,
+        description="Similarity threshold for documentation retrieval",
+    )
+    conversation_threshold: float = Field(
+        default=0.82,
+        ge=0.0,
+        le=1.0,
+        description="Similarity threshold for conversation memory retrieval",
+    )
+    retention_days: int = Field(
+        default=30,
+        ge=1,
+        description="Default retention period for long-term memory when applicable",
+    )
+    repo_roots: List[str] = Field(
+        default_factory=list,
+        description="Configured repository roots for ingestion",
+    )
+    doc_roots: List[str] = Field(
+        default_factory=list,
+        description="Configured documentation roots for ingestion",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "milvus_uri_configured": True,
+                "collection_prefix": "mcp_client",
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "max_code_results": 5,
+                "max_doc_results": 5,
+                "max_conversation_results": 3,
+                "code_threshold": 0.72,
+                "doc_threshold": 0.68,
+                "conversation_threshold": 0.82,
+                "retention_days": 30,
+                "repo_roots": ["/workspace/src"],
+                "doc_roots": ["/workspace/docs"],
+            }
+        }
+    )
+
+
+class MemoryStatus(BaseModel):
+    """Current status of the optional memory subsystem."""
+
+    status: Literal["disabled", "healthy", "degraded"] = Field(
+        ...,
+        description="Memory subsystem status",
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Short explanation for the current status",
+    )
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="Non-fatal warnings related to subsystem readiness",
+    )
+    milvus_reachable: Optional[bool] = Field(
+        default=None,
+        description="Whether Milvus is reachable when memory is enabled",
+    )
+    embedding_available: Optional[bool] = Field(
+        default=None,
+        description="Whether the configured embedding provider is available",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "status": "disabled",
+                    "reason": "Memory is disabled by configuration",
+                    "warnings": [],
+                    "milvus_reachable": None,
+                    "embedding_available": None,
+                },
+                {
+                    "status": "degraded",
+                    "reason": "Milvus is unreachable; serving without retrieval",
+                    "warnings": ["MCP_MEMORY_DEGRADED_MODE is active"],
+                    "milvus_reachable": False,
+                    "embedding_available": True,
+                }
+            ]
+        }
+    )
+
+
+class MemoryCollectionStatus(BaseModel):
+    """Summary of a known memory collection generation."""
+
+    collection_key: str = Field(
+        ...,
+        description="Logical collection key, such as code_memory or doc_memory",
+    )
+    collection_name: str = Field(
+        ...,
+        description="Concrete versioned collection name",
+    )
+    generation: str = Field(
+        ...,
+        description="Generation or version marker for the collection",
+    )
+    embedding_provider: Optional[str] = Field(
+        default=None,
+        description="Embedding backend provider for this collection generation",
+    )
+    embedding_model: Optional[str] = Field(
+        default=None,
+        description="Embedding model used by this collection generation",
+    )
+    embedding_dimension: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Embedding vector dimension for this collection generation",
+    )
+    index_version: Optional[str] = Field(
+        default=None,
+        description="Index or schema version label for this collection generation",
+    )
+    is_active: bool = Field(
+        default=False,
+        description="Whether this generation is the active collection version",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "collection_key": "code_memory",
+                "collection_name": "mcp_client_code_memory_v1_20260330",
+                "generation": "20260330",
+                "embedding_provider": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_dimension": 1536,
+                "index_version": "hnsw-v1",
+                "is_active": True,
+            }
+        }
+    )
+
+
+class MemoryIngestionJobStatus(BaseModel):
+    """Structured ingestion job diagnostics summary."""
+
+    job_id: str = Field(
+        ...,
+        description="Unique ingestion job identifier",
+    )
+    job_type: str = Field(
+        ...,
+        description="Ingestion job type",
+    )
+    status: str = Field(
+        ...,
+        description="Current ingestion job status",
+    )
+    collection_key: Optional[str] = Field(
+        default=None,
+        description="Logical collection key targeted by the job",
+    )
+    repo_id: Optional[str] = Field(
+        default=None,
+        description="Logical repository or workspace identifier",
+    )
+    source_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of sources considered by the job",
+    )
+    chunk_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of chunks produced by the job",
+    )
+    error_count: int = Field(
+        default=0,
+        ge=0,
+        description="Number of errors recorded by the job",
+    )
+    error_summary: Optional[str] = Field(
+        default=None,
+        description="Short summary of ingestion failures, if any",
+    )
+    started_at: Optional[datetime] = Field(
+        default=None,
+        description="Job start timestamp",
+    )
+    finished_at: Optional[datetime] = Field(
+        default=None,
+        description="Job finish timestamp",
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        description="Most recent job update timestamp",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "job_id": "550e8400-e29b-41d4-a716-446655440099",
+                "job_type": "code_ingestion",
+                "status": "completed",
+                "collection_key": "code_memory",
+                "repo_id": "workspace-main",
+                "source_count": 12,
+                "chunk_count": 48,
+                "error_count": 0,
+                "error_summary": None,
+                "started_at": "2026-03-30T09:00:00Z",
+                "finished_at": "2026-03-30T09:01:12Z",
+                "updated_at": "2026-03-30T09:01:12Z",
+            }
+        }
+    )
+
+
+class MemoryDiagnosticsResponse(BaseModel):
+    """Aggregate diagnostics payload for future memory admin endpoints."""
+
+    feature_flags: MemoryFeatureFlags = Field(
+        ...,
+        description="Effective memory feature toggles",
+    )
+    config: MemoryConfigSummary = Field(
+        ...,
+        description="Safe summary of effective memory configuration",
+    )
+    status: MemoryStatus = Field(
+        ...,
+        description="Current memory subsystem health status",
+    )
+    collections: List[MemoryCollectionStatus] = Field(
+        default_factory=list,
+        description="Known memory collection generations",
+    )
+    ingestion_jobs: List[MemoryIngestionJobStatus] = Field(
+        default_factory=list,
+        description="Recent or active ingestion job summaries",
+    )
+
+
+class MemoryMaintenanceRequest(BaseModel):
+    """Manual maintenance request for the optional memory subsystem."""
+
+    force: bool = Field(
+        default=True,
+        description="Run cleanup immediately even if the normal cleanup interval has not elapsed",
+    )
+    cleanup_expired_conversation_memory: bool = Field(
+        default=True,
+        description="Delete expired conversation-memory sidecar rows and vector rows",
+    )
+    cleanup_expired_tool_cache: bool = Field(
+        default=True,
+        description="Delete expired tool-cache sidecar rows and vector rows",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "force": True,
+                "cleanup_expired_conversation_memory": True,
+                "cleanup_expired_tool_cache": True,
+            }
+        }
+    )
+
+
+class MemoryMaintenanceResponse(BaseModel):
+    """Summary returned after a manual memory maintenance run."""
+
+    success: bool = Field(
+        ...,
+        description="Whether the maintenance operation completed without endpoint-level errors",
+    )
+    message: str = Field(
+        ...,
+        description="Short human-readable summary",
+    )
+    summary: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Detailed cleanup summary from the memory subsystem",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "message": "Memory maintenance completed",
+                "summary": {
+                    "ran": True,
+                    "conversation_deleted": 2,
+                    "tool_cache_deleted": 4,
+                    "cleaned_at": "2026-04-02T10:15:00+00:00",
+                },
+            }
+        }
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "feature_flags": {
+                    "enabled": True,
+                    "retrieval_enabled": True,
+                    "conversation_enabled": False,
+                    "tool_cache_enabled": False,
+                    "ingestion_enabled": True,
+                    "degraded_mode": True,
+                },
+                "config": {
+                    "milvus_uri_configured": True,
+                    "collection_prefix": "mcp_client",
+                    "embedding_provider": "openai",
+                    "embedding_model": "text-embedding-3-small",
+                    "max_code_results": 5,
+                    "max_doc_results": 5,
+                    "max_conversation_results": 3,
+                    "code_threshold": 0.72,
+                    "doc_threshold": 0.68,
+                    "conversation_threshold": 0.82,
+                    "retention_days": 30,
+                    "repo_roots": ["/workspace/src"],
+                    "doc_roots": ["/workspace/docs"],
+                },
+                "status": {
+                    "status": "healthy",
+                    "reason": None,
+                    "warnings": [],
+                    "milvus_reachable": True,
+                    "embedding_available": True,
+                },
+                "collections": [
+                    {
+                        "collection_key": "code_memory",
+                        "collection_name": "mcp_client_code_memory_v1_20260330",
+                        "generation": "20260330",
+                        "embedding_provider": "openai",
+                        "embedding_model": "text-embedding-3-small",
+                        "embedding_dimension": 1536,
+                        "index_version": "hnsw-v1",
+                        "is_active": True,
+                    }
+                ],
+                "ingestion_jobs": [
+                    {
+                        "job_id": "550e8400-e29b-41d4-a716-446655440099",
+                        "job_type": "code_ingestion",
+                        "status": "completed",
+                        "collection_key": "code_memory",
+                        "repo_id": "workspace-main",
+                        "source_count": 12,
+                        "chunk_count": 48,
+                        "error_count": 0,
+                        "error_summary": None,
+                        "started_at": "2026-03-30T09:00:00Z",
+                        "finished_at": "2026-03-30T09:01:12Z",
+                        "updated_at": "2026-03-30T09:01:12Z",
+                    }
+                ],
+            }
         }
     )

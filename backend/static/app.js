@@ -409,9 +409,13 @@ async function submitChatPrompt(content) {
         const data = await response.json();
 
         removeMessage(loadingId);
-        addMessage('assistant', data.message.content, data.tool_executions, data.initial_llm_response, new Date());
+        addMessage('assistant', data.message.content, data.tool_executions, data.initial_llm_response, new Date(), data.context_sources || null);
 
         console.log('💬 Final LLM Response:', data.message.content);
+        if (data.context_sources && data.context_sources.length > 0) {
+            console.log(`📚 Retrieval sources used (${data.context_sources.length}):`,
+                data.context_sources.map(s => `${s.source_path} [${s.collection}]`).join(', '));
+        }
         if (data.tool_executions && data.tool_executions.length > 0) {
             console.log(`🔧 Tools executed (${data.tool_executions.length}):`,
                 data.tool_executions.map(t => `${t.tool} (${t.success ? 'success' : 'failed'})`).join(', '));
@@ -429,7 +433,7 @@ async function submitChatPrompt(content) {
     }
 }
 
-function addMessage(role, content, toolExecutions = [], initialLlmResponse = '', timestamp = null) {
+function addMessage(role, content, toolExecutions = [], initialLlmResponse = '', timestamp = null, contextSources = null) {
     const messageWrapper = document.createElement('div');
     messageWrapper.classList.add('message-wrapper', role);
 
@@ -492,7 +496,7 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
     }
 
     // ── 2. LLM synthesis / primary message content ────────────────────────
-    const toolExecutionSummary = !hasToolExecs ? summarizeToolExecutions(toolExecutions) : '';
+    const toolExecutionSummary = summarizeToolExecutions(toolExecutions);
     const primaryContent = content || toolExecutionSummary || initialLlmResponse || '';
     const messageContent = document.createElement('div');
     messageContent.classList.add('message-content');
@@ -554,6 +558,32 @@ function addMessage(role, content, toolExecutions = [], initialLlmResponse = '',
             <div class="assistant-meta-body">${formatMessageContent(initialLlmResponse)}</div>
         `;
         messageWrapper.appendChild(suggestionDetails);
+    }
+
+    // ── 5. Retrieval sources indicator (optional, memory feature) ──────────
+    const hasContextSources = role === 'assistant'
+        && Array.isArray(contextSources)
+        && contextSources.length > 0;
+
+    if (hasContextSources) {
+        const sourceDetails = document.createElement('details');
+        sourceDetails.className = 'retrieval-sources-details';
+        const sourceLabel = contextSources.length === 1 ? '1 source retrieved' : `${contextSources.length} sources retrieved`;
+        const sourceItems = contextSources.map(src => {
+            const collectionShort = src.collection === 'code_memory' ? 'code' : src.collection === 'doc_memory' ? 'doc' : src.collection || 'src';
+            return `<div class="retrieval-source-item">
+                <span class="retrieval-source-collection">${escHtml(collectionShort)}</span>
+                <span class="retrieval-source-path">${escHtml(src.source_path || '')}</span>
+            </div>`;
+        }).join('');
+        sourceDetails.innerHTML = `
+            <summary class="retrieval-sources-summary">
+                <span class="retrieval-sources-icon">📚</span>
+                <span class="retrieval-sources-title">${sourceLabel}</span>
+            </summary>
+            <div class="retrieval-sources-body">${sourceItems}</div>
+        `;
+        messageWrapper.appendChild(sourceDetails);
     }
 
     chatMessages.appendChild(messageWrapper);

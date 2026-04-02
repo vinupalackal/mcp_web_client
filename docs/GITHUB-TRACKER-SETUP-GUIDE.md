@@ -237,6 +237,8 @@ gh label list --repo vinupalackal/mcp_web_client
 
 If all milestone, issue, and label sets appear correctly, the tracker setup is complete.
 
+> **Note:** For large issue body edits, avoid long heredoc-based shell commands. Prefer `gh issue edit --body-file /tmp/file.md` or `gh api --input /tmp/payload.json`, then re-read the issue to verify the final body. See `docs/GITHUB-TRACKER-USER-GUIDE.md` for the full safe-edit workflow.
+
 ---
 
 ## 7. Recommended Team Conventions

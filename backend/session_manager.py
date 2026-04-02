@@ -5,7 +5,7 @@ Maintains chat history, tool execution traces, and session state
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from backend.models import ChatMessage, ToolCall
@@ -30,6 +30,7 @@ class SessionManager:
         self.sessions: Dict[str, SimpleSession] = {}
         self.messages: Dict[str, List[ChatMessage]] = {}  # session_id -> messages
         self.tool_traces: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> traces
+        self.retrieval_traces: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> retrieval diagnostics
         
         logger_internal.info("SessionManager initialized")
     
@@ -50,6 +51,7 @@ class SessionManager:
         self.sessions[session_id] = session
         self.messages[session_id] = []
         self.tool_traces[session_id] = []
+        self.retrieval_traces[session_id] = []
         
         logger_internal.info(f"Created session: {session_id}")
         return session
@@ -71,6 +73,7 @@ class SessionManager:
         del self.sessions[session_id]
         self.messages.pop(session_id, None)
         self.tool_traces.pop(session_id, None)
+        self.retrieval_traces.pop(session_id, None)
         
         logger_internal.info(f"Deleted session: {session_id}")
         return True
@@ -116,6 +119,38 @@ class SessionManager:
     def get_tool_traces(self, session_id: str) -> List[Dict[str, Any]]:
         """Get tool execution traces for a session"""
         return self.tool_traces.get(session_id, [])
+
+    def add_retrieval_trace(
+        self,
+        session_id: str,
+        *,
+        query_hash: str,
+        collection_keys: List[str],
+        result_count: int,
+        degraded: bool,
+        degraded_reason: str = "",
+        latency_ms: float = 0.0,
+    ) -> None:
+        """Add retrieval trace for a session."""
+
+        if session_id not in self.retrieval_traces:
+            self.retrieval_traces[session_id] = []
+
+        self.retrieval_traces[session_id].append(
+            {
+                "query_hash": query_hash,
+                "collection_keys": list(collection_keys),
+                "result_count": result_count,
+                "degraded": degraded,
+                "degraded_reason": degraded_reason,
+                "latency_ms": latency_ms,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+    def get_retrieval_traces(self, session_id: str) -> List[Dict[str, Any]]:
+        """Get retrieval traces for a session."""
+        return list(self.retrieval_traces.get(session_id, []))
     
     def update_session_title(self, session_id: str, title: str) -> bool:
         """Update session title"""
@@ -226,6 +261,7 @@ class SessionManager:
             tool_messages_before_index = sum(1 for msg in self.get_messages(session_id)[:upto_index] if msg.role == "tool")
             traces = traces[:tool_messages_before_index]
         recent_traces = traces[-max_traces:]
+        recent_retrieval_traces = self.get_retrieval_traces(session_id)[-max_traces:]
 
         summary_parts: List[str] = []
         if recent_user_requests:
@@ -246,6 +282,11 @@ class SessionManager:
                 result_preview = " ".join(result_preview.split())[:120]
                 rendered_traces.append(f"{tool_name} ({status}): {result_preview}")
             summary_parts.append("Recent tool outcomes: " + " | ".join(rendered_traces))
+        if recent_retrieval_traces:
+            degraded_count = sum(1 for trace in recent_retrieval_traces if trace.get("degraded"))
+            summary_parts.append(
+                f"Recent retrieval activity: {len(recent_retrieval_traces)} event(s), {degraded_count} degraded"
+            )
 
         if not summary_parts:
             return None

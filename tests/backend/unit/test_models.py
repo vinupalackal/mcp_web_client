@@ -25,6 +25,12 @@ from backend.models import (
     UserSettingsPatch,
     AdminUserPatch,
     UserListResponse,
+    MemoryFeatureFlags,
+    MemoryConfigSummary,
+    MemoryStatus,
+    MemoryCollectionStatus,
+    MemoryIngestionJobStatus,
+    MemoryDiagnosticsResponse,
 )
 
 
@@ -906,3 +912,107 @@ class TestUserListResponse:
         r = UserListResponse(users=[profile], total=1, limit=50, offset=0)
         assert len(r.users) == 1
         assert r.users[0].email == "alice@example.com"
+
+
+# ============================================================================
+# TR-MODEL-MEM: Memory config and diagnostics models
+# ============================================================================
+
+class TestMemoryFeatureFlags:
+
+    def test_defaults_match_optional_memory_baseline(self):
+        flags = MemoryFeatureFlags()
+        assert flags.enabled is False
+        assert flags.retrieval_enabled is False
+        assert flags.conversation_enabled is False
+        assert flags.tool_cache_enabled is False
+        assert flags.ingestion_enabled is False
+        assert flags.degraded_mode is True
+
+
+class TestMemoryConfigSummary:
+
+    def test_defaults_match_requirement_baseline(self):
+        config = MemoryConfigSummary()
+        assert config.milvus_uri_configured is False
+        assert config.collection_prefix == "mcp_client"
+        assert config.max_code_results == 5
+        assert config.max_doc_results == 5
+        assert config.max_conversation_results == 3
+        assert config.code_threshold == 0.72
+        assert config.doc_threshold == 0.68
+        assert config.conversation_threshold == 0.82
+        assert config.retention_days == 30
+        assert config.repo_roots == []
+        assert config.doc_roots == []
+
+    def test_threshold_out_of_range_rejected(self):
+        with pytest.raises(ValidationError):
+            MemoryConfigSummary(code_threshold=1.1)
+
+        with pytest.raises(ValidationError):
+            MemoryConfigSummary(doc_threshold=-0.01)
+
+
+class TestMemoryStatus:
+
+    def test_valid_status_literals(self):
+        for value in ("disabled", "healthy", "degraded"):
+            status = MemoryStatus(status=value)
+            assert status.status == value
+
+    def test_invalid_status_literal_rejected(self):
+        with pytest.raises(ValidationError):
+            MemoryStatus(status="unknown")
+
+
+class TestMemoryDiagnosticsResponse:
+
+    def test_nested_diagnostics_payload_constructs(self):
+        diagnostics = MemoryDiagnosticsResponse(
+            feature_flags=MemoryFeatureFlags(enabled=True, retrieval_enabled=True),
+            config=MemoryConfigSummary(
+                milvus_uri_configured=True,
+                embedding_provider="openai",
+                embedding_model="text-embedding-3-small",
+                repo_roots=["/workspace/src"],
+                doc_roots=["/workspace/docs"],
+            ),
+            status=MemoryStatus(
+                status="healthy",
+                milvus_reachable=True,
+                embedding_available=True,
+            ),
+            collections=[
+                MemoryCollectionStatus(
+                    collection_key="code_memory",
+                    collection_name="mcp_client_code_memory_v1_20260330",
+                    generation="20260330",
+                    embedding_provider="openai",
+                    embedding_model="text-embedding-3-small",
+                    embedding_dimension=1536,
+                    index_version="hnsw-v1",
+                    is_active=True,
+                )
+            ],
+            ingestion_jobs=[
+                MemoryIngestionJobStatus(
+                    job_id="job-001",
+                    job_type="code_ingestion",
+                    status="completed",
+                    collection_key="code_memory",
+                    repo_id="workspace-main",
+                    source_count=12,
+                    chunk_count=48,
+                    error_count=0,
+                    started_at=datetime.now(timezone.utc),
+                    finished_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            ],
+        )
+
+        assert diagnostics.feature_flags.enabled is True
+        assert diagnostics.status.status == "healthy"
+        assert diagnostics.collections[0].is_active is True
+        assert diagnostics.ingestion_jobs[0].chunk_count == 48

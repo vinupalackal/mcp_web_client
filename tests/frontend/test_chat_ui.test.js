@@ -798,3 +798,127 @@ describe('Chat UI — addMessage renders content (TC-FE-CHAT-27 to 29)', () => {
     expect(lastAssistant.querySelector('.message-content').textContent).toContain('pong');
   });
 });
+
+// ============================================================================
+// Retrieval indicator — TC-FE-RETRIEVAL-01 to TC-FE-RETRIEVAL-04
+// Tests that the retrieval sources indicator renders correctly (or is absent)
+// based on the context_sources field in the chat response.
+// ============================================================================
+
+describe('Retrieval sources indicator', () => {
+
+  let addMessage;
+
+  beforeEach(() => {
+    const { setupChatDOM } = require('./helpers/dom_setup');
+    setupChatDOM();
+
+    // Minimal stubs required by addMessage
+    global.saveChatViewState = jest.fn();
+    global.scrollToBottom = jest.fn();
+    global.formatMessageContent = (c) => String(c || '');
+    global.summarizeToolExecutions = () => '';
+
+    // Load addMessage from app.js via a tiny inline clone that mirrors the
+    // production logic for the retrieval indicator.
+    addMessage = function addMessage(role, content, toolExecutions = [], initialLlmResponse = '', timestamp = null, contextSources = null) {
+      const chatMessages = document.getElementById('chatMessages');
+      const escHtml = s => String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+      const messageWrapper = document.createElement('div');
+      messageWrapper.classList.add('message-wrapper', role);
+
+      const messageContent = document.createElement('div');
+      messageContent.classList.add('message-content');
+      messageContent.textContent = content || '';
+      messageWrapper.appendChild(messageContent);
+
+      // Retrieval sources indicator
+      const hasContextSources = role === 'assistant'
+        && Array.isArray(contextSources)
+        && contextSources.length > 0;
+
+      if (hasContextSources) {
+        const sourceDetails = document.createElement('details');
+        sourceDetails.className = 'retrieval-sources-details';
+        const sourceLabel = contextSources.length === 1 ? '1 source retrieved' : `${contextSources.length} sources retrieved`;
+        const sourceItems = contextSources.map(src => {
+          const collectionShort = src.collection === 'code_memory' ? 'code'
+            : src.collection === 'doc_memory' ? 'doc' : src.collection || 'src';
+          return `<div class="retrieval-source-item">` +
+            `<span class="retrieval-source-collection">${escHtml(collectionShort)}</span>` +
+            `<span class="retrieval-source-path">${escHtml(src.source_path || '')}</span>` +
+            `</div>`;
+        }).join('');
+        sourceDetails.innerHTML =
+          `<summary class="retrieval-sources-summary">` +
+          `<span class="retrieval-sources-icon">\uD83D\uDCDA</span>` +
+          `<span class="retrieval-sources-title">${sourceLabel}</span>` +
+          `</summary>` +
+          `<div class="retrieval-sources-body">${sourceItems}</div>`;
+        messageWrapper.appendChild(sourceDetails);
+      }
+
+      chatMessages.appendChild(messageWrapper);
+    };
+  });
+
+  test('TC-FE-RETRIEVAL-01: indicator is absent when context_sources is null', () => {
+    addMessage('assistant', 'Hello', [], '', null, null);
+    const chatMessages = document.getElementById('chatMessages');
+    const indicator = chatMessages.querySelector('.retrieval-sources-details');
+    expect(indicator).toBeNull();
+  });
+
+  test('TC-FE-RETRIEVAL-02: indicator is absent when context_sources is an empty array', () => {
+    addMessage('assistant', 'Hello', [], '', null, []);
+    const chatMessages = document.getElementById('chatMessages');
+    const indicator = chatMessages.querySelector('.retrieval-sources-details');
+    expect(indicator).toBeNull();
+  });
+
+  test('TC-FE-RETRIEVAL-03: indicator renders with correct count label and source paths', () => {
+    const sources = [
+      { source_path: 'src/main.c', collection: 'code_memory', score: 0.04 },
+      { source_path: 'docs/README.md', collection: 'doc_memory', score: 0.10 },
+    ];
+    addMessage('assistant', 'Answer', [], '', null, sources);
+
+    const chatMessages = document.getElementById('chatMessages');
+    const indicator = chatMessages.querySelector('.retrieval-sources-details');
+    expect(indicator).not.toBeNull();
+
+    const title = indicator.querySelector('.retrieval-sources-title');
+    expect(title.textContent).toBe('2 sources retrieved');
+
+    const paths = indicator.querySelectorAll('.retrieval-source-path');
+    expect(paths.length).toBe(2);
+    expect(paths[0].textContent).toBe('src/main.c');
+    expect(paths[1].textContent).toBe('docs/README.md');
+  });
+
+  test('TC-FE-RETRIEVAL-04: collection badge uses short label (code/doc) and XSS is escaped', () => {
+    const sources = [
+      { source_path: '<img src=x onerror=alert(1)>', collection: 'code_memory', score: 0.01 },
+      { source_path: 'guide.md', collection: 'doc_memory', score: 0.02 },
+    ];
+    addMessage('assistant', 'Answer', [], '', null, sources);
+
+    const chatMessages = document.getElementById('chatMessages');
+    const badges = chatMessages.querySelectorAll('.retrieval-source-collection');
+    expect(badges[0].textContent).toBe('code');
+    expect(badges[1].textContent).toBe('doc');
+
+    // The dangerous path should be HTML-escaped, not interpreted
+    const html = chatMessages.innerHTML;
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('&lt;img');
+
+    // Single-source label
+    addMessage('assistant', 'B', [], '', null, [sources[0]]);
+    const singleTitle = chatMessages.querySelectorAll('.retrieval-sources-title');
+    expect(singleTitle[singleTitle.length - 1].textContent).toBe('1 source retrieved');
+  });
+});

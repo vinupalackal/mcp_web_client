@@ -9,10 +9,19 @@ pydantic==2.8.2
 httpx==0.27.0
 
 # Environment configuration
-python-dotenv==1.0.0
+python-dotenv==1.0.1
 
 # SSO / Auth (v0.4.0-sso-user-settings)
 PyJWT==2.9.0
 cryptography==42.0.8
 sqlalchemy==2.0.36
 alembic==1.13.3
+
+# Milvus vector store - M1 Foundations (optional, guarded by MCP_MEMORY_ENABLED)
+pymilvus==2.5.18
+
+# Tree-sitter code parsing - M1 Foundations (used by ingestion pipeline)
+# Grammar packages must stay aligned with the tree-sitter core ABI version
+tree-sitter==0.25.2
+tree-sitter-c==0.24.1
+tree-sitter-cpp==0.23.4

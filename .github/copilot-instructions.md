@@ -266,6 +266,33 @@ curl -v http://192.168.1.50:11434/api/tags
 httpx.get("http://mcp-server-ip:port/health", timeout=5.0)
 ```
 
+## GitHub CLI Execution Reminders
+
+When updating GitHub issues, milestones, or labels from the terminal, prefer **single-command `gh` invocations** or **file-based request bodies**.
+
+### Safe Patterns
+- Use `gh issue view <n> --json ...` to inspect state before editing.
+- Use `gh issue edit <n> --body-file /tmp/file.md` for large body updates.
+- Use `gh api repos/<owner>/<repo>/issues/<n> --method PATCH --input /tmp/payload.json` for structured API updates.
+- Generate temp files first, then call `gh` separately.
+- Re-read the issue after editing to confirm the intended body/checklist state.
+
+### Avoid
+- Avoid shell heredocs for long inline Python or long Markdown bodies during `gh` operations.
+- Avoid nested quoting chains that combine Python, Markdown, and shell interpolation in one command.
+- Avoid editing issue bodies blind; always fetch the current body first so earlier spec content is preserved.
+
+### Known Failure Mode
+- In this repo/session, multiline heredoc-based `python - <<'PY'` commands caused the zsh terminal to enter a malformed heredoc state and garble the command stream instead of executing cleanly.
+- If a terminal enters a heredoc prompt unexpectedly, cancel it immediately and switch to a safer pattern (`create temp file` → `gh issue edit --body-file` or `gh api --input`).
+
+### Recommended Workflow For Issue Updates
+1. Read the current issue body with `gh issue view`.
+2. Build the replacement body in a temp Markdown file.
+3. Apply the update with `gh issue edit --body-file` or `gh api --input`.
+4. Re-fetch the issue and verify exact checklist/body changes.
+5. If terminal behavior looks unstable, use a subagent or direct GitHub API call instead of retrying the same heredoc approach.
+
 ## Quick Reference
 - **Version**: 0.2.0-jsonrpc
 - **Python**: 3.8+ required

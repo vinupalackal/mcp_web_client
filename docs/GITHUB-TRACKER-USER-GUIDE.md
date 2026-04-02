@@ -230,6 +230,41 @@ gh issue close 9 --repo vinupalackal/mcp_web_client --comment 'Merged via PR #12
 gh issue reopen 9 --repo vinupalackal/mcp_web_client --comment 'Reopened because degraded-mode coverage is still incomplete.'
 ```
 
+### 6.8 Safe Editing Pattern for Issue Bodies
+
+When updating a large issue body from the terminal, prefer **single-command `gh` usage** or **file-based request bodies** instead of long inline shell commands.
+
+Recommended workflow:
+
+1. Read the current issue body first.
+2. Build the replacement content in a temporary Markdown file.
+3. Apply the update with `gh issue edit --body-file` or `gh api --input`.
+4. Re-read the issue and confirm the expected checklist and body changes.
+
+Example:
+
+```bash
+gh issue view 1 --repo vinupalackal/mcp_web_client --json body
+gh issue edit 1 --repo vinupalackal/mcp_web_client --body-file /tmp/issue-1-body.md
+gh issue view 1 --repo vinupalackal/mcp_web_client --json body
+```
+
+### 6.9 Avoid Heredoc-Based `gh` Update Flows
+
+Avoid using multiline heredoc patterns such as long `python - <<'PY'` or inline Markdown bodies during `gh` issue updates.
+
+In this repository session, that pattern caused the zsh terminal to enter a malformed heredoc state and garble the command stream instead of executing cleanly.
+
+Avoid these risky patterns:
+- long inline Python that fetches and rewrites issue bodies in one shell command,
+- nested quoting that mixes Python, shell variables, Markdown, and `gh` calls,
+- editing issue bodies without first reading the current body.
+
+Safer alternatives:
+- `gh issue edit <n> --body-file /tmp/file.md`
+- `gh api repos/<owner>/<repo>/issues/<n> --method PATCH --input /tmp/payload.json`
+- GitHub Web UI for large manual body edits
+
 ---
 
 ## 7. Using the Tracker from the GitHub Web UI

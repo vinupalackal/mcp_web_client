@@ -25,12 +25,14 @@ def reset_backend_state(tmp_path, monkeypatch):
     main_module.servers_storage.clear()
     main_module.llm_config_storage = None
     main_module.enterprise_token_cache.clear()
+    main_module._memory_service = None
     main_module.session_manager = SessionManager()
     main_module.mcp_manager = MCPManager()
     yield
     main_module.servers_storage.clear()
     main_module.llm_config_storage = None
     main_module.enterprise_token_cache.clear()
+    main_module._memory_service = None
 
 
 # ---------------------------------------------------------------------------

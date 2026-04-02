@@ -170,6 +170,8 @@ mcp_client/
 4. Implement logic following models
 5. Test against OpenAPI schema
 
+For a quick repo-specific explanation of when to use Pydantic vs SQLAlchemy, see `docs/PYDANTIC-VS-SQLALCHEMY-IN-THIS-REPO.md`.
+
 ### Running Tests
 
 ```bash
@@ -205,6 +207,169 @@ cd tests/frontend && npm install
 | `OPENAI_API_KEY` | - | OpenAI API key |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI endpoint |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama endpoint |
+
+## Memory-Augmented Retrieval (Optional)
+
+The application can optionally index your codebase and documentation into a Milvus vector store and use retrieved context to improve LLM responses.  All memory features are **disabled by default** — the chat flow is unchanged when they are off.
+
+For day-to-day usage guidance, prompting tips, and Milvus-specific examples, see [docs/MILVUS-USER-GUIDE.md](docs/MILVUS-USER-GUIDE.md).
+
+### Prerequisites
+
+- A running [Milvus](https://milvus.io/) instance (v2.4+).  Standalone mode on a local or remote machine is sufficient for development.
+- The `pymilvus` package (already included when you install `requirements.txt`).
+
+### Quick Setup
+
+```bash
+# 1. Start a standalone Milvus instance (Docker example)
+docker run -d --name milvus-standalone \
+  -p 19530:19530 -p 9091:9091 \
+  milvusdb/milvus:v2.4.0-rc.1 \
+  milvus run standalone
+
+# 2. Add memory env vars to .env
+MEMORY_ENABLED=true
+MEMORY_MILVUS_URI=http://localhost:19530
+MEMORY_REPO_ID=my-project          # logical scope for retrieval
+
+# 3. Restart the backend
+python -m backend
+```
+
+### Indexing Your Code and Docs
+
+Once memory is enabled, run an ingestion pass through the API or a helper script:
+
+```bash
+# Trigger ingestion (example — adjust roots to your workspace)
+curl -X POST http://localhost:8000/api/memory/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"repo_roots": ["./src"], "doc_roots": ["./docs"], "repo_id": "my-project"}'
+
+# Check ingestion job status via health endpoint
+curl -s http://localhost:8000/health | python3 -m json.tool | grep -A 6 '"memory"'
+```
+
+### Health Check
+
+The `/health` endpoint always includes a `memory` key:
+
+```json
+// Memory disabled (default)
+{ "status": "healthy", ..., "memory": { "enabled": false } }
+
+// Memory healthy
+{ "status": "healthy", ..., "memory": { "enabled": true, "healthy": true, "degraded": false } }
+
+// Memory degraded (Milvus unreachable) — top-level app is still healthy
+{ "status": "healthy", ..., "memory": { "enabled": true, "healthy": false, "degraded": true } }
+
+// Memory healthy with expiry cleanup enabled
+{
+  "status": "healthy",
+  ...,
+  "memory": {
+    "enabled": true,
+    "healthy": true,
+    "degraded": false,
+    "expiry_cleanup": {
+      "enabled": true,
+      "interval_s": 300.0,
+      "last_run_at": "2026-04-02T10:15:00+00:00",
+      "last_summary": {
+        "ran": true,
+        "conversation_deleted": 2,
+        "tool_cache_deleted": 4
+      }
+    }
+  }
+}
+```
+
+### Degraded Mode
+
+When `MEMORY_DEGRADED_MODE=true` or when Milvus is temporarily unreachable:
+
+- Retrieval is skipped silently for that request.
+- Chat responses remain fully functional — only the context enrichment is absent.
+- A `WARNING` log line is emitted: `Retrieval degraded: <reason>`.
+- The `/health` endpoint reports `memory.degraded: true` without affecting the top-level `status`.
+
+### Memory Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MEMORY_ENABLED` | `false` | Enable the memory/retrieval subsystem |
+| `MEMORY_MILVUS_URI` | `""` | Milvus endpoint (e.g. `http://localhost:19530`) |
+| `MEMORY_REPO_ID` | `""` | Default workspace/repo scope for retrieval |
+| `MEMORY_COLLECTION_GENERATION` | `v1` | Active collection generation to search and ingest into |
+| `MEMORY_MAX_RESULTS` | `5` | Maximum context blocks returned per chat turn |
+| `MEMORY_RETRIEVAL_TIMEOUT_S` | `5.0` | Per-turn retrieval timeout in seconds |
+| `MEMORY_DEGRADED_MODE` | `false` | Force degraded (no retrieval) mode without disabling the subsystem |
+| `MEMORY_CONVERSATION_ENABLED` | `false` | Enable same-user conversation memory recall and storage |
+| `MEMORY_CONVERSATION_RETENTION_DAYS` | `7` | TTL for persisted conversation-memory turns |
+| `MEMORY_TOOL_CACHE_ENABLED` | `false` | Enable safe allowlisted tool-result caching |
+| `MEMORY_TOOL_CACHE_TTL_S` | `3600.0` | TTL for cached tool results in seconds |
+| `MEMORY_TOOL_CACHE_ALLOWLIST` | `""` | Comma-separated tool names allowed to use the cache |
+| `MEMORY_EXPIRY_CLEANUP_ENABLED` | `true` | Run automatic expiry cleanup for expired conversation-memory and tool-cache rows |
+| `MEMORY_EXPIRY_CLEANUP_INTERVAL_S` | `300.0` | Minimum interval between automatic cleanup runs |
+
+### Expiry Cleanup and Operations Hardening
+
+Phase 4 adds automatic expiry maintenance for long-lived memory artifacts:
+
+- **Conversation memory**: expired turn rows are removed from the SQL sidecar and expired vector rows are pruned from the `conversation_memory` collection.
+- **Tool cache**: expired cache rows are removed from the SQL sidecar and expired vector rows are pruned from the `tool_cache` collection when present.
+- **Startup cleanup**: when memory is enabled, one cleanup pass runs during backend startup.
+- **Request-time maintenance**: subsequent cleanup passes run opportunistically during chat requests, but only after `MEMORY_EXPIRY_CLEANUP_INTERVAL_S` has elapsed.
+- **Fail-open behavior**: cleanup failures are logged and surfaced in `memory.expiry_cleanup.last_summary`, but they do not break chat responses.
+
+Recommended production settings:
+
+```bash
+MEMORY_CONVERSATION_ENABLED=true
+MEMORY_CONVERSATION_RETENTION_DAYS=7
+MEMORY_TOOL_CACHE_ENABLED=true
+MEMORY_TOOL_CACHE_TTL_S=3600
+MEMORY_TOOL_CACHE_ALLOWLIST=get_weather,get_build_status
+MEMORY_EXPIRY_CLEANUP_ENABLED=true
+MEMORY_EXPIRY_CLEANUP_INTERVAL_S=300
+```
+
+Operational guidance:
+
+- Keep `MEMORY_TOOL_CACHE_ALLOWLIST` narrow; do not include tools with side effects.
+- Use a shorter `MEMORY_TOOL_CACHE_TTL_S` for frequently changing external data.
+- Increase `MEMORY_EXPIRY_CLEANUP_INTERVAL_S` if you want fewer maintenance passes on low-traffic systems.
+- Check `/health` for `memory.expiry_cleanup.last_summary` when diagnosing stale memory or cache entries.
+
+### Manual Maintenance Endpoint
+
+Operators can also trigger a cleanup run explicitly:
+
+```bash
+curl -X POST http://localhost:8000/api/admin/memory/maintenance \
+  -H "Content-Type: application/json" \
+  -d '{
+        "force": true,
+        "cleanup_expired_conversation_memory": true,
+        "cleanup_expired_tool_cache": true
+      }'
+```
+
+When SSO is enabled, this endpoint requires an authenticated user with the `admin` role.
+When SSO is disabled, it behaves like other local admin endpoints and is callable without auth.
+
+Typical uses:
+
+- run cleanup immediately after changing retention / TTL settings,
+- verify that expired rows are pruned during incident response,
+- perform maintenance on low-traffic systems before a deployment or demo.
+
+### Frontend Retrieval Indicator
+
+When retrieval returns results, the assistant message shows a collapsible **📚 N sources retrieved** indicator listing the source paths and collection types (`code` / `doc`).  Expand it to see which files were used.  The indicator is absent when memory is disabled or retrieval returns no results.
 
 ## Troubleshooting
 

@@ -13,6 +13,10 @@ import pytest
 from sqlalchemy import select
 
 from backend.database import (
+    MemoryCollectionVersionRow,
+    MemoryIngestionJobRow,
+    MemoryPayloadRefRow,
+    MemoryRetrievalProvenanceRow,
     UserRow,
     UserSettingsRow,
     get_user_by_email,
@@ -37,8 +41,145 @@ class TestInitDb:
     def test_tables_are_queryable(self, sso_db):
         """TC-DB-02: All ORM tables are present and queryable after init_db()."""
         with sso_db() as db:
+            db.execute(select(MemoryPayloadRefRow))
+            db.execute(select(MemoryIngestionJobRow))
+            db.execute(select(MemoryCollectionVersionRow))
+            db.execute(select(MemoryRetrievalProvenanceRow))
             db.execute(select(UserRow))
             db.execute(select(UserSettingsRow))
+
+
+# ============================================================================
+# memory sidecar schema
+# ============================================================================
+
+class TestMemorySidecarSchema:
+
+    def test_payload_ref_row_can_store_raw_payload_and_metadata(self, sso_db):
+        """TC-DB-02A: Payload refs persist raw sidecar payloads and metadata."""
+        row = MemoryPayloadRefRow(
+            payload_ref="payload://code/repo1/src/main.c#main",
+            payload_kind="code_chunk",
+            memory_id="code-chunk-001",
+            collection_key="code_memory_v1",
+            repo_id="repo1",
+            user_id=None,
+            relative_path="src/main.c",
+            source_path="src/main.c",
+            source_type="code",
+            section=None,
+            symbol_name="main",
+            symbol_kind="function",
+            language="c",
+            namespace=None,
+            signature="int main()",
+            summary="Process entry point",
+            source_hash="sha256:abc123",
+            start_line=1,
+            end_line=1,
+            payload_text="int main() { return 0; }",
+            metadata_json=json.dumps({"language": "c", "symbol_name": "main"}),
+        )
+
+        with sso_db() as db:
+            db.add(row)
+            db.commit()
+            stored = db.get(MemoryPayloadRefRow, row.payload_ref)
+
+        assert stored is not None
+        assert stored.payload_kind == "code_chunk"
+        assert stored.storage_backend == "sql"
+        assert stored.memory_id == "code-chunk-001"
+        assert stored.collection_key == "code_memory_v1"
+        assert stored.relative_path == "src/main.c"
+        assert stored.source_path == "src/main.c"
+        assert stored.symbol_name == "main"
+        assert stored.symbol_kind == "function"
+        assert stored.language == "c"
+        assert stored.signature == "int main()"
+        assert stored.summary == "Process entry point"
+        assert stored.start_line == 1
+        assert stored.end_line == 1
+        assert json.loads(stored.metadata_json)["symbol_name"] == "main"
+
+    def test_ingestion_job_row_tracks_status_counts_and_errors(self, sso_db):
+        """TC-DB-02B: Ingestion job rows support status and count tracking."""
+        row = MemoryIngestionJobRow(
+            job_type="code_ingestion",
+            status="failed",
+            repo_id="repo1",
+            requested_by_user_id="user-123",
+            scope_json=json.dumps({"paths": ["src/"]}),
+            collection_key="code_memory",
+            source_count=12,
+            chunk_count=48,
+            error_count=2,
+            error_summary="parser failures in two files",
+        )
+
+        with sso_db() as db:
+            db.add(row)
+            db.commit()
+            stored = db.get(MemoryIngestionJobRow, row.job_id)
+
+        assert stored is not None
+        assert stored.status == "failed"
+        assert stored.chunk_count == 48
+        assert stored.error_count == 2
+        assert json.loads(stored.scope_json)["paths"] == ["src/"]
+
+    def test_collection_version_row_tracks_generation_and_activation(self, sso_db):
+        """TC-DB-02C: Collection metadata rows capture versioned collection state."""
+        row = MemoryCollectionVersionRow(
+            collection_key="code_memory",
+            collection_name="mcp_client_code_memory_v1_20260330",
+            generation="20260330",
+            embedding_provider="openai",
+            embedding_model="text-embedding-3-small",
+            embedding_dimension=1536,
+            index_version="hnsw-v1",
+            is_active=True,
+            schema_json=json.dumps({"payload_ref": "VARCHAR", "source_hash": "VARCHAR"}),
+        )
+
+        with sso_db() as db:
+            db.add(row)
+            db.commit()
+            stored = db.get(MemoryCollectionVersionRow, row.version_id)
+
+        assert stored is not None
+        assert stored.collection_key == "code_memory"
+        assert stored.collection_name.endswith("20260330")
+        assert stored.is_active is True
+        assert json.loads(stored.schema_json)["payload_ref"] == "VARCHAR"
+
+    def test_retrieval_provenance_row_persists_selected_refs_and_rationale(self, sso_db):
+        """TC-DB-02D: Retrieval provenance rows capture selected refs and rationale."""
+        row = MemoryRetrievalProvenanceRow(
+            request_id="req-123",
+            session_id="session-456",
+            user_id="user-789",
+            repo_id="repo1",
+            retrieval_scope="workspace",
+            query_text="find the main entry point",
+            selected_count=2,
+            selected_refs_json=json.dumps([
+                "payload://code/repo1/src/main.c#main",
+                "payload://doc/repo1/README.md#build",
+            ]),
+            rationale_json=json.dumps({"reason": "top semantic matches", "count": 2}),
+        )
+
+        with sso_db() as db:
+            db.add(row)
+            db.commit()
+            stored = db.get(MemoryRetrievalProvenanceRow, row.provenance_id)
+
+        assert stored is not None
+        assert stored.request_id == "req-123"
+        assert stored.selected_count == 2
+        assert json.loads(stored.selected_refs_json)[0].startswith("payload://code/")
+        assert json.loads(stored.rationale_json)["count"] == 2
 
 
 # ============================================================================

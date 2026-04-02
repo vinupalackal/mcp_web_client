@@ -128,6 +128,69 @@ class TestToolTrace:
         assert "timestamp" in mgr.get_tool_traces(s.session_id)[0]
 
 
+class TestRetrievalTrace:
+
+    def test_retrieval_trace_stored_and_retrieved(self, mgr):
+        """TC-TRACE-01: add_retrieval_trace stores a trace retrievable by session."""
+        s = mgr.create_session()
+        mgr.add_retrieval_trace(
+            s.session_id,
+            query_hash="abc123",
+            collection_keys=["code_memory", "doc_memory"],
+            result_count=2,
+            degraded=False,
+            latency_ms=42.5,
+        )
+
+        traces = mgr.get_retrieval_traces(s.session_id)
+        assert len(traces) == 1
+        assert traces[0]["query_hash"] == "abc123"
+        assert traces[0]["collection_keys"] == ["code_memory", "doc_memory"]
+        assert traces[0]["result_count"] == 2
+        assert traces[0]["degraded"] is False
+        assert "recorded_at" in traces[0]
+
+    def test_get_retrieval_traces_empty_for_unknown_session(self, mgr):
+        """TC-TRACE-02: Unknown sessions return an empty retrieval trace list."""
+        assert mgr.get_retrieval_traces("ghost") == []
+
+    def test_delete_session_cleans_retrieval_traces(self, mgr):
+        """TC-TRACE-03: delete_session removes retrieval traces alongside other session state."""
+        s = mgr.create_session()
+        mgr.add_retrieval_trace(
+            s.session_id,
+            query_hash="abc123",
+            collection_keys=["code_memory"],
+            result_count=1,
+            degraded=False,
+        )
+
+        mgr.delete_session(s.session_id)
+        assert mgr.get_retrieval_traces(s.session_id) == []
+
+    def test_multiple_retrieval_traces_preserve_order(self, mgr):
+        """TC-TRACE-04: Retrieval traces accumulate in insertion order."""
+        s = mgr.create_session()
+        mgr.add_retrieval_trace(
+            s.session_id,
+            query_hash="first",
+            collection_keys=["code_memory"],
+            result_count=1,
+            degraded=False,
+        )
+        mgr.add_retrieval_trace(
+            s.session_id,
+            query_hash="second",
+            collection_keys=["doc_memory"],
+            result_count=0,
+            degraded=True,
+            degraded_reason="timeout",
+        )
+
+        traces = mgr.get_retrieval_traces(s.session_id)
+        assert [trace["query_hash"] for trace in traces] == ["first", "second"]
+
+
 class TestUpdateSessionTitle:
 
     def test_title_updated(self, mgr):
