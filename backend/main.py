@@ -1731,6 +1731,39 @@ def _build_synthesis_prompt(
     )
 
 
+def _build_repeated_exec_triage_instruction(
+    *,
+    target_tool_name: str,
+    repeat_count: int,
+) -> str:
+    """Instruction block for the final LLM pass after repeated tool execution."""
+    return (
+        "\nPlease analyse the repeated-run results carefully and respond in triaging output format. "
+        f"Explain the observed behaviour across all {repeat_count} runs of `{target_tool_name}`, "
+        "not just the final run. Highlight meaningful changes, anomalies, failed runs, and why they matter. "
+        "If evidence is weak or mixed, say that explicitly and explain the uncertainty.\n\n"
+        "Use this structure exactly:\n"
+        "## Diagnostic Summary\n"
+        "**Issue Type:** <observed issue type or 'trend analysis'>\n"
+        "**Tool / Scope:** <tool analysed and what was checked>\n"
+        "**Overall Assessment:** <1-2 sentences summarising the main conclusion>\n\n"
+        "### Trend Explanation\n"
+        "<2-4 sentences explaining what changed across runs, whether the system looks stable, improving, worsening, or intermittent, and why>\n\n"
+        "### Root Cause Assessment\n"
+        "<2-4 sentences with the most likely explanation, or say 'Insufficient evidence' and explain what is missing>\n\n"
+        "### Evidence\n"
+        "- Run pattern: <what stayed consistent across runs>\n"
+        "- Key anomalies: <spikes, failures, regressions, or none>\n"
+        "- Representative examples: <specific run numbers, timestamps, or values>\n\n"
+        "### Impact\n"
+        "<1-3 sentences describing severity, user-visible risk, and what is affected>\n\n"
+        "### Recommended Actions\n"
+        "1. <Immediate action or workaround>\n"
+        "2. <Next verification or comparison step>\n"
+        "3. <Longer-term fix, monitoring, or follow-up>"
+    )
+
+
 def _build_direct_tool_prompt(
     *,
     available_tool_names: List[str],
@@ -3949,10 +3982,9 @@ async def send_message(
                             f"Failed: {summary.failure_count}\n"
                             "Intermediate files written and deleted after aggregation.\n\n"
                         )
-                        instruction = (
-                            f"\nPlease analyse trends, anomalies, and changes across these "
-                            f"{repeat_count} runs. Identify patterns, note any failed runs, "
-                            "and provide a diagnostic conclusion."
+                        instruction = _build_repeated_exec_triage_instruction(
+                            target_tool_name=target_tool_name,
+                            repeat_count=repeat_count,
                         )
 
                         # Budget chars for run blocks (header + instruction are protected)

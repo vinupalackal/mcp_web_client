@@ -152,6 +152,23 @@ def test_split_phase_early_stop_only_applies_to_high_confidence_direct_fact(monk
     ) is False
 
 
+def test_repeated_exec_triage_instruction_requests_explanatory_output_format():
+    """Repeated execution synthesis should require the richer triaging output structure."""
+    main_module = importlib.import_module("backend.main")
+
+    prompt = main_module._build_repeated_exec_triage_instruction(
+        target_tool_name="get_memory_info",
+        repeat_count=4,
+    )
+
+    assert "respond in triaging output format" in prompt
+    assert "Explain the observed behaviour across all 4 runs of `get_memory_info`" in prompt
+    assert "## Diagnostic Summary" in prompt
+    assert "### Trend Explanation" in prompt
+    assert "### Root Cause Assessment" in prompt
+    assert "### Recommended Actions" in prompt
+
+
 def test_collect_split_phase_tool_calls_cancels_pending_chunks_for_direct_fact():
     """Concurrent split pre-collection should cancel slow chunks once a direct-fact tool call is found."""
     main_module = importlib.import_module("backend.main")
