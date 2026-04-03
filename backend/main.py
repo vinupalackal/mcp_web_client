@@ -1389,6 +1389,246 @@ async def _collect_split_phase_tool_calls(
     return _merge_split_phase_tool_calls(chunk_results)
 
 
+async def _stream_split_phase_tool_calls(
+    *,
+    llm_client: Any,
+    messages_snapshot: List[Dict[str, Any]],
+    tool_chunks: List[List[Dict[str, Any]]],
+    split_mode: str,
+    request_mode: str,
+    request_mode_details: Dict[str, Any],
+    extract_tool_calls_from_content: Callable[[str, int], List[Dict[str, Any]]],
+):
+    """Async generator variant of _collect_split_phase_tool_calls.
+
+    Yields (chunk_index, new_tool_calls, skipped_count) as each LLM chunk
+    responds, so the caller can start MCP execution immediately instead of
+    waiting for all chunks to complete first.  Deduplication is applied
+    incrementally across all yielded batches via a shared seen-keys set.
+    """
+    ordinals = [
+        "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH",
+        "SIXTH", "SEVENTH", "EIGHTH", "NINTH", "TENTH",
+    ]
+    stop_on_first_real_tool = _should_enable_split_phase_early_stop(
+        request_mode=request_mode,
+        request_mode_details=request_mode_details,
+    )
+    if stop_on_first_real_tool:
+        logger_internal.info(
+            "Split-phase pipeline early stop enabled: mode=%s confidence=%.2f chunks=%s",
+            request_mode,
+            float(request_mode_details.get("confidence", 0.0) or 0.0),
+            len(tool_chunks),
+        )
+
+    seen_dedup_keys: set = set()
+
+    def _filter_new_calls(
+        calls: List[Dict[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Return only tool calls not yet seen; second element is the skipped count."""
+        new_calls: List[Dict[str, Any]] = []
+        skipped = 0
+        for call in calls:
+            name = call.get("function", {}).get("name", "")
+            args = call.get("function", {}).get("arguments", "{}")
+            if isinstance(args, dict):
+                args = json.dumps(args, sort_keys=True)
+            key = (name, args)
+            if key in seen_dedup_keys:
+                skipped += 1
+                continue
+            seen_dedup_keys.add(key)
+            new_calls.append(call)
+        return new_calls, skipped
+
+    async def query_chunk(
+        sp_idx: int, sp_chunk: List[Dict[str, Any]]
+    ) -> tuple[int, List[Dict[str, Any]]]:
+        ordinal = ordinals[sp_idx - 1] if sp_idx <= len(ordinals) else f"#{sp_idx}"
+        logger_external.info(
+            "→ %s REQUEST TO LLM WITH SPLIT [%s]: Tools Count: %s",
+            ordinal, split_mode.upper(), len(sp_chunk),
+        )
+        try:
+            resp = await llm_client.chat_completion(
+                messages=messages_snapshot,
+                tools=sp_chunk,
+            )
+        except Exception as err:
+            logger_internal.error(
+                "Split-phase chunk %s/%s failed: %s",
+                sp_idx, len(tool_chunks), err,
+            )
+            return sp_idx, []
+
+        msg = resp["choices"][0]["message"]
+        finish = resp["choices"][0].get("finish_reason", "")
+        calls = msg.get("tool_calls") or []
+
+        if not calls and msg.get("content"):
+            calls = extract_tool_calls_from_content(msg.get("content", ""), sp_idx)
+
+        logger_external.info(
+            "← %s RESPONSE FROM LLM WITH SPLIT [%s]: %s tool call(s) requested, finish=%s",
+            ordinal, split_mode.upper(), len(calls), finish,
+        )
+        return sp_idx, calls
+
+    if split_mode == "sequential":
+        logger_internal.info(
+            "Split-phase pipeline mode=sequential: sending %s chunk(s) one after another",
+            len(tool_chunks),
+        )
+        for seq_idx, seq_chunk in enumerate(tool_chunks, 1):
+            chunk_index, chunk_calls = await query_chunk(seq_idx, seq_chunk)
+            new_calls, skipped = _filter_new_calls(chunk_calls)
+            yield chunk_index, new_calls, skipped
+            if stop_on_first_real_tool and _split_phase_has_real_tool_calls(new_calls):
+                logger_internal.info(
+                    "Split-phase pipeline early stop: satisfied by chunk %s/%s; stopping sequential dispatch",
+                    chunk_index, len(tool_chunks),
+                )
+                break
+    else:
+        logger_internal.info(
+            "Split-phase pipeline mode=concurrent: firing %s chunk(s) in parallel",
+            len(tool_chunks),
+        )
+        tasks = [
+            asyncio.create_task(query_chunk(i + 1, chunk))
+            for i, chunk in enumerate(tool_chunks)
+        ]
+        try:
+            for completed in asyncio.as_completed(tasks):
+                chunk_index, chunk_calls = await completed
+                new_calls, skipped = _filter_new_calls(chunk_calls)
+                yield chunk_index, new_calls, skipped
+                if stop_on_first_real_tool and _split_phase_has_real_tool_calls(new_calls):
+                    pending_tasks = [t for t in tasks if not t.done()]
+                    logger_internal.info(
+                        "Split-phase pipeline early stop: satisfied by chunk %s/%s; cancelling %s pending chunk(s)",
+                        chunk_index, len(tool_chunks), len(pending_tasks),
+                    )
+                    for pt in pending_tasks:
+                        pt.cancel()
+                    if pending_tasks:
+                        await asyncio.gather(*pending_tasks, return_exceptions=True)
+                    break
+        finally:
+            leftover_tasks = [t for t in tasks if not t.done()]
+            for lt in leftover_tasks:
+                lt.cancel()
+            if leftover_tasks:
+                await asyncio.gather(*leftover_tasks, return_exceptions=True)
+
+
+async def _run_pipeline_execution(
+    *,
+    stream: Any,
+    run_mcp_tool: Callable,
+    tool_concurrency: int,
+    num_chunks: int,
+) -> tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Drive the split-phase pipeline.
+
+    Consumes the async generator from _stream_split_phase_tool_calls(), fires
+    one asyncio.Task per yielded tool call (bounded by a semaphore), then
+    drains all tasks before returning.
+
+    Returns:
+        all_parsed  — ordered list of parsed tool-call dicts (same shape as
+                      Phase-1 _parsed_tool_calls in the turn loop).
+        results_map — tool_id → execution-result dict (same shape as
+                      _parallel_results_map in Phase 2).
+    """
+    import time as _pt
+
+    semaphore = asyncio.Semaphore(tool_concurrency)
+    all_parsed: List[Dict[str, Any]] = []
+    task_to_pc: Dict[Any, Dict[str, Any]] = {}
+
+    async def _bounded_run(pc: Dict[str, Any]) -> Dict[str, Any]:
+        async with semaphore:
+            return await run_mcp_tool(pc)
+
+    # Consume the generator — start MCP tasks as each chunk yields new calls.
+    async for chunk_index, new_calls, skipped in stream:
+        idx_offset = len(all_parsed) + 1
+        for i, call in enumerate(new_calls):
+            _tc_name = call.get("function", {}).get("name", "")
+            _tc_args_raw = call.get("function", {}).get("arguments", "{}")
+            try:
+                _tc_args = json.loads(_tc_args_raw) if isinstance(_tc_args_raw, str) else _tc_args_raw
+            except (json.JSONDecodeError, TypeError):
+                _tc_args = {}
+            _tc_dedup = json.dumps(
+                {"tool": _tc_name, "arguments": _tc_args},
+                sort_keys=True,
+                default=str,
+            )
+            pc = {
+                "idx": idx_offset + i,
+                "tool_id": call.get("id") or f"pipeline_tool_{chunk_index}_{i + 1}",
+                "namespaced_tool_name": _tc_name,
+                "arguments": _tc_args,
+                "dedupe_key": _tc_dedup,
+            }
+            all_parsed.append(pc)
+
+            if _tc_name == "mcp_repeated_exec":
+                # Virtual tool — stays sequential, executed post-drain in Phase 3.
+                logger_internal.info("Pipeline: mcp_repeated_exec deferred to post-drain sequential execution")
+                continue
+
+            logger_internal.info(
+                "Pipeline enqueue [chunk %s/%s]: %s (dedup_skipped=%s)",
+                chunk_index, num_chunks, _tc_name, skipped,
+            )
+            logger_external.info(
+                "→ PIPELINE ENQUEUE [chunk %s/%s]: %s (dedup_skipped=%s)",
+                chunk_index, num_chunks, _tc_name, skipped,
+            )
+            task = asyncio.create_task(_bounded_run(pc))
+            task_to_pc[task] = pc
+
+    # Drain — wait for all in-flight MCP tasks.
+    logger_internal.info("Pipeline drain: %s task(s) in-flight", len(task_to_pc))
+    _drain_start = _pt.time()
+    raw_results: List[Any] = []
+    if task_to_pc:
+        raw_results = list(await asyncio.gather(*task_to_pc.keys(), return_exceptions=True))
+    _drain_elapsed = _pt.time() - _drain_start
+
+    results_map: Dict[str, Dict[str, Any]] = {}
+    succeeded = 0
+    failed = 0
+    for (task, pc), raw in zip(task_to_pc.items(), raw_results):
+        if isinstance(raw, BaseException):
+            results_map[pc["tool_id"]] = {
+                **pc,
+                "result_content": f"Error: {raw}",
+                "tool_result": str(raw),
+                "success": False,
+                "duration_ms": 0,
+            }
+            failed += 1
+        else:
+            results_map[pc["tool_id"]] = raw
+            if raw.get("success"):
+                succeeded += 1
+            else:
+                failed += 1
+
+    logger_external.info(
+        "← PIPELINE DRAIN COMPLETE: %s succeeded, %s failed, elapsed=%.1fs",
+        succeeded, failed, _drain_elapsed,
+    )
+
+    return all_parsed, results_map
+
+
 def _build_llm_mode_classifier_prompt(
     *,
     message_content: str,
@@ -3156,6 +3396,7 @@ async def send_message(
         tool_executions = []
         initial_llm_response = None
         executed_tool_results: dict[str, dict] = {}
+        _pre_executed_results_map: Dict[str, Dict[str, Any]] = {}  # set by pipeline path
         issue_classification: Optional[str] = None
         latest_assistant_tool_guidance: Optional[str] = None
         layer2_context_messages: List[dict] = []
@@ -3467,6 +3708,88 @@ async def send_message(
                     retrieval_result.latency_ms,
                 )
 
+        # _run_one_mcp_tool is defined here — before the split-phase block — so
+        # the pipeline can invoke it immediately on chunk arrival without waiting
+        # for the turn loop to start (FR-SPIPE-002).
+        async def _run_one_mcp_tool(pc: Dict[str, Any]) -> Dict[str, Any]:
+            """Execute one normal MCP tool call. Pure I/O — no side effects."""
+            _name = pc["namespaced_tool_name"]
+            _args = pc["arguments"]
+            if not _name or "__" not in _name:
+                logger_internal.error("Invalid tool name format: %s", _name)
+                return {**pc, "result_content": f"Error: Invalid tool name format: {_name}",
+                        "tool_result": None, "success": False, "duration_ms": 0}
+            _server_alias, _actual_name = _name.split("__", 1)
+            _server = next(
+                (s for s in servers_storage.values() if s.alias == _server_alias),
+                None,
+            )
+            if not _server:
+                logger_internal.error("Server not found: %s", _server_alias)
+                return {**pc, "result_content": f"Error: Server '{_server_alias}' not found",
+                        "tool_result": None, "success": False, "duration_ms": 0}
+            _stored = mcp_manager.tools.get(_name)
+            _hints = _stored.execution_hints if _stored else None
+            if _hints:
+                _est_ms = _hints.estimatedRuntimeMs or 0
+                if _hints.mode == "sampling" or _est_ms >= 5000:
+                    logger_internal.info(
+                        "Long-running diagnostic tool: %s | mode=%s, estimatedRuntime=%.1fs. "
+                        "This diagnostic samples data over time — client timeout extended accordingly.",
+                        _name, _hints.mode, _est_ms / 1000,
+                    )
+                else:
+                    logger_internal.info(
+                        "One-shot diagnostic tool: %s | mode=%s, estimatedRuntime=%.1fs. "
+                        "Collecting snapshot.",
+                        _name, _hints.mode, _est_ms / 1000,
+                    )
+            import time as _time_mod
+            _start = _time_mod.time()
+            # ---- tool cache lookup ---- #
+            if _memory_service is not None:
+                _cache_result = _memory_service.lookup_tool_cache(
+                    tool_name=_name,
+                    arguments=_args if isinstance(_args, dict) else {},
+                    user_id=user_id or "",
+                )
+                if _cache_result.hit and _cache_result.approved:
+                    _dur = int((_time_mod.time() - _start) * 1000)
+                    logger_internal.info(
+                        "Tool cache HIT: %s (cache_id=%s)", _name, _cache_result.cache_id
+                    )
+                    return {**pc, "result_content": _cache_result.result_text,
+                            "tool_result": {"content": _cache_result.result_text},
+                            "success": True, "duration_ms": _dur, "cache_hit": True}
+            try:
+                _result = await mcp_manager.execute_tool(
+                    server=_server,
+                    tool_name=_actual_name,
+                    arguments=_args,
+                    execution_hints=_hints,
+                )
+                _dur = int((_time_mod.time() - _start) * 1000)
+                _max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "131072"))
+                _res_str = _extract_tool_result_text(_result)
+                if len(_res_str) > _max_chars:
+                    _res_str = _res_str[:_max_chars] + "... [truncated]"
+                _success = not bool(_result.get("isError")) if isinstance(_result, dict) else True
+                # ---- store in cache if allowlisted and successful ---- #
+                if _success and _memory_service is not None:
+                    _memory_service.record_tool_cache(
+                        tool_name=_name,
+                        arguments=_args if isinstance(_args, dict) else {},
+                        result_text=_res_str,
+                        user_id=user_id or "",
+                    )
+                return {**pc, "result_content": _res_str, "tool_result": _result,
+                        "success": _success, "duration_ms": _dur}
+            except Exception as _exc:
+                _dur = int((_time_mod.time() - _start) * 1000)
+                logger_internal.error("Tool execution error: %s", _exc)
+                return {**pc, "result_content": f"Error: {_exc}", "tool_result": str(_exc),
+                        "success": False, "duration_ms": _dur}
+
         # ------------------------------------------------------------------ #
         # Split-phase pre-collection                                           #
         # When the tool catalog is larger than tools_split_limit (or           #
@@ -3475,20 +3798,66 @@ async def send_message(
         # conversation.  All tool_calls returned across every chunk are merged  #
         # (deduplicated by tool name + arguments) and injected into Turn 0     #
         # of the main loop below, bypassing the normal first-turn LLM call.   #
+        #                                                                      #
+        # Pipeline mode (MCP_SPLIT_PHASE_PIPELINE_ENABLED=true): MCP tools are #
+        # started immediately as each chunk responds instead of waiting for    #
+        # all chunks first, overlapping LLM wait time with MCP execution time. #
         # ------------------------------------------------------------------ #
         split_phase_tool_calls: Optional[List[Dict[str, Any]]] = None
         if _split_phase_needed and has_real_tools:
             _messages_snapshot = list(messages_for_llm)  # read-only snapshot
             _split_mode = active_llm_config.tools_split_mode  # "sequential" | "concurrent"
-            split_phase_tool_calls = await _collect_split_phase_tool_calls(
-                llm_client=llm_client,
-                messages_snapshot=_messages_snapshot,
-                tool_chunks=tool_chunks,
-                split_mode=_split_mode,
-                request_mode=request_mode,
-                request_mode_details=request_mode_details,
-                extract_tool_calls_from_content=extract_tool_calls_from_content,
-            )
+            _pipeline_enabled = _get_bool_env("MCP_SPLIT_PHASE_PIPELINE_ENABLED", False)
+            if _pipeline_enabled:
+                logger_internal.info(
+                    "Split-phase pipeline enabled: chunks=%s concurrency=%s mode=%s",
+                    len(tool_chunks),
+                    int(os.getenv("MCP_MAX_TOOL_CALLS_PER_TURN", "8")),
+                    _split_mode,
+                )
+                _stream = _stream_split_phase_tool_calls(
+                    llm_client=llm_client,
+                    messages_snapshot=_messages_snapshot,
+                    tool_chunks=tool_chunks,
+                    split_mode=_split_mode,
+                    request_mode=request_mode,
+                    request_mode_details=request_mode_details,
+                    extract_tool_calls_from_content=extract_tool_calls_from_content,
+                )
+                _pipeline_parsed, _pipeline_results = await _run_pipeline_execution(
+                    stream=_stream,
+                    run_mcp_tool=_run_one_mcp_tool,
+                    tool_concurrency=int(os.getenv("MCP_MAX_TOOL_CALLS_PER_TURN", "8")),
+                    num_chunks=len(tool_chunks),
+                )
+                # Rebuild the tool_call list in LLM format for Turn 0 injection.
+                split_phase_tool_calls = [
+                    {
+                        "id": pc["tool_id"],
+                        "type": "function",
+                        "function": {
+                            "name": pc["namespaced_tool_name"],
+                            "arguments": (
+                                json.dumps(pc["arguments"])
+                                if isinstance(pc["arguments"], dict)
+                                else (pc["arguments"] or "{}")
+                            ),
+                        },
+                    }
+                    for pc in _pipeline_parsed
+                ]
+                # Expose results for Phase 2/3 in Turn 0 so they are not re-executed.
+                _pre_executed_results_map = _pipeline_results
+            else:
+                split_phase_tool_calls = await _collect_split_phase_tool_calls(
+                    llm_client=llm_client,
+                    messages_snapshot=_messages_snapshot,
+                    tool_chunks=tool_chunks,
+                    split_mode=_split_mode,
+                    request_mode=request_mode,
+                    request_mode_details=request_mode_details,
+                    extract_tool_calls_from_content=extract_tool_calls_from_content,
+                )
             _sp_tool_names = [tc.get("function", {}).get("name", "") for tc in split_phase_tool_calls]
             logger_external.info(
                 "MCP CLIENT → MCP SERVER TOOLS LIST: [%s] (%s tool(s) across %s chunk(s))",
@@ -3719,92 +4088,22 @@ async def send_message(
                 # Phase 2: Fire all independent (non-deduped, non-virtual) MCP
                 # tool calls in parallel.  Results are collected keyed by tool_id
                 # and injected in original tool_call order in Phase 3 below.
-                # mcp_repeated_exec is a complex virtual tool that must remain
-                # sequential; it is excluded from the parallel batch.
+                # mcp_repeated_exec stays sequential; it is excluded from the batch.
+                # Pipeline path: _pre_executed_results_map is pre-populated and
+                # _parallel_candidates will be empty; asyncio.gather is skipped.
                 # -----------------------------------------------------------------
-                async def _run_one_mcp_tool(pc: Dict[str, Any]) -> Dict[str, Any]:
-                    """Execute one normal MCP tool call. Pure I/O — no side effects."""
-                    _name = pc["namespaced_tool_name"]
-                    _args = pc["arguments"]
-                    if not _name or "__" not in _name:
-                        logger_internal.error("Invalid tool name format: %s", _name)
-                        return {**pc, "result_content": f"Error: Invalid tool name format: {_name}",
-                                "tool_result": None, "success": False, "duration_ms": 0}
-                    _server_alias, _actual_name = _name.split("__", 1)
-                    _server = next(
-                        (s for s in servers_storage.values() if s.alias == _server_alias),
-                        None,
-                    )
-                    if not _server:
-                        logger_internal.error("Server not found: %s", _server_alias)
-                        return {**pc, "result_content": f"Error: Server '{_server_alias}' not found",
-                                "tool_result": None, "success": False, "duration_ms": 0}
-                    _stored = mcp_manager.tools.get(_name)
-                    _hints = _stored.execution_hints if _stored else None
-                    if _hints:
-                        _est_ms = _hints.estimatedRuntimeMs or 0
-                        if _hints.mode == "sampling" or _est_ms >= 5000:
-                            logger_internal.info(
-                                "Long-running diagnostic tool: %s | mode=%s, estimatedRuntime=%.1fs. "
-                                "This diagnostic samples data over time — client timeout extended accordingly.",
-                                _name, _hints.mode, _est_ms / 1000,
-                            )
-                        else:
-                            logger_internal.info(
-                                "One-shot diagnostic tool: %s | mode=%s, estimatedRuntime=%.1fs. "
-                                "Collecting snapshot.",
-                                _name, _hints.mode, _est_ms / 1000,
-                            )
-                    import time as _time_mod
-                    _start = _time_mod.time()
-                    # ---- Phase 3: safe tool cache lookup ---- #
-                    if _memory_service is not None:
-                        _cache_result = _memory_service.lookup_tool_cache(
-                            tool_name=_name,
-                            arguments=_args if isinstance(_args, dict) else {},
-                            user_id=user_id or "",
-                        )
-                        if _cache_result.hit and _cache_result.approved:
-                            _dur = int((_time_mod.time() - _start) * 1000)
-                            logger_internal.info(
-                                "Tool cache HIT: %s (cache_id=%s)", _name, _cache_result.cache_id
-                            )
-                            return {**pc, "result_content": _cache_result.result_text,
-                                    "tool_result": {"content": _cache_result.result_text},
-                                    "success": True, "duration_ms": _dur, "cache_hit": True}
-                    try:
-                        _result = await mcp_manager.execute_tool(
-                            server=_server,
-                            tool_name=_actual_name,
-                            arguments=_args,
-                            execution_hints=_hints,
-                        )
-                        _dur = int((_time_mod.time() - _start) * 1000)
-                        _max_chars = int(os.getenv("MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM", "131072"))
-                        _res_str = _extract_tool_result_text(_result)
-                        if len(_res_str) > _max_chars:
-                            _res_str = _res_str[:_max_chars] + "... [truncated]"
-                        _success = not bool(_result.get("isError")) if isinstance(_result, dict) else True
-                        # ---- Phase 3: store in cache if allowlisted and successful ---- #
-                        if _success and _memory_service is not None:
-                            _memory_service.record_tool_cache(
-                                tool_name=_name,
-                                arguments=_args if isinstance(_args, dict) else {},
-                                result_text=_res_str,
-                                user_id=user_id or "",
-                            )
-                        return {**pc, "result_content": _res_str, "tool_result": _result,
-                                "success": _success, "duration_ms": _dur}
-                    except Exception as _exc:
-                        _dur = int((_time_mod.time() - _start) * 1000)
-                        logger_internal.error("Tool execution error: %s", _exc)
-                        return {**pc, "result_content": f"Error: {_exc}", "tool_result": str(_exc),
-                                "success": False, "duration_ms": _dur}
+
+                # Seed _parallel_results_map from pipeline results for Turn 0
+                # so Phase 3 reads already-executed results without re-running them.
+                _parallel_results_map: Dict[str, Dict[str, Any]] = (
+                    dict(_pre_executed_results_map) if (turn == 0 and _pre_executed_results_map) else {}
+                )
 
                 _parallel_candidates = [
                     pc for pc in _parsed_tool_calls
                     if pc["namespaced_tool_name"] != "mcp_repeated_exec"
                     and pc["dedupe_key"] not in executed_tool_results
+                    and pc["tool_id"] not in _parallel_results_map  # skip pipeline-pre-executed
                 ]
                 if len(_parallel_candidates) > 1:
                     logger_internal.info(
@@ -3822,7 +4121,6 @@ async def send_message(
                         *[_run_one_mcp_tool(pc) for pc in _parallel_candidates],
                         return_exceptions=True,
                     ))
-                _parallel_results_map: Dict[str, Dict[str, Any]] = {}
                 for _pc, _raw in zip(_parallel_candidates, _raw_parallel):
                     if isinstance(_raw, BaseException):
                         _parallel_results_map[_pc["tool_id"]] = {
