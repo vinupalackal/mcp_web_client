@@ -677,6 +677,42 @@ def test_select_direct_tool_route_chooses_one_tool_per_candidate_group():
     ]
 
 
+def test_select_direct_tool_route_prefers_one_tool_for_free_memory_group():
+    """free_memory route should resolve one preferred tool from its overlapping alternatives."""
+    main_module = importlib.import_module("backend.main")
+
+    route = main_module._select_direct_tool_route(
+        "How much free memory does the device have?",
+        [
+            "svc__system_memory_stats",
+            "svc__get_memory_info",
+            "svc__system_memory_free",
+        ],
+    )
+
+    assert route is not None
+    assert route["route_name"] == "free_memory"
+    assert route["allowed_tool_names"] == ["svc__system_memory_free"]
+
+
+def test_select_direct_tool_route_prefers_one_tool_for_disk_usage_group():
+    """disk_usage route should resolve one preferred tool from its overlapping alternatives."""
+    main_module = importlib.import_module("backend.main")
+
+    route = main_module._select_direct_tool_route(
+        "show disk usage",
+        [
+            "svc__get_disk_stats",
+            "svc__check_disk_space",
+            "svc__get_disk_usage",
+        ],
+    )
+
+    assert route is not None
+    assert route["route_name"] == "disk_usage"
+    assert route["allowed_tool_names"] == ["svc__get_disk_usage"]
+
+
 def test_repeated_exec_triage_instruction_requests_explanatory_output_format():
     """Repeated execution synthesis should require the richer triaging output structure."""
     main_module = importlib.import_module("backend.main")

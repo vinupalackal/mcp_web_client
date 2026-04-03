@@ -160,9 +160,7 @@ DIRECT_QUERY_ROUTES: List[Dict[str, Any]] = [
             r"\bmemory available\b",
         ],
         "tool_candidates": [
-            ["system_memory_free"],
-            ["get_memory_info"],
-            ["system_memory_stats"],
+            ["system_memory_free", "get_memory_info", "system_memory_stats"],
         ],
     },
     {
@@ -202,8 +200,7 @@ DIRECT_QUERY_ROUTES: List[Dict[str, Any]] = [
             r"\bdisk space\b",
         ],
         "tool_candidates": [
-            ["get_disk_usage", "system_disk_space", "check_disk_space"],
-            ["get_disk_stats"],
+            ["get_disk_usage", "system_disk_space", "check_disk_space", "get_disk_stats"],
         ],
     },
     {

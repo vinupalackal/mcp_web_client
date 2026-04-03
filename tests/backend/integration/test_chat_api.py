@@ -681,9 +681,80 @@ class TestToolCallingFlow:
         assert first_payload["messages"][1]["content"] == "How much free memory does the device have?"
         first_tool_names = [tool["function"]["name"] for tool in first_payload["tools"]]
         assert "svc__system_memory_free" in first_tool_names
-        assert "svc__get_memory_info" in first_tool_names
+        assert "svc__get_memory_info" not in first_tool_names
         assert "svc__device_version" not in first_tool_names
         assert "mcp_repeated_exec" not in first_tool_names
+
+    @respx.mock
+    def test_direct_disk_usage_query_prefers_one_disk_tool(self, client, llm_openai, monkeypatch):
+        """Direct disk-usage routing should expose one preferred disk tool, not multiple overlapping variants."""
+        self._setup_server_with_tools(
+            client,
+            monkeypatch,
+            [
+                "svc__get_disk_usage",
+                "svc__check_disk_space",
+                "svc__get_disk_stats",
+                "svc__device_version",
+            ],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            if len(captured_payloads) == 1:
+                return httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_disk",
+                                "type": "function",
+                                "function": {
+                                    "name": "svc__get_disk_usage",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                })
+            return httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Disk usage is 61%."},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
+            })
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"content": [{"type": "text", "text": "61%"}], "isError": False},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "show disk usage"},
+        )
+
+        assert response.status_code == 200
+        first_tool_names = [tool["function"]["name"] for tool in captured_payloads[0]["tools"]]
+        assert first_tool_names == ["svc__get_disk_usage"]
 
     @respx.mock
     def test_direct_uptime_query_prefers_one_uptime_tool_per_candidate_group(self, client, llm_openai, monkeypatch):
@@ -870,7 +941,7 @@ class TestToolCallingFlow:
         first_payload = captured_payloads[0]
         first_tool_names = [tool["function"]["name"] for tool in first_payload["tools"]]
         assert first_tool_names.count("svc__system_memory_free") == 1
-        assert first_tool_names.count("svc__get_memory_info") == 1
+        assert "svc__get_memory_info" not in first_tool_names
         assert len(first_tool_names) == len(set(first_tool_names))
 
     @respx.mock
