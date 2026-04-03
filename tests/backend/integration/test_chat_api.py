@@ -783,6 +783,202 @@ class TestToolCallingFlow:
         assert first_tool_names.count("svc__system_memory_free") == 1
         assert first_tool_names.count("svc__get_memory_info") == 1
         assert len(first_tool_names) == len(set(first_tool_names))
+
+    @respx.mock
+    def test_memory_route_dedupes_duplicate_tools_before_llm_request(self, client, llm_openai, monkeypatch):
+        """Memory-based tool routes must not send duplicate tool entries to the LLM."""
+        self._setup_server_with_tools(
+            client,
+            monkeypatch,
+            [
+                "svc__get_memory_info",
+                "svc__system_memory_free",
+                "svc__device_version",
+            ],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        class _FakeMemoryService:
+            async def resolve_tools_from_memory(self, **kwargs):
+                return ["svc__get_memory_info", "svc__system_memory_free"]
+
+            async def enrich_for_turn(self, **kwargs):
+                from backend.memory_service import RetrievalResult
+                return RetrievalResult(collection_keys=())
+
+            def run_expiry_cleanup_if_due(self, *args, **kwargs):
+                return {"ran": False}
+
+            def lookup_tool_cache(self, *args, **kwargs):
+                from backend.memory_service import ToolCacheResult
+                return ToolCacheResult()
+
+            def record_tool_cache(self, *args, **kwargs):
+                return None
+
+            async def record_turn(self, **kwargs):
+                return None
+
+        monkeypatch.setattr(main_module, "_memory_service", _FakeMemoryService())
+
+        original_get_tools_for_llm = main_module.mcp_manager.get_tools_for_llm
+        original_get_tools_for_llm_chunks = main_module.mcp_manager.get_tools_for_llm_chunks
+
+        def _dup_get_tools_for_llm(*args, **kwargs):
+            tools = original_get_tools_for_llm(*args, **kwargs)
+            duplicated = list(tools)
+            for tool in tools:
+                if tool.get("function", {}).get("name") == "svc__get_memory_info":
+                    duplicated.append(tool)
+            return duplicated
+
+        def _dup_get_tools_for_llm_chunks(*args, **kwargs):
+            chunks = original_get_tools_for_llm_chunks(*args, **kwargs)
+            return [list(chunk) + [tool for tool in chunk if tool.get("function", {}).get("name") == "svc__get_memory_info"] for chunk in chunks]
+
+        monkeypatch.setattr(main_module.mcp_manager, "get_tools_for_llm", _dup_get_tools_for_llm)
+        monkeypatch.setattr(main_module.mcp_manager, "get_tools_for_llm_chunks", _dup_get_tools_for_llm_chunks)
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            if len(captured_payloads) == 1:
+                return httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_mem_info",
+                                "type": "function",
+                                "function": {
+                                    "name": "svc__get_memory_info",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                })
+            return httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Memory looks healthy."},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
+            })
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"content": [{"type": "text", "text": "healthy"}], "isError": False},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "check memory status"},
+        )
+
+        assert response.status_code == 200
+        first_tool_names = [tool["function"]["name"] for tool in captured_payloads[0]["tools"]]
+        assert first_tool_names.count("svc__get_memory_info") == 1
+        assert len(first_tool_names) == len(set(first_tool_names))
+
+    @respx.mock
+    def test_domain_narrowing_dedupes_duplicate_tools_before_llm_request(self, client, llm_openai, monkeypatch):
+        """Domain narrowing must not send duplicate tools to the LLM."""
+        self._setup_server_with_tools(
+            client,
+            monkeypatch,
+            [
+                "svc__kernel_logs",
+                "svc__system_log_summary",
+                "svc__get_memory_info",
+            ],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        original_get_tools_for_llm = main_module.mcp_manager.get_tools_for_llm
+
+        def _dup_get_tools_for_llm(*args, **kwargs):
+            tools = original_get_tools_for_llm(*args, **kwargs)
+            duplicated = list(tools)
+            for tool in tools:
+                if tool.get("function", {}).get("name") == "svc__kernel_logs":
+                    duplicated.append(tool)
+            return duplicated
+
+        monkeypatch.setattr(main_module.mcp_manager, "get_tools_for_llm", _dup_get_tools_for_llm)
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            if len(captured_payloads) == 1:
+                return httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_logs",
+                                "type": "function",
+                                "function": {
+                                    "name": "svc__kernel_logs",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                })
+            return httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Kernel logs collected."},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
+            })
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"content": [{"type": "text", "text": "log output"}], "isError": False},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "show kernel logs"},
+        )
+
+        assert response.status_code == 200
+        first_tool_names = [tool["function"]["name"] for tool in captured_payloads[0]["tools"]]
+        assert first_tool_names.count("svc__kernel_logs") == 1
+        assert "svc__get_memory_info" not in first_tool_names
+        assert len(first_tool_names) == len(set(first_tool_names))
     
     @respx.mock
     def test_feature_flagged_tiny_llm_mode_classifier_runs_before_tool_flow(self, client, llm_openai, monkeypatch):
