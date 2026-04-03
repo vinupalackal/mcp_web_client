@@ -684,6 +684,105 @@ class TestToolCallingFlow:
         assert "svc__get_memory_info" in first_tool_names
         assert "svc__device_version" not in first_tool_names
         assert "mcp_repeated_exec" not in first_tool_names
+
+    @respx.mock
+    def test_direct_metric_query_dedupes_duplicate_tools_before_llm_request(self, client, llm_openai, monkeypatch):
+        """Direct tool routes must not send duplicate tool entries to the LLM."""
+        self._setup_server_with_tools(
+            client,
+            monkeypatch,
+            [
+                "svc__system_memory_free",
+                "svc__get_memory_info",
+                "svc__device_version",
+            ],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        original_get_tools_for_llm = main_module.mcp_manager.get_tools_for_llm
+        original_get_tools_for_llm_chunks = main_module.mcp_manager.get_tools_for_llm_chunks
+
+        def _dup_get_tools_for_llm(*args, **kwargs):
+            tools = original_get_tools_for_llm(*args, **kwargs)
+            duplicated = list(tools)
+            for tool in tools:
+                if tool.get("function", {}).get("name") in {"svc__system_memory_free", "svc__get_memory_info"}:
+                    duplicated.append(tool)
+            return duplicated
+
+        def _dup_get_tools_for_llm_chunks(*args, **kwargs):
+            chunks = original_get_tools_for_llm_chunks(*args, **kwargs)
+            duplicated_chunks = []
+            for chunk in chunks:
+                dup_chunk = list(chunk)
+                for tool in chunk:
+                    if tool.get("function", {}).get("name") == "svc__system_memory_free":
+                        dup_chunk.append(tool)
+                duplicated_chunks.append(dup_chunk)
+            return duplicated_chunks
+
+        monkeypatch.setattr(main_module.mcp_manager, "get_tools_for_llm", _dup_get_tools_for_llm)
+        monkeypatch.setattr(main_module.mcp_manager, "get_tools_for_llm_chunks", _dup_get_tools_for_llm_chunks)
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            if len(captured_payloads) == 1:
+                return httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_mem_free",
+                                "type": "function",
+                                "function": {
+                                    "name": "svc__system_memory_free",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                })
+            return httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "Free memory is 60 MB."},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
+            })
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"content": [{"type": "text", "text": "60"}], "isError": False},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "How much free memory does the device have?"},
+        )
+
+        assert response.status_code == 200
+        assert len(captured_payloads) == 2
+        first_payload = captured_payloads[0]
+        first_tool_names = [tool["function"]["name"] for tool in first_payload["tools"]]
+        assert first_tool_names.count("svc__system_memory_free") == 1
+        assert first_tool_names.count("svc__get_memory_info") == 1
+        assert len(first_tool_names) == len(set(first_tool_names))
     
     @respx.mock
     def test_feature_flagged_tiny_llm_mode_classifier_runs_before_tool_flow(self, client, llm_openai, monkeypatch):

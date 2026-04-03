@@ -365,6 +365,37 @@ def _narrow_tools_by_domain(
     return narrowed + virtual_tools
 
 
+def _dedupe_llm_tool_catalog(
+    tools_for_llm: List[Dict[str, Any]],
+    *,
+    context_label: str,
+) -> List[Dict[str, Any]]:
+    """Remove duplicate tool entries by function name while preserving order."""
+    deduped: List[Dict[str, Any]] = []
+    seen_names: set[str] = set()
+
+    for tool in tools_for_llm:
+        tool_name = tool.get("function", {}).get("name", "")
+        if not tool_name:
+            deduped.append(tool)
+            continue
+        if tool_name in seen_names:
+            continue
+        seen_names.add(tool_name)
+        deduped.append(tool)
+
+    removed_count = len(tools_for_llm) - len(deduped)
+    if removed_count > 0:
+        logger_internal.info(
+            "LLM tool catalog deduped for %s: removed %s duplicate tool entr%s",
+            context_label,
+            removed_count,
+            "y" if removed_count == 1 else "ies",
+        )
+
+    return deduped
+
+
 FOLLOW_UP_PATTERNS = (
     r"\bwhat about\b",
     r"\bhow about\b",
@@ -3262,6 +3293,18 @@ async def send_message(
             allowed_tool_names=allowed_tool_names,
             include_virtual_repeated=include_virtual_repeated,
         )
+        if direct_tool_route is not None:
+            tools_for_llm = _dedupe_llm_tool_catalog(
+                tools_for_llm,
+                context_label=f"direct route {direct_tool_route['route_name']}",
+            )
+            tool_chunks = [
+                _dedupe_llm_tool_catalog(
+                    chunk,
+                    context_label=f"direct route {direct_tool_route['route_name']} chunk {idx}",
+                )
+                for idx, chunk in enumerate(tool_chunks, 1)
+            ]
         _split_phase_needed = (
             len(tool_chunks) > 1
             and active_llm_config.tools_split_enabled
