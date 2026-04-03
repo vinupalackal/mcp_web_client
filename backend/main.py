@@ -396,6 +396,27 @@ def _dedupe_llm_tool_catalog(
     return deduped
 
 
+def _dedupe_llm_tool_catalog_and_chunks(
+    tools_for_llm: List[Dict[str, Any]],
+    tool_chunks: List[List[Dict[str, Any]]],
+    *,
+    context_label: str,
+) -> tuple[List[Dict[str, Any]], List[List[Dict[str, Any]]]]:
+    """Deduplicate a tool catalog and all of its chunks with consistent labels."""
+    deduped_tools = _dedupe_llm_tool_catalog(
+        tools_for_llm,
+        context_label=context_label,
+    )
+    deduped_chunks = [
+        _dedupe_llm_tool_catalog(
+            chunk,
+            context_label=f"{context_label} chunk {idx}",
+        )
+        for idx, chunk in enumerate(tool_chunks, 1)
+    ]
+    return deduped_tools, deduped_chunks
+
+
 FOLLOW_UP_PATTERNS = (
     r"\bwhat about\b",
     r"\bhow about\b",
@@ -3294,17 +3315,11 @@ async def send_message(
             include_virtual_repeated=include_virtual_repeated,
         )
         if direct_tool_route is not None:
-            tools_for_llm = _dedupe_llm_tool_catalog(
+            tools_for_llm, tool_chunks = _dedupe_llm_tool_catalog_and_chunks(
                 tools_for_llm,
+                tool_chunks,
                 context_label=f"route {direct_tool_route['route_name']}",
             )
-            tool_chunks = [
-                _dedupe_llm_tool_catalog(
-                    chunk,
-                    context_label=f"route {direct_tool_route['route_name']} chunk {idx}",
-                )
-                for idx, chunk in enumerate(tool_chunks, 1)
-            ]
         _split_phase_needed = (
             len(tool_chunks) > 1
             and active_llm_config.tools_split_enabled
@@ -3425,10 +3440,6 @@ async def send_message(
             _matched_domains = request_mode_details.get("domains", [])
             if _matched_domains:
                 tools_for_llm = _narrow_tools_by_domain(tools_for_llm, _matched_domains)
-                tools_for_llm = _dedupe_llm_tool_catalog(
-                    tools_for_llm,
-                    context_label=f"domain narrowing {','.join(_matched_domains)}",
-                )
                 # Recompute tool_names and chunks from the narrowed list
                 tool_names = [t["function"]["name"] for t in tools_for_llm]
                 # Re-chunk: split narrowed list respecting effective_limit
@@ -3443,13 +3454,11 @@ async def send_message(
                         real_narrowed[i: i + _eff_chunk] + virt_narrowed
                         for i in range(0, len(real_narrowed), _eff_chunk)
                     ]
-                tool_chunks = [
-                    _dedupe_llm_tool_catalog(
-                        chunk,
-                        context_label=f"domain narrowing {','.join(_matched_domains)} chunk {idx}",
-                    )
-                    for idx, chunk in enumerate(tool_chunks, 1)
-                ]
+                tools_for_llm, tool_chunks = _dedupe_llm_tool_catalog_and_chunks(
+                    tools_for_llm,
+                    tool_chunks,
+                    context_label=f"domain narrowing {','.join(_matched_domains)}",
+                )
                 _split_phase_needed = len(tool_chunks) > 1 and active_llm_config.tools_split_enabled
                 logger_internal.info(
                     "Domain-narrowed catalog: %s tools, %s chunk(s), split_needed=%s domains=%s",
