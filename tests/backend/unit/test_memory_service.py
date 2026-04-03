@@ -1389,3 +1389,291 @@ class TestResolveToolsFromMemory:
         )
 
         assert result == []  # Timeout must not propagate as an exception.
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for MemoryService private helpers (TC-MEM-HELPERS-*)
+# ---------------------------------------------------------------------------
+
+def _service(**config_kwargs):
+    """Build a minimal MemoryService with fake dependencies for helper unit tests."""
+    return MemoryService(
+        embedding_service=_FakeEmbeddingService(),
+        milvus_store=_FakeMilvusStore(),
+        memory_persistence=_FakeMemoryPersistence(),
+        config=MemoryServiceConfig(**{"enabled": True, **config_kwargs}),
+    )
+
+
+class TestCollectionsToSearch:
+
+    def test_both_collections_included_by_default(self):
+        """TC-MEM-COL-01: Both code_memory and doc_memory are returned when include_code_memory=True."""
+        svc = _service(collection_keys=("code_memory", "doc_memory"))
+        result = svc._collections_to_search("user-1", include_code_memory=True)
+        assert "code_memory" in result
+        assert "doc_memory" in result
+
+    def test_code_doc_excluded_when_include_code_memory_false(self):
+        """TC-MEM-COL-02: code_memory and doc_memory are excluded when include_code_memory=False."""
+        svc = _service(collection_keys=("code_memory", "doc_memory"))
+        result = svc._collections_to_search("user-1", include_code_memory=False)
+        assert "code_memory" not in result
+        assert "doc_memory" not in result
+
+    def test_conversation_memory_added_when_enabled_and_user_known(self):
+        """TC-MEM-COL-03: conversation_memory is appended when feature is on and user_id set."""
+        svc = _service(
+            collection_keys=("code_memory", "doc_memory"),
+            enable_conversation_memory=True,
+        )
+        result = svc._collections_to_search("user-99", include_code_memory=True)
+        assert "conversation_memory" in result
+
+    def test_conversation_memory_absent_for_anonymous_user(self):
+        """TC-MEM-COL-04: conversation_memory is NOT added when user_id is empty."""
+        svc = _service(
+            collection_keys=("code_memory", "doc_memory"),
+            enable_conversation_memory=True,
+        )
+        result = svc._collections_to_search("", include_code_memory=True)
+        assert "conversation_memory" not in result
+
+    def test_conversation_memory_absent_when_feature_disabled(self):
+        """TC-MEM-COL-05: conversation_memory is NOT added when enable_conversation_memory=False."""
+        svc = _service(
+            collection_keys=("code_memory", "doc_memory"),
+            enable_conversation_memory=False,
+        )
+        result = svc._collections_to_search("user-1", include_code_memory=True)
+        assert "conversation_memory" not in result
+
+    def test_returns_empty_for_anonymous_planning_phase(self):
+        """TC-MEM-COL-06: Anonymous + planning phase yields empty collection list."""
+        svc = _service(
+            collection_keys=("code_memory", "doc_memory"),
+            enable_conversation_memory=True,
+        )
+        result = svc._collections_to_search("", include_code_memory=False)
+        assert result == []
+
+    def test_no_duplicate_conversation_memory_entry(self):
+        """TC-MEM-COL-07: conversation_memory is not added twice even if already in collection_keys."""
+        svc = _service(
+            collection_keys=("code_memory", "conversation_memory"),
+            enable_conversation_memory=True,
+        )
+        result = svc._collections_to_search("user-1", include_code_memory=True)
+        assert result.count("conversation_memory") == 1
+
+
+class TestBuildQuery:
+
+    def test_collapses_whitespace(self):
+        """TC-MEM-Q-01: Multiple spaces and newlines are collapsed to single spaces."""
+        svc = _service()
+        assert svc._build_query("  hello   world  ") == "hello world"
+
+    def test_truncates_at_512_chars(self):
+        """TC-MEM-Q-02: Queries longer than 512 chars are truncated."""
+        svc = _service()
+        long_text = "a " * 300   # 600 chars
+        result = svc._build_query(long_text)
+        assert len(result) <= 512
+
+    def test_empty_string_returns_empty(self):
+        """TC-MEM-Q-03: Empty or None input returns empty string."""
+        svc = _service()
+        assert svc._build_query("") == ""
+        assert svc._build_query(None) == ""
+
+    def test_short_query_unchanged(self):
+        """TC-MEM-Q-04: Short query passes through without modification."""
+        svc = _service()
+        assert svc._build_query("find the main function") == "find the main function"
+
+
+class TestQueryHash:
+
+    def test_produces_16_char_hex_string(self):
+        """TC-MEM-QH-01: Hash output is a 16-character hex string."""
+        svc = _service()
+        h = svc._query_hash("find main")
+        assert len(h) == 16
+        assert all(c in "0123456789abcdef" for c in h)
+
+    def test_same_input_same_hash(self):
+        """TC-MEM-QH-02: Deterministic — same text produces same hash."""
+        svc = _service()
+        assert svc._query_hash("hello") == svc._query_hash("hello")
+
+    def test_different_inputs_different_hash(self):
+        """TC-MEM-QH-03: Different text produces different hash."""
+        svc = _service()
+        assert svc._query_hash("hello") != svc._query_hash("world")
+
+    def test_empty_string_has_stable_hash(self):
+        """TC-MEM-QH-04: Empty string produces a stable, non-empty hash."""
+        svc = _service()
+        h = svc._query_hash("")
+        assert len(h) == 16
+
+
+class TestBuildFilterExpression:
+
+    def test_empty_repo_id_returns_empty_string(self):
+        """TC-MEM-FE-01: Empty repo_id produces no filter."""
+        svc = _service()
+        assert svc._build_filter_expression("") == ""
+
+    def test_non_empty_repo_id_produces_equality_filter(self):
+        """TC-MEM-FE-02: A repo_id is wrapped in a Milvus equality expression."""
+        svc = _service()
+        expr = svc._build_filter_expression("my-repo")
+        assert 'repo_id == "my-repo"' == expr
+
+    def test_quotes_in_repo_id_are_escaped(self):
+        """TC-MEM-FE-03: Double quotes in repo_id are backslash-escaped so the
+        resulting Milvus filter expression is syntactically valid."""
+        svc = _service()
+        expr = svc._build_filter_expression('repo"name')
+        # The quote should be escaped as \" in the expression
+        assert '\\"' in expr
+
+
+class TestFlattenHits:
+
+    def test_flat_list_of_dicts_passes_through(self):
+        """TC-MEM-FH-01: A plain list of hit dicts is returned as-is."""
+        svc = _service()
+        hits = [{"distance": 0.1}, {"distance": 0.2}]
+        assert svc._flatten_hits(hits) == hits
+
+    def test_nested_list_of_lists_is_flattened(self):
+        """TC-MEM-FH-02: A Milvus-style [[hit, hit], [hit]] structure is flattened."""
+        svc = _service()
+        hits = [[{"distance": 0.1}, {"distance": 0.2}], [{"distance": 0.3}]]
+        result = svc._flatten_hits(hits)
+        assert len(result) == 3
+
+    def test_non_list_input_returns_empty(self):
+        """TC-MEM-FH-03: Non-list input (e.g. None or a dict) returns empty list."""
+        svc = _service()
+        assert svc._flatten_hits(None) == []
+        assert svc._flatten_hits({}) == []
+
+    def test_nested_non_dicts_are_skipped(self):
+        """TC-MEM-FH-04: Non-dict items inside a nested list are skipped."""
+        svc = _service()
+        result = svc._flatten_hits([["not-a-dict", None, {"distance": 0.5}]])
+        assert result == [{"distance": 0.5}]
+
+
+class TestScoreForHit:
+
+    def test_reads_distance_field(self):
+        """TC-MEM-SC-SH-01: 'distance' field is used as the score."""
+        svc = _service()
+        assert svc._score_for_hit({"distance": 0.42}) == pytest.approx(0.42)
+
+    def test_reads_score_field_as_fallback(self):
+        """TC-MEM-SC-SH-02: 'score' field is used when 'distance' is absent."""
+        svc = _service()
+        assert svc._score_for_hit({"score": 0.75}) == pytest.approx(0.75)
+
+    def test_missing_fields_return_zero(self):
+        """TC-MEM-SC-SH-03: Missing both fields returns 0.0."""
+        svc = _service()
+        assert svc._score_for_hit({}) == 0.0
+
+    def test_non_dict_returns_zero(self):
+        """TC-MEM-SC-SH-04: Non-dict input returns 0.0 without raising."""
+        svc = _service()
+        assert svc._score_for_hit(None) == 0.0
+        assert svc._score_for_hit("string") == 0.0
+
+    def test_string_score_is_cast_to_float(self):
+        """TC-MEM-SC-SH-05: Numeric strings are coerced to float."""
+        svc = _service()
+        assert svc._score_for_hit({"distance": "0.33"}) == pytest.approx(0.33)
+
+    def test_invalid_score_returns_zero(self):
+        """TC-MEM-SC-SH-06: Non-numeric score value falls back to 0.0."""
+        svc = _service()
+        assert svc._score_for_hit({"distance": "nan_value"}) == 0.0
+
+
+class TestNormalizeBlock:
+
+    def test_code_memory_hit_with_entity_wrapper(self):
+        """TC-MEM-NB-01: Nested entity dict is unwrapped for code_memory."""
+        svc = _service()
+        hit = {
+            "distance": 0.05,
+            "entity": {
+                "payload_ref": "payload://code/repo/src/main.c#init",
+                "relative_path": "src/main.c",
+                "summary": "init function",
+            },
+        }
+        block = svc._normalize_block(collection_key="code_memory", hit=hit)
+        assert block.payload_ref == "payload://code/repo/src/main.c#init"
+        assert block.source_path == "src/main.c"
+        assert block.snippet == "init function"
+        assert block.score == pytest.approx(0.05)
+        assert block.collection == "code_memory"
+
+    def test_doc_memory_hit_uses_source_path(self):
+        """TC-MEM-NB-02: doc_memory uses source_path for the path field."""
+        svc = _service()
+        hit = {
+            "distance": 0.10,
+            "entity": {
+                "payload_ref": "payload://doc/repo/README.md#usage",
+                "source_path": "README.md",
+                "summary": "usage instructions",
+            },
+        }
+        block = svc._normalize_block(collection_key="doc_memory", hit=hit)
+        assert block.source_path == "README.md"
+        assert block.snippet == "usage instructions"
+
+    def test_flat_hit_without_entity_wrapper(self):
+        """TC-MEM-NB-03: Flat hit dict (no 'entity' key) is also normalised."""
+        svc = _service()
+        hit = {
+            "payload_ref": "ref-flat",
+            "relative_path": "src/util.c",
+            "summary": "utility functions",
+            "distance": 0.20,
+        }
+        block = svc._normalize_block(collection_key="code_memory", hit=hit)
+        assert block.payload_ref == "ref-flat"
+        assert block.source_path == "src/util.c"
+
+    def test_conversation_memory_synthesises_source_path(self):
+        """TC-MEM-NB-04: conversation_memory builds a synthetic source_path from session/turn."""
+        svc = _service()
+        hit = {
+            "distance": 0.90,
+            "entity": {
+                "payload_ref": "turn-abc",
+                "session_id": "sess-42",
+                "turn_number": 3,
+                "assistant_summary": "you asked about the config",
+                "user_message": "where is config?",
+                "user_id": "user-1",
+            },
+        }
+        block = svc._normalize_block(collection_key="conversation_memory", hit=hit)
+        assert "conversation:" in block.source_path
+        assert "sess-42" in block.source_path
+        assert block.snippet == "you asked about the config"
+
+    def test_snippet_truncated_to_500_chars(self):
+        """TC-MEM-NB-05: Summary longer than 500 chars is truncated in the snippet."""
+        svc = _service()
+        long_summary = "x" * 600
+        hit = {"payload_ref": "ref", "summary": long_summary, "distance": 0.1}
+        block = svc._normalize_block(collection_key="code_memory", hit=hit)
+        assert len(block.snippet) == 500

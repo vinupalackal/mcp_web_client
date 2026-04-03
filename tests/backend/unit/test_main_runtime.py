@@ -877,3 +877,395 @@ def test_tiny_llm_mode_classifier_returns_parsed_result(monkeypatch):
     assert result is not None
     assert result["mode"] == "full_diagnostic"
     assert result["confidence"] == 0.74
+
+
+# ---------------------------------------------------------------------------
+# _find_matching_tool_names
+# ---------------------------------------------------------------------------
+
+def _main():
+    return importlib.import_module("backend.main")
+
+
+class TestFindMatchingToolNames:
+
+    def test_exact_match_on_full_namespaced_name(self):
+        """A candidate that is the full namespaced name resolves directly."""
+        m = _main()
+        result = m._find_matching_tool_names(
+            ["svc__ping"],
+            ["svc__ping", "svc__uptime"],
+        )
+        assert result == ["svc__ping"]
+
+    def test_bare_name_matches_namespaced_tool(self):
+        """A bare candidate like 'get_uptime' should match 'home__get_uptime'."""
+        m = _main()
+        result = m._find_matching_tool_names(
+            ["get_uptime"],
+            ["home_mcp__get_uptime", "home_mcp__server_info"],
+        )
+        assert result == ["home_mcp__get_uptime"]
+
+    def test_priority_order_preserved(self):
+        """Earlier candidates in the list take priority over later ones."""
+        m = _main()
+        result = m._find_matching_tool_names(
+            ["get_system_uptime", "get_uptime"],
+            ["svc__get_uptime", "svc__get_system_uptime"],
+        )
+        # get_system_uptime should come first since it's listed first in candidates
+        assert result[0] == "svc__get_system_uptime"
+
+    def test_no_match_returns_empty_list(self):
+        """When no candidate matches, an empty list is returned."""
+        m = _main()
+        result = m._find_matching_tool_names(
+            ["get_memory_info"],
+            ["svc__get_uptime", "svc__server_info"],
+        )
+        assert result == []
+
+    def test_no_duplicates_in_result(self):
+        """The same namespaced tool is never returned twice even if multiple candidates match it."""
+        m = _main()
+        # Both 'get_system_uptime' and the full namespaced name resolve to the same tool
+        result = m._find_matching_tool_names(
+            ["svc__get_system_uptime", "get_system_uptime"],
+            ["svc__get_system_uptime"],
+        )
+        assert result == ["svc__get_system_uptime"]
+        assert len(result) == 1
+
+    def test_multiple_candidates_multiple_results(self):
+        """Multiple distinct candidates yield multiple resolved tools."""
+        m = _main()
+        result = m._find_matching_tool_names(
+            ["get_uptime", "server_info"],
+            ["svc__get_uptime", "svc__server_info", "svc__cpu_usage"],
+        )
+        assert "svc__get_uptime" in result
+        assert "svc__server_info" in result
+        assert "svc__cpu_usage" not in result
+
+
+# ---------------------------------------------------------------------------
+# _select_one_tool_from_candidate_group (extended)
+# ---------------------------------------------------------------------------
+
+class TestSelectOneToolFromCandidateGroup:
+
+    def test_returns_none_when_no_match(self):
+        """Returns None when none of the candidates are available."""
+        m = _main()
+        result = m._select_one_tool_from_candidate_group(
+            ["get_uptime", "get_system_uptime"],
+            ["svc__cpu_usage", "svc__memory_free"],
+        )
+        assert result is None
+
+    def test_returns_none_for_empty_candidates(self):
+        """Empty candidate group always returns None."""
+        m = _main()
+        assert m._select_one_tool_from_candidate_group([], ["svc__uptime"]) is None
+
+    def test_returns_none_for_empty_available(self):
+        """No available tools always returns None."""
+        m = _main()
+        assert m._select_one_tool_from_candidate_group(["get_uptime"], []) is None
+
+    def test_picks_first_available_when_multiple_match(self):
+        """When multiple alternatives exist, picks the highest-priority available one."""
+        m = _main()
+        # Both tools available; 'get_system_uptime' is listed first → preferred
+        result = m._select_one_tool_from_candidate_group(
+            ["get_system_uptime", "get_uptime"],
+            ["svc__get_system_uptime", "svc__get_uptime"],
+        )
+        assert result == "svc__get_system_uptime"
+
+    def test_falls_back_to_second_when_first_unavailable(self):
+        """Falls back to the next candidate when the preferred one is not available."""
+        m = _main()
+        result = m._select_one_tool_from_candidate_group(
+            ["get_system_uptime", "get_uptime"],
+            ["svc__get_uptime"],           # only the fallback is present
+        )
+        assert result == "svc__get_uptime"
+
+
+# ---------------------------------------------------------------------------
+# _dedupe_llm_tool_catalog
+# ---------------------------------------------------------------------------
+
+def _tool(name: str) -> dict:
+    return {"type": "function", "function": {"name": name, "description": f"tool {name}"}}
+
+
+class TestDeduplicateLLMToolCatalog:
+
+    def test_removes_exact_duplicates_keeping_first_occurrence(self):
+        m = _main()
+        catalog = [_tool("svc__ping"), _tool("svc__ping"), _tool("svc__uptime")]
+        result = m._dedupe_llm_tool_catalog(catalog, context_label="test")
+        assert [t["function"]["name"] for t in result] == ["svc__ping", "svc__uptime"]
+
+    def test_no_duplicates_returns_original_order(self):
+        m = _main()
+        catalog = [_tool("a"), _tool("b"), _tool("c")]
+        result = m._dedupe_llm_tool_catalog(catalog, context_label="test")
+        assert [t["function"]["name"] for t in result] == ["a", "b", "c"]
+
+    def test_empty_catalog_returns_empty(self):
+        m = _main()
+        assert m._dedupe_llm_tool_catalog([], context_label="test") == []
+
+    def test_tool_without_name_is_kept(self):
+        """Entries with no function name are passed through unchanged."""
+        m = _main()
+        nameless = {"type": "function", "function": {}}
+        result = m._dedupe_llm_tool_catalog([nameless, _tool("a")], context_label="test")
+        assert result[0] == nameless
+        assert result[1]["function"]["name"] == "a"
+
+    def test_three_duplicates_collapses_to_one(self):
+        m = _main()
+        catalog = [_tool("dup")] * 3 + [_tool("unique")]
+        result = m._dedupe_llm_tool_catalog(catalog, context_label="test")
+        assert [t["function"]["name"] for t in result] == ["dup", "unique"]
+
+
+# ---------------------------------------------------------------------------
+# _dedupe_llm_tool_catalog_and_chunks
+# ---------------------------------------------------------------------------
+
+class TestDeduplicateLLMToolCatalogAndChunks:
+
+    def test_dedupes_flat_catalog_and_all_chunks(self):
+        m = _main()
+        catalog = [_tool("a"), _tool("a"), _tool("b")]
+        chunks = [
+            [_tool("a"), _tool("a")],
+            [_tool("b"), _tool("b"), _tool("c")],
+        ]
+        deduped_catalog, deduped_chunks = m._dedupe_llm_tool_catalog_and_chunks(
+            catalog, chunks, context_label="test"
+        )
+        assert [t["function"]["name"] for t in deduped_catalog] == ["a", "b"]
+        assert [t["function"]["name"] for t in deduped_chunks[0]] == ["a"]
+        assert [t["function"]["name"] for t in deduped_chunks[1]] == ["b", "c"]
+
+    def test_returns_same_length_chunk_list(self):
+        m = _main()
+        catalog = [_tool("x")]
+        chunks = [[_tool("x")], [_tool("y")], [_tool("z")]]
+        _, deduped_chunks = m._dedupe_llm_tool_catalog_and_chunks(
+            catalog, chunks, context_label="test"
+        )
+        assert len(deduped_chunks) == 3
+
+    def test_empty_inputs_return_empty_outputs(self):
+        m = _main()
+        catalog, chunks = m._dedupe_llm_tool_catalog_and_chunks([], [], context_label="test")
+        assert catalog == []
+        assert chunks == []
+
+
+# ---------------------------------------------------------------------------
+# _rechunk_llm_tool_catalog
+# ---------------------------------------------------------------------------
+
+class TestRechunkLLMToolCatalog:
+
+    def test_single_chunk_when_tools_fit(self):
+        m = _main()
+        catalog = [_tool(f"t{i}") for i in range(5)]
+        chunks = m._rechunk_llm_tool_catalog(
+            catalog, effective_limit=10, include_virtual_repeated=False
+        )
+        assert len(chunks) == 1
+        assert len(chunks[0]) == 5
+
+    def test_splits_into_multiple_chunks(self):
+        m = _main()
+        catalog = [_tool(f"t{i}") for i in range(6)]
+        chunks = m._rechunk_llm_tool_catalog(
+            catalog, effective_limit=3, include_virtual_repeated=False
+        )
+        assert len(chunks) == 2
+        assert len(chunks[0]) == 3
+        assert len(chunks[1]) == 3
+
+    def test_virtual_repeated_appended_to_every_chunk(self):
+        """When include_virtual_repeated=True, mcp_repeated_exec appears in every chunk."""
+        m = _main()
+        real_tools = [_tool(f"t{i}") for i in range(4)]
+        virtual = {"type": "function", "function": {"name": "mcp_repeated_exec"}}
+        catalog = real_tools + [virtual]
+        chunks = m._rechunk_llm_tool_catalog(
+            catalog, effective_limit=3, include_virtual_repeated=True
+        )
+        # effective_chunk_size = 3 - 1 = 2 real tools per chunk → 2 chunks
+        assert len(chunks) == 2
+        for chunk in chunks:
+            names = [t["function"]["name"] for t in chunk]
+            assert "mcp_repeated_exec" in names
+
+    def test_virtual_excluded_when_flag_false(self):
+        """include_virtual_repeated=False only removes the reserved slot from chunk-size;
+        the virtual tool is still appended to each chunk from the input catalog.
+        Use False when the caller has already stripped mcp_repeated_exec from the catalog."""
+        m = _main()
+        # When catalog has NO virtual tool and flag is False, chunks are clean.
+        catalog = [_tool("a"), _tool("b")]
+        chunks = m._rechunk_llm_tool_catalog(
+            catalog, effective_limit=5, include_virtual_repeated=False
+        )
+        for chunk in chunks:
+            names = [t["function"]["name"] for t in chunk]
+            assert "mcp_repeated_exec" not in names
+
+    def test_empty_catalog_returns_single_empty_chunk(self):
+        m = _main()
+        chunks = m._rechunk_llm_tool_catalog(
+            [], effective_limit=10, include_virtual_repeated=False
+        )
+        assert chunks == [[]]
+
+    def test_odd_remainder_handled(self):
+        """A catalog that doesn't divide evenly should produce a smaller last chunk."""
+        m = _main()
+        catalog = [_tool(f"t{i}") for i in range(7)]
+        chunks = m._rechunk_llm_tool_catalog(
+            catalog, effective_limit=3, include_virtual_repeated=False
+        )
+        total_tools = sum(len(c) for c in chunks)
+        assert total_tools == 7
+        # Last chunk may be smaller
+        assert len(chunks[-1]) <= 3
+
+
+# ---------------------------------------------------------------------------
+# _narrow_tools_by_domain
+# ---------------------------------------------------------------------------
+
+class TestNarrowToolsByDomain:
+
+    def test_no_domains_returns_full_catalog(self):
+        m = _main()
+        catalog = [_tool("svc__get_uptime"), _tool("svc__audio_play")]
+        result = m._narrow_tools_by_domain(catalog, [])
+        assert result == catalog
+
+    def test_filters_to_matching_domain_keywords(self):
+        m = _main()
+        catalog = [
+            _tool("svc__get_uptime"),
+            _tool("svc__memory_free"),
+            _tool("svc__audio_play"),
+        ]
+        result = m._narrow_tools_by_domain(catalog, ["memory"])
+        names = [t["function"]["name"] for t in result]
+        assert "svc__memory_free" in names
+        assert "svc__get_uptime" not in names
+        assert "svc__audio_play" not in names
+
+    def test_virtual_mcp_repeated_exec_always_preserved(self):
+        """mcp_repeated_exec must survive domain narrowing regardless of domain keywords."""
+        m = _main()
+        virtual = {"type": "function", "function": {"name": "mcp_repeated_exec"}}
+        catalog = [_tool("svc__audio_play"), virtual]
+        result = m._narrow_tools_by_domain(catalog, ["memory"])
+        names = [t["function"]["name"] for t in result]
+        assert "mcp_repeated_exec" in names
+
+    def test_falls_back_to_full_catalog_when_no_tools_match(self):
+        """Safety net: if narrowing would remove everything, the full catalog is returned."""
+        m = _main()
+        catalog = [_tool("svc__audio_play"), _tool("svc__video_stream")]
+        result = m._narrow_tools_by_domain(catalog, ["memory"])
+        assert result == catalog
+
+    def test_unknown_domain_returns_full_catalog(self):
+        """An unrecognised domain key (no keywords) should not narrow anything."""
+        m = _main()
+        catalog = [_tool("svc__x"), _tool("svc__y")]
+        result = m._narrow_tools_by_domain(catalog, ["does_not_exist_domain"])
+        assert result == catalog
+
+    def test_multiple_domains_union_keywords(self):
+        """Multiple domains contribute their keywords as a union."""
+        m = _main()
+        catalog = [
+            _tool("svc__memory_free"),
+            _tool("svc__get_uptime"),
+            _tool("svc__audio_play"),
+        ]
+        result = m._narrow_tools_by_domain(catalog, ["memory", "uptime"])
+        names = [t["function"]["name"] for t in result]
+        assert "svc__memory_free" in names
+        assert "svc__get_uptime" in names
+        assert "svc__audio_play" not in names
+
+
+# ---------------------------------------------------------------------------
+# _select_direct_tool_route (edge cases)
+# ---------------------------------------------------------------------------
+
+class TestSelectDirectToolRouteEdgeCases:
+
+    def test_returns_none_for_diagnostic_keyword(self):
+        """Diagnostic keywords like 'diagnose' must suppress direct routing."""
+        m = _main()
+        route = m._select_direct_tool_route(
+            "diagnose why the device is slow",
+            ["svc__get_uptime", "svc__server_info"],
+        )
+        assert route is None
+
+    def test_returns_none_when_no_tools_available(self):
+        """Route resolves to None if no matching tools are in the available list."""
+        m = _main()
+        route = m._select_direct_tool_route(
+            "how long has this been running?",
+            [],
+        )
+        assert route is None
+
+    def test_returns_none_for_empty_message(self):
+        """Empty or whitespace-only messages must not match any route."""
+        m = _main()
+        assert m._select_direct_tool_route("", ["svc__get_uptime"]) is None
+        assert m._select_direct_tool_route("   ", ["svc__get_uptime"]) is None
+
+    def test_cpu_route_excludes_unrelated_tools(self):
+        """CPU route should only expose tools that matched the candidate groups."""
+        m = _main()
+        route = m._select_direct_tool_route(
+            "show cpu usage",
+            ["svc__get_cpu_usage", "svc__get_uptime", "svc__memory_free"],
+        )
+        assert route is not None
+        assert route["route_name"] == "cpu_usage"
+        uptime_in_allowed = any("uptime" in n for n in route["allowed_tool_names"])
+        assert not uptime_in_allowed
+
+    def test_wan_ip_route_resolves(self):
+        """WAN IP route matches IP-address queries."""
+        m = _main()
+        route = m._select_direct_tool_route(
+            "what is the wan ip address?",
+            ["svc__get_wan_ip_config", "svc__get_wan_connection_status"],
+        )
+        assert route is not None
+        assert route["route_name"] == "wan_ip"
+
+    def test_kernel_logs_route_resolves(self):
+        """Kernel/dmesg log queries should match the kernel_logs route."""
+        m = _main()
+        route = m._select_direct_tool_route(
+            "show dmesg logs",
+            ["svc__get_kernel_logs"],
+        )
+        assert route is not None
+        assert route["route_name"] == "kernel_logs"
