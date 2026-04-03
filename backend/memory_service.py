@@ -107,8 +107,15 @@ class MemoryService:
         request_id: Optional[str] = None,
         user_id: str = "",
         workspace_scope: str = "",
+        include_code_memory: bool = True,
     ) -> RetrievalResult:
         """Return normalized retrieval blocks for a single chat turn.
+
+        Set ``include_code_memory=False`` for planning/tool-routing calls so
+        that ``code_memory`` and ``doc_memory`` collections are skipped.  Those
+        collections are only useful during synthesis, when the LLM needs source
+        context to explain tool results.  Skipping them during planning keeps
+        the context window clean for tool-selection reasoning.
 
         This method never raises for dependency failures; instead it returns a
         degraded result with an empty block list.
@@ -121,7 +128,7 @@ class MemoryService:
         query_hash = self._query_hash(query_text)
         effective_repo_id = repo_id if repo_id is not None else self.config.repo_id
         effective_request_id = request_id or self._request_id()
-        collections_to_search = tuple(self._collections_to_search(user_id))
+        collections_to_search = tuple(self._collections_to_search(user_id, include_code_memory=include_code_memory))
 
         logger_internal.info(
             "Memory retrieval transaction started: request_id=%s session=%s user=%s collections=%s query_hash=%s message=%s",
@@ -140,6 +147,7 @@ class MemoryService:
                     repo_id=effective_repo_id,
                     user_id=user_id,
                     workspace_scope=workspace_scope,
+                    include_code_memory=include_code_memory,
                 ),
                 timeout=max(self.config.retrieval_timeout_s, 0.001),
             )
@@ -764,6 +772,7 @@ class MemoryService:
         repo_id: str,
         user_id: str = "",
         workspace_scope: str = "",
+        include_code_memory: bool = True,
     ) -> list[RetrievalBlock]:
         embedding_result = await self.embedding_service.embed_texts([query_text])
         query_vector = embedding_result.vectors[0]
@@ -772,7 +781,7 @@ class MemoryService:
         # Determine which collection keys to search:
         # - Always search code/doc memory collections from config.collection_keys
         # - Optionally search conversation_memory if enabled AND user_id is known
-        collections_to_search = self._collections_to_search(user_id)
+        collections_to_search = self._collections_to_search(user_id, include_code_memory=include_code_memory)
 
         for collection_key in collections_to_search:
             if collection_key == "conversation_memory":
@@ -833,8 +842,11 @@ class MemoryService:
     def _build_query(self, text: str) -> str:
         return " ".join((text or "").split())[:512]
 
-    def _collections_to_search(self, user_id: str) -> list[str]:
-        collections_to_search = list(self.config.collection_keys)
+    def _collections_to_search(self, user_id: str, *, include_code_memory: bool = True) -> list[str]:
+        collections_to_search = [
+            key for key in self.config.collection_keys
+            if include_code_memory or key not in ("code_memory", "doc_memory")
+        ]
         if (
             self.config.enable_conversation_memory
             and user_id

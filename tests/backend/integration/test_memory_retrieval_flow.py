@@ -29,7 +29,7 @@ class _FakeMemoryService:
         self.calls = []
         self.record_turn_calls = []
 
-    async def enrich_for_turn(self, *, user_message, session_id, repo_id=None, request_id=None, user_id="", workspace_scope=""):
+    async def enrich_for_turn(self, *, user_message, session_id, repo_id=None, request_id=None, user_id="", workspace_scope="", include_code_memory=True):
         self.calls.append(
             {
                 "user_message": user_message,
