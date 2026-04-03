@@ -417,6 +417,33 @@ def _dedupe_llm_tool_catalog_and_chunks(
     return deduped_tools, deduped_chunks
 
 
+def _rechunk_llm_tool_catalog(
+    tools_for_llm: List[Dict[str, Any]],
+    *,
+    effective_limit: int,
+    include_virtual_repeated: bool,
+) -> List[List[Dict[str, Any]]]:
+    """Split a tool catalog into chunks while preserving virtual-tool placement."""
+    virtual_slot = 1 if include_virtual_repeated else 0
+    effective_chunk_size = max(1, effective_limit - virtual_slot)
+    real_tools = [
+        tool for tool in tools_for_llm
+        if tool.get("function", {}).get("name") != "mcp_repeated_exec"
+    ]
+    virtual_tools = [
+        tool for tool in tools_for_llm
+        if tool.get("function", {}).get("name") == "mcp_repeated_exec"
+    ]
+
+    if len(real_tools) <= effective_chunk_size:
+        return [real_tools + virtual_tools]
+
+    return [
+        real_tools[offset: offset + effective_chunk_size] + virtual_tools
+        for offset in range(0, len(real_tools), effective_chunk_size)
+    ]
+
+
 FOLLOW_UP_PATTERNS = (
     r"\bwhat about\b",
     r"\bhow about\b",
@@ -3442,18 +3469,11 @@ async def send_message(
                 tools_for_llm = _narrow_tools_by_domain(tools_for_llm, _matched_domains)
                 # Recompute tool_names and chunks from the narrowed list
                 tool_names = [t["function"]["name"] for t in tools_for_llm]
-                # Re-chunk: split narrowed list respecting effective_limit
-                _virtual_slot = 1 if include_virtual_repeated else 0
-                _eff_chunk = max(1, _effective_limit - _virtual_slot)
-                real_narrowed = [t for t in tools_for_llm if t.get("function", {}).get("name") != "mcp_repeated_exec"]
-                virt_narrowed = [t for t in tools_for_llm if t.get("function", {}).get("name") == "mcp_repeated_exec"]
-                if len(real_narrowed) <= _eff_chunk:
-                    tool_chunks = [real_narrowed + virt_narrowed]
-                else:
-                    tool_chunks = [
-                        real_narrowed[i: i + _eff_chunk] + virt_narrowed
-                        for i in range(0, len(real_narrowed), _eff_chunk)
-                    ]
+                tool_chunks = _rechunk_llm_tool_catalog(
+                    tools_for_llm,
+                    effective_limit=_effective_limit,
+                    include_virtual_repeated=include_virtual_repeated,
+                )
                 tools_for_llm, tool_chunks = _dedupe_llm_tool_catalog_and_chunks(
                     tools_for_llm,
                     tool_chunks,
