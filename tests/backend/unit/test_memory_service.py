@@ -129,6 +129,158 @@ class TestMemoryService:
         assert persistence.provenance_calls == []
 
     @pytest.mark.asyncio
+    async def test_empty_collections_skips_embedding_call(self):
+        """TC-MEM-SC-01: When collections_to_search is empty, the embedding call is skipped.
+
+        Scenario: anonymous user (user_id='') with include_code_memory=False.
+        - code_memory / doc_memory are excluded by include_code_memory=False
+        - conversation_memory is excluded because user_id is empty
+        → nothing to search; embed_texts must NOT be called.
+        """
+        embedding = _FakeEmbeddingService()
+        store = _FakeMilvusStore()
+        persistence = _FakeMemoryPersistence()
+        service = MemoryService(
+            embedding_service=embedding,
+            milvus_store=store,
+            memory_persistence=persistence,
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_conversation_memory=True,  # enabled, but user_id is empty
+                collection_keys=("code_memory", "doc_memory"),
+            ),
+        )
+
+        result = await service.enrich_for_turn(
+            user_message="how long has this been running?",
+            session_id="sess-anon",
+            user_id="",              # anonymous
+            include_code_memory=False,  # planning phase
+        )
+
+        # No embedding call made
+        assert embedding.calls == [], "embed_texts must not be called when collections_to_search is empty"
+        # No Milvus search made
+        assert store.search_calls == []
+        # Result is empty and non-degraded
+        assert result.blocks == []
+        assert result.degraded is False
+        assert result.latency_ms == 0.0
+
+    @pytest.mark.asyncio
+    async def test_empty_collections_skips_embedding_logged(self, caplog):
+        """TC-MEM-SC-02: Short-circuit path emits an info log with the correct fields."""
+        embedding = _FakeEmbeddingService()
+        service = MemoryService(
+            embedding_service=embedding,
+            milvus_store=_FakeMilvusStore(),
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_conversation_memory=False,
+                collection_keys=("code_memory", "doc_memory"),
+            ),
+        )
+
+        with caplog.at_level(logging.INFO, logger="mcp_client.internal"):
+            await service.enrich_for_turn(
+                user_message="any query",
+                session_id="sess-1",
+                request_id="req-skip-42",
+                user_id="",
+                include_code_memory=False,
+            )
+
+        assert "Memory retrieval skipped" in caplog.text
+        assert "no collections to search" in caplog.text
+        assert embedding.calls == []
+
+    @pytest.mark.asyncio
+    async def test_non_empty_collections_still_embeds(self):
+        """TC-MEM-SC-03: When collections_to_search is non-empty the embedding call IS made."""
+        embedding = _FakeEmbeddingService()
+        service = MemoryService(
+            embedding_service=embedding,
+            milvus_store=_FakeMilvusStore(
+                search_results={"code_memory": [[]], "doc_memory": [[]]}
+            ),
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                collection_keys=("code_memory", "doc_memory"),
+            ),
+        )
+
+        await service.enrich_for_turn(
+            user_message="find something",
+            session_id="sess-1",
+            user_id="user-1",
+            include_code_memory=True,
+        )
+
+        # Embedding must be called since code_memory + doc_memory are in scope
+        assert len(embedding.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_anonymous_with_code_memory_true_still_embeds(self):
+        """TC-MEM-SC-04: Anonymous user with include_code_memory=True (synthesis phase)
+        still embeds because code/doc collections are in scope."""
+        embedding = _FakeEmbeddingService()
+        service = MemoryService(
+            embedding_service=embedding,
+            milvus_store=_FakeMilvusStore(
+                search_results={"code_memory": [[]], "doc_memory": [[]]}
+            ),
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_conversation_memory=True,
+                collection_keys=("code_memory", "doc_memory"),
+            ),
+        )
+
+        await service.enrich_for_turn(
+            user_message="explain the result",
+            session_id="sess-1",
+            user_id="",              # anonymous
+            include_code_memory=True,  # synthesis phase — code/doc still searched
+        )
+
+        assert len(embedding.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_known_user_planning_phase_still_embeds_for_conversation_memory(self):
+        """TC-MEM-SC-05: Known user with include_code_memory=False still embeds because
+        conversation_memory is in scope."""
+        embedding = _FakeEmbeddingService()
+        service = MemoryService(
+            embedding_service=embedding,
+            milvus_store=_FakeMilvusStore(
+                search_results={
+                    "code_memory": [[]],
+                    "doc_memory": [[]],
+                    "conversation_memory": [[]],
+                }
+            ),
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_conversation_memory=True,
+                collection_keys=("code_memory", "doc_memory"),
+            ),
+        )
+
+        await service.enrich_for_turn(
+            user_message="follow up question",
+            session_id="sess-1",
+            user_id="user-known",    # known user → conversation_memory included
+            include_code_memory=False,  # planning phase
+        )
+
+        # conversation_memory is in scope so embedding is needed
+        assert len(embedding.calls) == 1
+
+    @pytest.mark.asyncio
     async def test_enrich_for_turn_logs_transaction_metadata(self, caplog):
         """TC-MEM-01b: Retrieval logging includes request, message, and result metadata."""
         embedding = _FakeEmbeddingService(vectors=[[0.1, 0.2, 0.3]])

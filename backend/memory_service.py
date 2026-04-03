@@ -130,6 +130,28 @@ class MemoryService:
         effective_request_id = request_id or self._request_id()
         collections_to_search = tuple(self._collections_to_search(user_id, include_code_memory=include_code_memory))
 
+        # --- Short-circuit: nothing to search ---
+        # If the resolved collection list is empty (e.g. anonymous user with
+        # include_code_memory=False, so conversation_memory is excluded and
+        # code/doc collections are skipped) there is zero chance of returning
+        # any blocks.  Skip the Ollama embedding call (~300-400 ms) entirely.
+        if not collections_to_search:
+            logger_internal.info(
+                "Memory retrieval skipped (no collections to search): request_id=%s session=%s user=%s include_code_memory=%s",
+                request_id or "<no-request-id>",
+                session_id,
+                user_id or "<anonymous>",
+                include_code_memory,
+            )
+            return RetrievalResult(
+                blocks=[],
+                degraded=False,
+                degraded_reason="",
+                latency_ms=0.0,
+                query_hash="",
+                collection_keys=collections_to_search,
+            )
+
         logger_internal.info(
             "Memory retrieval transaction started: request_id=%s session=%s user=%s collections=%s query_hash=%s message=%s",
             effective_request_id,
