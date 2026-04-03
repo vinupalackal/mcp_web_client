@@ -1,24 +1,59 @@
 """
-Unit tests for SessionManager (TR-SESS-*, TR-FMT-*)
+Unit tests for SessionManager (TR-SESS-*, TR-FMT-*, TR-PERSIST-*)
 """
 
+import json
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
-from backend.database import Base
+from backend.database import Base, ChatSessionRow, ChatMessageRow
 from backend.session_manager import SessionManager, SimpleSession
 from backend.models import ChatMessage, ToolCall, FunctionCall
 
 
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
 @pytest.fixture
-def mgr(tmp_path):
-    """SessionManager backed by a per-test isolated SQLite database."""
+def db_factory(tmp_path):
+    """Return a (engine, factory) pair backed by an isolated per-test SQLite file."""
     engine = create_engine(
         f"sqlite:///{tmp_path}/sm_unit.db",
         connect_args={"check_same_thread": False},
     )
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    return engine, factory
+
+
+@pytest.fixture
+def mgr(db_factory):
+    """SessionManager backed by a per-test isolated SQLite database."""
+    _engine, factory = db_factory
+    return SessionManager(session_factory=factory)
+
+
+# ---------------------------------------------------------------------------
+# DB-level helpers used by persistence tests
+# ---------------------------------------------------------------------------
+
+def _db_session_count(engine) -> int:
+    with engine.connect() as conn:
+        return conn.execute(select(func.count()).select_from(ChatSessionRow)).scalar()
+
+
+def _db_message_count(engine, session_id: str) -> int:
+    with engine.connect() as conn:
+        return conn.execute(
+            select(func.count()).select_from(ChatMessageRow).where(
+                ChatMessageRow.session_id == session_id
+            )
+        ).scalar()
+
+
+def _rebuild(factory) -> SessionManager:
+    """Simulate a backend restart: fresh SessionManager with the same DB."""
     return SessionManager(session_factory=factory)
 
 
@@ -59,6 +94,32 @@ class TestCreateSession:
         ids = {mgr.create_session().session_id for _ in range(5)}
         assert len(ids) == 5
 
+    def test_session_written_to_db(self, mgr, db_factory):
+        """TC-SESS-DB-01: create_session writes a row to chat_sessions."""
+        engine, _ = db_factory
+        mgr.create_session("db-check")
+        assert _db_session_count(engine) == 1
+
+    def test_session_config_stored_in_db(self, mgr, db_factory):
+        """TC-SESS-DB-02: create_session persists config JSON to DB."""
+        engine, factory = db_factory
+        mgr.create_session("cfg-sess", config={"theme": "dark"})
+        with engine.connect() as conn:
+            row = conn.execute(
+                select(ChatSessionRow).where(ChatSessionRow.session_id == "cfg-sess")
+            ).fetchone()
+        assert json.loads(row.config_json) == {"theme": "dark"}
+
+    def test_session_user_id_stored_in_db(self, mgr, db_factory):
+        """TC-SESS-DB-03: create_session persists user_id to DB."""
+        engine, _ = db_factory
+        mgr.create_session("uid-sess", user_id="user-42")
+        with engine.connect() as conn:
+            row = conn.execute(
+                select(ChatSessionRow).where(ChatSessionRow.session_id == "uid-sess")
+            ).fetchone()
+        assert row.user_id == "user-42"
+
 
 class TestGetSession:
 
@@ -93,6 +154,24 @@ class TestDeleteSession:
         assert mgr.get_messages(s.session_id) == []
         assert mgr.get_tool_traces(s.session_id) == []
 
+    def test_delete_removes_session_row_from_db(self, mgr, db_factory):
+        """TC-SESS-DB-10: delete_session removes the chat_sessions row."""
+        engine, _ = db_factory
+        s = mgr.create_session()
+        assert _db_session_count(engine) == 1
+        mgr.delete_session(s.session_id)
+        assert _db_session_count(engine) == 0
+
+    def test_delete_removes_message_rows_from_db(self, mgr, db_factory):
+        """TC-SESS-DB-11: delete_session removes all chat_messages rows for the session."""
+        engine, _ = db_factory
+        s = mgr.create_session()
+        for i in range(3):
+            mgr.add_message(s.session_id, ChatMessage(role="user", content=str(i)))
+        assert _db_message_count(engine, s.session_id) == 3
+        mgr.delete_session(s.session_id)
+        assert _db_message_count(engine, s.session_id) == 0
+
 
 class TestAddMessage:
 
@@ -115,6 +194,57 @@ class TestAddMessage:
             mgr.add_message(s.session_id, ChatMessage(role="user", content=str(i)))
         contents = [m.content for m in mgr.get_messages(s.session_id)]
         assert contents == ["0", "1", "2"]
+
+    def test_message_written_to_db(self, mgr, db_factory):
+        """TC-SESS-DB-12: add_message writes a row to chat_messages."""
+        engine, _ = db_factory
+        s = mgr.create_session()
+        mgr.add_message(s.session_id, ChatMessage(role="user", content="persisted"))
+        assert _db_message_count(engine, s.session_id) == 1
+
+    def test_multiple_messages_have_increasing_sequence_nums(self, mgr, db_factory):
+        """TC-SESS-DB-13: sequence_num increases monotonically."""
+        engine, _ = db_factory
+        s = mgr.create_session()
+        for i in range(4):
+            mgr.add_message(s.session_id, ChatMessage(role="user", content=str(i)))
+        with engine.connect() as conn:
+            rows = conn.execute(
+                select(ChatMessageRow.sequence_num).where(
+                    ChatMessageRow.session_id == s.session_id
+                ).order_by(ChatMessageRow.sequence_num)
+            ).fetchall()
+        assert [r[0] for r in rows] == [0, 1, 2, 3]
+
+    def test_tool_call_id_persisted_to_db(self, mgr, db_factory):
+        """TC-SESS-DB-14: tool_call_id is stored in the message row."""
+        engine, _ = db_factory
+        s = mgr.create_session()
+        mgr.add_message(s.session_id, ChatMessage(role="tool", content="result", tool_call_id="call_xyz"))
+        with engine.connect() as conn:
+            row = conn.execute(
+                select(ChatMessageRow).where(ChatMessageRow.session_id == s.session_id)
+            ).fetchone()
+        assert row.tool_call_id == "call_xyz"
+
+    def test_tool_calls_serialised_as_json(self, mgr, db_factory):
+        """TC-SESS-DB-15: tool_calls list is stored as JSON in tool_calls_json."""
+        engine, _ = db_factory
+        tc = ToolCall(
+            id="call_1",
+            type="function",
+            function=FunctionCall(name="svc__ping", arguments='{"host":"x"}'),
+        )
+        s = mgr.create_session()
+        mgr.add_message(s.session_id, ChatMessage(role="assistant", content="", tool_calls=[tc]))
+        with engine.connect() as conn:
+            row = conn.execute(
+                select(ChatMessageRow).where(ChatMessageRow.session_id == s.session_id)
+            ).fetchone()
+        tc_data = json.loads(row.tool_calls_json)
+        assert len(tc_data) == 1
+        assert tc_data[0]["id"] == "call_1"
+        assert tc_data[0]["function"]["name"] == "svc__ping"
 
 
 class TestToolTrace:
@@ -216,6 +346,17 @@ class TestUpdateSessionTitle:
     def test_title_not_found(self, mgr):
         """TC-SESS-16: update_session_title returns False for unknown ID."""
         assert mgr.update_session_title("ghost", "title") is False
+
+    def test_title_written_to_db(self, mgr, db_factory):
+        """TC-SESS-DB-15: update_session_title writes the new title to the DB row."""
+        engine, _ = db_factory
+        s = mgr.create_session()
+        mgr.update_session_title(s.session_id, "Updated")
+        with engine.connect() as conn:
+            row = conn.execute(
+                select(ChatSessionRow).where(ChatSessionRow.session_id == s.session_id)
+            ).fetchone()
+        assert row.title == "Updated"
 
 
 # ============================================================================
@@ -382,3 +523,228 @@ class TestHistorySummary:
         assert "first" in summary
         assert "reply one" in summary
         assert "second" not in summary
+
+
+# ============================================================================
+# TR-PERSIST-1: Survive backend restart (same DB factory)
+# ============================================================================
+
+class TestPersistence:
+    """All tests create state on one SessionManager, then rebuild from the same
+    factory to verify the data reloads correctly — exactly what happens when
+    uvicorn restarts while the SQLite file is still on disk."""
+
+    # --- Sessions ---
+
+    def test_session_survives_restart(self, db_factory):
+        """TC-PERSIST-01: Session created before restart is visible after restart."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        s = mgr1.create_session("sess-a")
+
+        mgr2 = _rebuild(factory)
+        assert mgr2.get_session("sess-a") is not None
+        assert mgr2.get_session("sess-a").session_id == "sess-a"
+
+    def test_session_title_survives_restart(self, db_factory):
+        """TC-PERSIST-02: Title updated before restart is correct after restart."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("titled")
+        mgr1.update_session_title("titled", "Renamed Chat")
+
+        mgr2 = _rebuild(factory)
+        assert mgr2.get_session("titled").title == "Renamed Chat"
+
+    def test_session_config_survives_restart(self, db_factory):
+        """TC-PERSIST-03: Config dict persists through restart."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("cfg", config={"foo": "bar", "n": 42})
+
+        mgr2 = _rebuild(factory)
+        assert mgr2.get_session("cfg").config == {"foo": "bar", "n": 42}
+
+    def test_session_user_id_survives_restart(self, db_factory):
+        """TC-PERSIST-04: user_id persists through restart."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("usr", user_id="u-99")
+
+        mgr2 = _rebuild(factory)
+        assert mgr2.get_session("usr").user_id == "u-99"
+
+    def test_multiple_sessions_all_survive_restart(self, db_factory):
+        """TC-PERSIST-05: Multiple sessions all reload after restart."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        ids = [mgr1.create_session().session_id for _ in range(4)]
+
+        mgr2 = _rebuild(factory)
+        reloaded = {s.session_id for s in mgr2.list_sessions()}
+        assert set(ids) == reloaded
+
+    # --- Messages ---
+
+    def test_plain_messages_survive_restart(self, db_factory):
+        """TC-PERSIST-10: Simple user/assistant messages reload correctly."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        s = mgr1.create_session("msgs")
+        mgr1.add_message("msgs", ChatMessage(role="user", content="hello"))
+        mgr1.add_message("msgs", ChatMessage(role="assistant", content="world"))
+
+        mgr2 = _rebuild(factory)
+        loaded = mgr2.get_messages("msgs")
+        assert len(loaded) == 2
+        assert loaded[0].role == "user"
+        assert loaded[0].content == "hello"
+        assert loaded[1].role == "assistant"
+        assert loaded[1].content == "world"
+
+    def test_message_order_preserved_after_restart(self, db_factory):
+        """TC-PERSIST-11: Message insertion order is restored correctly."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("order")
+        for i in range(5):
+            mgr1.add_message("order", ChatMessage(role="user", content=str(i)))
+
+        mgr2 = _rebuild(factory)
+        contents = [m.content for m in mgr2.get_messages("order")]
+        assert contents == ["0", "1", "2", "3", "4"]
+
+    def test_tool_call_id_survives_restart(self, db_factory):
+        """TC-PERSIST-12: tool_call_id on a tool-role message reloads correctly."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("tcid")
+        mgr1.add_message("tcid", ChatMessage(role="tool", content="42s", tool_call_id="call_abc"))
+
+        mgr2 = _rebuild(factory)
+        msg = mgr2.get_messages("tcid")[0]
+        assert msg.tool_call_id == "call_abc"
+        assert msg.content == "42s"
+
+    def test_tool_calls_round_trip_after_restart(self, db_factory):
+        """TC-PERSIST-13: tool_calls list on an assistant message reloads with correct structure."""
+        _, factory = db_factory
+        tc = ToolCall(
+            id="call_99",
+            type="function",
+            function=FunctionCall(name="svc__get_uptime", arguments="{}"),
+        )
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("tc-rt")
+        mgr1.add_message("tc-rt", ChatMessage(role="assistant", content="", tool_calls=[tc]))
+
+        mgr2 = _rebuild(factory)
+        msg = mgr2.get_messages("tc-rt")[0]
+        assert msg.tool_calls is not None
+        assert len(msg.tool_calls) == 1
+        assert msg.tool_calls[0].id == "call_99"
+        assert msg.tool_calls[0].function.name == "svc__get_uptime"
+
+    def test_mixed_conversation_round_trip(self, db_factory):
+        """TC-PERSIST-14: A realistic multi-turn conversation reloads end-to-end."""
+        _, factory = db_factory
+        tc = ToolCall(
+            id="call_x",
+            type="function",
+            function=FunctionCall(name="svc__ping", arguments='{"host":"1.2.3.4"}'),
+        )
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("conv")
+        mgr1.add_message("conv", ChatMessage(role="user", content="ping 1.2.3.4"))
+        mgr1.add_message("conv", ChatMessage(role="assistant", content="", tool_calls=[tc]))
+        mgr1.add_message("conv", ChatMessage(role="tool", content="OK 12ms", tool_call_id="call_x"))
+        mgr1.add_message("conv", ChatMessage(role="assistant", content="Ping succeeded in 12ms."))
+
+        mgr2 = _rebuild(factory)
+        msgs = mgr2.get_messages("conv")
+        assert len(msgs) == 4
+        assert msgs[0].role == "user"
+        assert msgs[1].role == "assistant"
+        assert msgs[1].tool_calls[0].id == "call_x"
+        assert msgs[2].role == "tool"
+        assert msgs[2].tool_call_id == "call_x"
+        assert msgs[3].role == "assistant"
+        assert "12ms" in msgs[3].content
+
+    # --- Delete + restart ---
+
+    def test_deleted_session_absent_after_restart(self, db_factory):
+        """TC-PERSIST-20: Deleted session does not reappear after restart."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("gone")
+        mgr1.add_message("gone", ChatMessage(role="user", content="hi"))
+        mgr1.delete_session("gone")
+
+        mgr2 = _rebuild(factory)
+        assert mgr2.get_session("gone") is None
+        assert mgr2.get_messages("gone") == []
+
+    def test_only_non_deleted_sessions_survive(self, db_factory):
+        """TC-PERSIST-21: Deleting one session does not affect others after restart."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        mgr1.create_session("keep")
+        mgr1.create_session("drop")
+        mgr1.add_message("keep", ChatMessage(role="user", content="stay"))
+        mgr1.add_message("drop", ChatMessage(role="user", content="gone"))
+        mgr1.delete_session("drop")
+
+        mgr2 = _rebuild(factory)
+        assert mgr2.get_session("keep") is not None
+        assert mgr2.get_messages("keep")[0].content == "stay"
+        assert mgr2.get_session("drop") is None
+
+    # --- Edge cases ---
+
+    def test_empty_manager_starts_empty_after_restart(self, db_factory):
+        """TC-PERSIST-30: A fresh DB yields zero sessions after restart."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)  # creates tables, no data
+        mgr2 = _rebuild(factory)
+        assert mgr2.list_sessions() == []
+
+    def test_corrupt_tool_calls_json_skipped_gracefully(self, db_factory):
+        """TC-PERSIST-31: A message row with invalid tool_calls_json loads without tool_calls."""
+        engine, factory = db_factory
+        # Write a session and a message row with corrupt JSON directly to the DB.
+        with engine.connect() as conn:
+            conn.execute(
+                ChatSessionRow.__table__.insert().values(
+                    session_id="corrupt",
+                    title="Corrupt",
+                    user_id=None,
+                    config_json="{}",
+                )
+            )
+            conn.execute(
+                ChatMessageRow.__table__.insert().values(
+                    session_id="corrupt",
+                    sequence_num=0,
+                    role="assistant",
+                    content="",
+                    tool_call_id=None,
+                    tool_calls_json="{not valid json[",
+                )
+            )
+            conn.commit()
+
+        mgr = _rebuild(factory)
+        msgs = mgr.get_messages("corrupt")
+        assert len(msgs) == 1
+        assert msgs[0].tool_calls is None  # corrupt JSON skipped, message still loaded
+
+    def test_auto_created_session_survives_restart(self, db_factory):
+        """TC-PERSIST-32: Session auto-created by add_message (unknown ID path) also persists."""
+        _, factory = db_factory
+        mgr1 = _rebuild(factory)
+        mgr1.add_message("auto", ChatMessage(role="user", content="implicit"))
+
+        mgr2 = _rebuild(factory)
+        assert mgr2.get_session("auto") is not None
+        assert mgr2.get_messages("auto")[0].content == "implicit"
