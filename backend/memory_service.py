@@ -294,6 +294,43 @@ class MemoryService:
                 ),
             )
 
+            # Console summary — printed to server stdout after every query.
+            try:
+                from datetime import datetime, timezone as _tz
+                total_rows = self.milvus_store.get_record_count(
+                    collection_key="conversation_memory",
+                    generation=self.config.collection_generation,
+                )
+                count_str = str(total_rows) if total_rows >= 0 else "unknown"
+                tools_display = ", ".join(tool_names or []) or "(none)"
+                expires_dt = datetime.fromtimestamp(expires_ts, tz=_tz.utc).strftime(
+                    "%Y-%m-%d %H:%M UTC"
+                )
+                msg_preview = self._preview_text(user_message, max_length=80)
+                logger_external.info(
+                    "\n"
+                    "┌─── MILVUS MEMORY STORE ─── NEW RECORD ADDED ──────────────────────────\n"
+                    "│  turn_id    : %s\n"
+                    "│  session    : %s\n"
+                    "│  user       : %s\n"
+                    "│  turn #     : %s\n"
+                    "│  message    : %s\n"
+                    "│  tools      : %s\n"
+                    "│  expires    : %s\n"
+                    "│  total rows : %s  (conversation_memory)\n"
+                    "└───────────────────────────────────────────────────────────────────────",
+                    turn_id,
+                    session_id,
+                    user_id,
+                    turn_number,
+                    msg_preview,
+                    tools_display,
+                    expires_dt,
+                    count_str,
+                )
+            except Exception:
+                pass  # never disrupt the response path
+
             logger_internal.info(
                 "Conversation memory transaction completed: turn_id=%s session=%s user=%s expires_at=%s",
                 turn_id,

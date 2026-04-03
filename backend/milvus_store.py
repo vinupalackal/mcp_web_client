@@ -373,6 +373,20 @@ class MilvusStore:
         logger_internal.debug("Milvus list collections: count=%s", len(collections))
         return collections
 
+    def get_record_count(self, *, collection_key: str, generation: str) -> int:
+        """Return the current row count for a collection, or -1 if unavailable."""
+        collection_name = self.build_collection_name(collection_key, generation)
+        try:
+            if not self.client.has_collection(collection_name):
+                return 0
+            stats = self.client.get_collection_stats(collection_name)
+            return int(stats.get("row_count", -1))
+        except Exception as exc:  # noqa: BLE001
+            logger_internal.debug(
+                "get_record_count failed: collection=%s reason=%s", collection_name, exc
+            )
+            return -1
+
     def _build_schema(self, spec: CollectionSpec, dimension: int) -> Any:
         schema = self._client_factory.create_schema(auto_id=False, enable_dynamic_field=False)
         for field in spec.fields:
