@@ -132,9 +132,10 @@ class TestMemoryService:
     async def test_empty_collections_skips_embedding_call(self):
         """TC-MEM-SC-01: When collections_to_search is empty, the embedding call is skipped.
 
-        Scenario: anonymous user (user_id='') with include_code_memory=False.
-        - code_memory / doc_memory are excluded by include_code_memory=False
-        - conversation_memory is excluded because user_id is empty
+        Scenario: anonymous user (user_id='') with include_code_memory=False AND
+        enable_conversation_memory=False.
+        - code_memory / doc_memory excluded by include_code_memory=False
+        - conversation_memory excluded because enable_conversation_memory=False
         → nothing to search; embed_texts must NOT be called.
         """
         embedding = _FakeEmbeddingService()
@@ -146,7 +147,7 @@ class TestMemoryService:
             memory_persistence=persistence,
             config=MemoryServiceConfig(
                 enabled=True,
-                enable_conversation_memory=True,  # enabled, but user_id is empty
+                enable_conversation_memory=False,  # disabled → conversation_memory excluded
                 collection_keys=("code_memory", "doc_memory"),
             ),
         )
@@ -246,6 +247,39 @@ class TestMemoryService:
             include_code_memory=True,  # synthesis phase — code/doc still searched
         )
 
+        assert len(embedding.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_anonymous_planning_phase_embeds_for_conversation_memory(self):
+        """TC-MEM-SC-04b: Anonymous user with include_code_memory=False still embeds
+        because conversation_memory is now included via the __anonymous__ scope.
+
+        This is the key change from the anonymous-mode fix: previously this would
+        short-circuit and skip the Ollama embed call entirely; now it searches
+        conversation_memory for past anonymous turns.
+        """
+        embedding = _FakeEmbeddingService()
+        service = MemoryService(
+            embedding_service=embedding,
+            milvus_store=_FakeMilvusStore(
+                search_results={"conversation_memory": [[]]}
+            ),
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_conversation_memory=True,
+                collection_keys=("code_memory", "doc_memory"),
+            ),
+        )
+
+        await service.enrich_for_turn(
+            user_message="follow up question",
+            session_id="sess-anon",
+            user_id="",              # anonymous
+            include_code_memory=False,  # planning phase
+        )
+
+        # conversation_memory is now in scope, so embedding IS needed
         assert len(embedding.calls) == 1
 
     @pytest.mark.asyncio
@@ -660,8 +694,13 @@ class TestConversationMemoryPhase2:
         assert persistence.turn_calls == []
 
     @pytest.mark.asyncio
-    async def test_record_turn_skipped_without_user_id(self):
-        """TC-CONV-02: record_turn is a no-op when user_id is empty (anonymous)."""
+    async def test_record_turn_stores_under_anonymous_scope_when_no_user_id(self):
+        """TC-CONV-02: record_turn with empty user_id stores under '__anonymous__'
+        instead of being silently discarded.
+
+        This enables anonymous (single-user, no SSO) deployments to build up
+        conversation history that is later retrieved during enrich_for_turn.
+        """
         store = _FakeUpsertMilvusStore()
         persistence = _FakePersistenceWithTurns()
         service = MemoryService(
@@ -681,8 +720,21 @@ class TestConversationMemoryPhase2:
             user_id="",  # anonymous
         )
 
-        assert store.upsert_calls == []
-        assert persistence.turn_calls == []
+        # Upsert must have happened (not skipped)
+        assert len(store.upsert_calls) == 1, (
+            "record_turn silently discarded the anonymous turn — "
+            "it should store under '__anonymous__' instead"
+        )
+        record = store.upsert_calls[0]["records"][0]
+        assert record["user_id"] == "__anonymous__", (
+            f"Expected user_id='__anonymous__', got '{record['user_id']}'"
+        )
+        assert record["session_id"] == "sess-anon"
+        assert "what is x" in record["user_message"]
+
+        # Persistence must also be called with the synthetic user id
+        assert len(persistence.turn_calls) == 1
+        assert persistence.turn_calls[0]["user_id"] == "__anonymous__"
 
     @pytest.mark.asyncio
     async def test_record_turn_upserts_to_conversation_memory(self):
@@ -804,10 +856,15 @@ class TestConversationMemoryPhase2:
         assert "conversation:" in conv_blocks[0].source_path
 
     @pytest.mark.asyncio
-    async def test_enrich_for_turn_skips_conversation_memory_without_user_id(self):
-        """TC-CONV-06: cross-user blocking — no conversation_memory search when user_id empty."""
+    async def test_enrich_for_turn_searches_conversation_memory_for_anonymous_user(self):
+        """TC-CONV-06: anonymous user now searches conversation_memory under __anonymous__ scope.
+
+        Previously this was blocked entirely (no user_id → skip).  After the fix,
+        anonymous sessions use '__anonymous__' as a stable synthetic identity so
+        their own past turns are retrievable.
+        """
         store = _FakeUpsertMilvusStore(
-            search_results={"code_memory": [], "doc_memory": [], "conversation_memory": []}
+            search_results={"code_memory": [[]], "doc_memory": [[]], "conversation_memory": [[]]}
         )
         service = MemoryService(
             embedding_service=_FakeEmbeddingService(),
@@ -822,11 +879,17 @@ class TestConversationMemoryPhase2:
         await service.enrich_for_turn(
             user_message="a question",
             session_id="sess-1",
-            user_id="",  # anonymous — must NOT search conversation memory
+            user_id="",  # anonymous
         )
 
         collections_searched = [c["collection_key"] for c in store.search_calls]
-        assert "conversation_memory" not in collections_searched
+        assert "conversation_memory" in collections_searched, (
+            "Anonymous user must search conversation_memory via __anonymous__ scope, "
+            "not be silently excluded"
+        )
+        # The filter expression must use __anonymous__, not __none__
+        conv_calls = [c for c in store.search_calls if c["collection_key"] == "conversation_memory"]
+        assert all('__anonymous__' in c["filter_expression"] for c in conv_calls)
 
     def test_build_conversation_filter_includes_user_id(self):
         """TC-CONV-07: filter expression for conversation memory always includes user_id."""
@@ -854,15 +917,16 @@ class TestConversationMemoryPhase2:
         assert 'user_id == "user-42"' in expr
         assert 'workspace_scope == "ws-prod"' in expr
 
-    def test_build_conversation_filter_no_user_blocks_all(self):
-        """TC-CONV-09: empty user_id produces a blocking filter."""
+    def test_build_conversation_filter_empty_user_scopes_to_anonymous(self):
+        """TC-CONV-09: empty user_id produces a filter scoped to '__anonymous__', not '__none__'."""
         service = MemoryService(
             embedding_service=_FakeEmbeddingService(),
             milvus_store=_FakeMilvusStore(),
             memory_persistence=_FakeMemoryPersistence(),
         )
         expr = service._build_conversation_filter_expression(user_id="", workspace_scope="")
-        assert "__none__" in expr
+        assert '__anonymous__' in expr
+        assert '__none__' not in expr
 
 
 # ---------------------------------------------------------------------------
@@ -1276,9 +1340,16 @@ class TestResolveToolsFromMemory:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_returns_empty_without_user_id(self):
-        """TC-MEM-TOOL-03: Anonymous sessions always return empty (conversation memory is user-scoped)."""
-        store = _FakeMilvusStore()
+    async def test_anonymous_user_can_resolve_tools_from_memory(self):
+        """TC-MEM-TOOL-03: Anonymous sessions now resolve tools via the __anonymous__ scope.
+
+        Previously an empty user_id caused an immediate empty return.  After the fix,
+        '__anonymous__' is used as the effective user so past anonymous turns are searchable.
+        """
+        hit = self._make_conv_hit("openwrt__get_memory", distance=0.10)
+        store = _FakeMilvusStore(
+            search_results={"conversation_memory": [[hit]]}
+        )
         service = MemoryService(
             embedding_service=_FakeEmbeddingService(),
             milvus_store=store,
@@ -1288,12 +1359,17 @@ class TestResolveToolsFromMemory:
 
         result = await service.resolve_tools_from_memory(
             user_message="show memory usage",
-            user_id="",
+            user_id="",  # anonymous
             available_tool_names=["openwrt__get_memory"],
         )
 
-        assert result == []
-        assert store.search_calls == []  # No search should be attempted.
+        # Must have searched conversation_memory (using __anonymous__ scope)
+        assert len(store.search_calls) >= 1, "resolve_tools_from_memory must search for anonymous users"
+        collections_searched = [c["collection_key"] for c in store.search_calls]
+        assert "conversation_memory" in collections_searched
+        # The filter must use __anonymous__ scope
+        conv_calls = [c for c in store.search_calls if c["collection_key"] == "conversation_memory"]
+        assert all('__anonymous__' in c["filter_expression"] for c in conv_calls)
 
     @pytest.mark.asyncio
     async def test_filters_out_unavailable_tool_names(self):
@@ -1430,14 +1506,18 @@ class TestCollectionsToSearch:
         result = svc._collections_to_search("user-99", include_code_memory=True)
         assert "conversation_memory" in result
 
-    def test_conversation_memory_absent_for_anonymous_user(self):
-        """TC-MEM-COL-04: conversation_memory is NOT added when user_id is empty."""
+    def test_conversation_memory_included_for_anonymous_user(self):
+        """TC-MEM-COL-04: conversation_memory IS added even when user_id is empty.
+
+        Anonymous sessions use the '__anonymous__' synthetic scope so that
+        single-user deployments without SSO still build up conversation history.
+        """
         svc = _service(
             collection_keys=("code_memory", "doc_memory"),
             enable_conversation_memory=True,
         )
         result = svc._collections_to_search("", include_code_memory=True)
-        assert "conversation_memory" not in result
+        assert "conversation_memory" in result
 
     def test_conversation_memory_absent_when_feature_disabled(self):
         """TC-MEM-COL-05: conversation_memory is NOT added when enable_conversation_memory=False."""
@@ -1448,14 +1528,18 @@ class TestCollectionsToSearch:
         result = svc._collections_to_search("user-1", include_code_memory=True)
         assert "conversation_memory" not in result
 
-    def test_returns_empty_for_anonymous_planning_phase(self):
-        """TC-MEM-COL-06: Anonymous + planning phase yields empty collection list."""
+    def test_anonymous_planning_phase_includes_conversation_memory(self):
+        """TC-MEM-COL-06: Anonymous + planning phase includes conversation_memory.
+
+        Previously this returned [] because user_id was required.  Now the
+        __anonymous__ scope allows conversation retrieval even without an SSO id.
+        """
         svc = _service(
             collection_keys=("code_memory", "doc_memory"),
             enable_conversation_memory=True,
         )
         result = svc._collections_to_search("", include_code_memory=False)
-        assert result == []
+        assert result == ["conversation_memory"]
 
     def test_no_duplicate_conversation_memory_entry(self):
         """TC-MEM-COL-07: conversation_memory is not added twice even if already in collection_keys."""
@@ -1517,6 +1601,51 @@ class TestQueryHash:
         svc = _service()
         h = svc._query_hash("")
         assert len(h) == 16
+
+
+class TestBuildConversationFilterExpression:
+    """Tests for _build_conversation_filter_expression with the __anonymous__ fix."""
+
+    def test_known_user_scopes_to_that_user(self):
+        """TC-MEM-CF-01: Known user_id produces a filter for that exact user."""
+        svc = _service()
+        expr = svc._build_conversation_filter_expression(user_id="user-abc", workspace_scope="")
+        assert 'user_id == "user-abc"' in expr
+
+    def test_empty_user_id_scopes_to_anonymous(self):
+        """TC-MEM-CF-02: Empty user_id maps to '__anonymous__' instead of '__none__'.
+
+        This is the core anonymous-mode fix: retrieval now queries the same
+        synthetic scope that record_turn writes to for anonymous sessions.
+        """
+        svc = _service()
+        expr = svc._build_conversation_filter_expression(user_id="", workspace_scope="")
+        assert 'user_id == "__anonymous__"' in expr
+        assert '__none__' not in expr
+
+    def test_workspace_scope_added_when_present(self):
+        """TC-MEM-CF-03: workspace_scope is appended when non-empty."""
+        svc = _service()
+        expr = svc._build_conversation_filter_expression(user_id="u", workspace_scope="ws-1")
+        assert 'workspace_scope == "ws-1"' in expr
+
+    def test_workspace_scope_omitted_when_empty(self):
+        """TC-MEM-CF-04: workspace_scope clause is absent when workspace_scope is empty."""
+        svc = _service()
+        expr = svc._build_conversation_filter_expression(user_id="u", workspace_scope="")
+        assert "workspace_scope" not in expr
+
+    def test_expiry_guard_always_present(self):
+        """TC-MEM-CF-05: expires_at > <now> guard is always included."""
+        svc = _service()
+        expr = svc._build_conversation_filter_expression(user_id="u", workspace_scope="")
+        assert "expires_at >" in expr
+
+    def test_quotes_in_user_id_are_escaped(self):
+        """TC-MEM-CF-06: Double quotes in user_id are escaped to prevent injection."""
+        svc = _service()
+        expr = svc._build_conversation_filter_expression(user_id='user"bad', workspace_scope="")
+        assert '\\"' in expr
 
 
 class TestBuildFilterExpression:

@@ -258,13 +258,11 @@ class MemoryService:
         if not self.config.enabled or not self.config.enable_conversation_memory:
             return
 
-        # Require a user_id so cross-user recall is always scoped correctly.
-        # In non-SSO (anonymous) mode this is empty and we skip recording.
-        if not user_id:
-            logger_internal.debug(
-                "record_turn: skipping — no user_id (anonymous session)"
-            )
-            return
+        # For anonymous (single-user, no SSO) deployments user_id is empty.
+        # Use the stable synthetic scope "__anonymous__" so that conversation
+        # turns are stored and later retrieved under a consistent identity
+        # rather than being silently discarded.
+        effective_user_id = user_id or "__anonymous__"
 
         turn_id = self._request_id().replace("retrieval-", "turn-")
 
@@ -281,7 +279,7 @@ class MemoryService:
                 "Conversation memory transaction started: turn_id=%s session=%s user=%s turn_number=%s tool_count=%s message=%s",
                 turn_id,
                 session_id,
-                user_id,
+                effective_user_id,
                 turn_number,
                 len(tool_names or []),
                 self._preview_text(user_message),
@@ -290,7 +288,7 @@ class MemoryService:
             record = {
                 "id": turn_id,
                 "embedding": vector,
-                "user_id": user_id,
+                "user_id": effective_user_id,
                 "session_id": session_id,
                 "workspace_scope": workspace_scope or "",
                 "turn_number": turn_number,
@@ -314,7 +312,7 @@ class MemoryService:
                 user_message=user_message[:4096],
                 assistant_summary=assistant_response[:4096],
                 turn_id=turn_id,
-                user_id=user_id or None,
+                user_id=effective_user_id,
                 workspace_scope=workspace_scope or None,
                 turn_number=turn_number,
                 tool_names_json=tool_names or [],
@@ -351,7 +349,7 @@ class MemoryService:
                     "└───────────────────────────────────────────────────────────────────────",
                     turn_id,
                     session_id,
-                    user_id,
+                    effective_user_id,
                     turn_number,
                     msg_preview,
                     tools_display,
@@ -365,7 +363,7 @@ class MemoryService:
                 "Conversation memory transaction completed: turn_id=%s session=%s user=%s expires_at=%s",
                 turn_id,
                 session_id,
-                user_id,
+                effective_user_id,
                 expires_ts,
             )
         except Exception as error:
@@ -373,7 +371,7 @@ class MemoryService:
                 "Conversation memory transaction failed: turn_id=%s session=%s user=%s reason=%s",
                 turn_id,
                 session_id,
-                user_id,
+                effective_user_id,
                 error,
             )
 
@@ -506,11 +504,10 @@ class MemoryService:
         """
         if not self.config.enabled:
             return []
-        if not user_id:
-            return []
         if not self.config.enable_conversation_memory and not self.config.enable_tool_cache:
             return []
 
+        effective_user_id = user_id or "__anonymous__"
         effective_request_id = request_id or self._request_id()
         available_set = set(available_tool_names)
 
@@ -518,7 +515,7 @@ class MemoryService:
             return await asyncio.wait_for(
                 self._resolve_tools_inner(
                     user_message=user_message,
-                    user_id=user_id,
+                    user_id=effective_user_id,
                     available_set=available_set,
                     similarity_threshold=similarity_threshold,
                     effective_request_id=effective_request_id,
@@ -869,9 +866,10 @@ class MemoryService:
             key for key in self.config.collection_keys
             if include_code_memory or key not in ("code_memory", "doc_memory")
         ]
+        # Use the same __anonymous__ convention as record_turn so anonymous
+        # deployments can read back the turns they just wrote.
         if (
             self.config.enable_conversation_memory
-            and user_id
             and "conversation_memory" not in collections_to_search
         ):
             collections_to_search.append("conversation_memory")
@@ -919,11 +917,13 @@ class MemoryService:
         self, *, user_id: str, workspace_scope: str
     ) -> str:
         """Build a Milvus filter expression that scopes to same-user (and
-        optionally same workspace), ensuring cross-user recall is impossible."""
-        if not user_id:
-            # No user context — refuse to search conversation memory at all.
-            return 'user_id == "__none__"'
-        escaped_uid = user_id.replace('"', '\\"')
+        optionally same workspace), ensuring cross-user recall is impossible.
+
+        Empty ``user_id`` maps to the ``__anonymous__`` scope so that anonymous
+        single-user deployments can recall their own past turns.
+        """
+        effective_uid = user_id or "__anonymous__"
+        escaped_uid = effective_uid.replace('"', '\\"')
         parts = [f'user_id == "{escaped_uid}"']
         if workspace_scope:
             escaped_ws = workspace_scope.replace('"', '\\"')
