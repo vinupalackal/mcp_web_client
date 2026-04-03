@@ -241,6 +241,37 @@ class MemoryToolCacheRow(Base):
     )
 
 
+class ChatSessionRow(Base):
+    """Persisted chat session — survives backend restarts."""
+
+    __tablename__ = "chat_sessions"
+
+    session_id = Column(String(64), primary_key=True)
+    title = Column(String(256), nullable=False, default="New Conversation")
+    user_id = Column(String(64), nullable=True)
+    config_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class ChatMessageRow(Base):
+    """Persisted chat message within a session, ordered by sequence_num."""
+
+    __tablename__ = "chat_messages"
+
+    message_id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(String(64), nullable=False, index=True)
+    sequence_num = Column(Integer, nullable=False, default=0)
+    role = Column(String(16), nullable=False)
+    content = Column(Text, nullable=False, default="")
+    tool_call_id = Column(String(128), nullable=True)
+    tool_calls_json = Column(Text, nullable=True)  # JSON list of ToolCall dicts
+    created_at = Column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Schema initialisation
 # ---------------------------------------------------------------------------

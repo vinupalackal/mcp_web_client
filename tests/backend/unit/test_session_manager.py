@@ -3,13 +3,23 @@ Unit tests for SessionManager (TR-SESS-*, TR-FMT-*)
 """
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from backend.database import Base
 from backend.session_manager import SessionManager, SimpleSession
 from backend.models import ChatMessage, ToolCall, FunctionCall
 
 
 @pytest.fixture
-def mgr():
-    return SessionManager()
+def mgr(tmp_path):
+    """SessionManager backed by a per-test isolated SQLite database."""
+    engine = create_engine(
+        f"sqlite:///{tmp_path}/sm_unit.db",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+    return SessionManager(session_factory=factory)
 
 
 # ============================================================================

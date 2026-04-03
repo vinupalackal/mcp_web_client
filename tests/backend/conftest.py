@@ -6,9 +6,12 @@ Resets module-level in-memory state between every test so tests are isolated.
 import uuid as _uuid
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 import backend.main as main_module
 from backend.main import app
+from backend.database import Base
 from backend.session_manager import SessionManager
 from backend.mcp_manager import MCPManager
 
@@ -27,7 +30,16 @@ def reset_backend_state(tmp_path, monkeypatch):
     main_module.milvus_config_storage = None
     main_module.enterprise_token_cache.clear()
     main_module._memory_service = None
-    main_module.session_manager = SessionManager()
+
+    # Per-test isolated SQLite so session persistence does not bleed between tests.
+    _test_engine = create_engine(
+        f"sqlite:///{tmp_path}/test_sessions.db",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(_test_engine)
+    _test_factory = sessionmaker(bind=_test_engine, autocommit=False, autoflush=False)
+
+    main_module.session_manager = SessionManager(session_factory=_test_factory)
     main_module.mcp_manager = MCPManager()
     yield
     main_module.servers_storage.clear()

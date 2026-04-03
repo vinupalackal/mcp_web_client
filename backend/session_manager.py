@@ -3,11 +3,16 @@ Session Manager - In-memory session and message storage
 Maintains chat history, tool execution traces, and session state
 """
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any
 from dataclasses import dataclass, field
+
+from sqlalchemy import select as _sa_select, delete as _sa_delete
+
+from backend.database import ChatSessionRow, ChatMessageRow, SessionLocal
 from backend.models import ChatMessage, ToolCall
 
 logger_internal = logging.getLogger("mcp_client.internal")
@@ -25,15 +30,83 @@ class SimpleSession:
 
 class SessionManager:
     """Manages chat sessions and message history"""
-    
-    def __init__(self):
+
+    def __init__(self, session_factory: Optional[Callable] = None):
+        # Persistent store factory — default uses the shared app SQLite DB.
+        # Pass a custom factory (e.g. an in-memory SQLite) for test isolation.
+        self._session_factory: Callable = session_factory if session_factory is not None else SessionLocal
+
         self.sessions: Dict[str, SimpleSession] = {}
         self.messages: Dict[str, List[ChatMessage]] = {}  # session_id -> messages
         self.tool_traces: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> traces
         self.retrieval_traces: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> retrieval diagnostics
-        
+
+        self._load_from_db()
         logger_internal.info("SessionManager initialized")
     
+    def _load_from_db(self) -> None:
+        """Reload persisted sessions and messages from SQLite into the in-memory store.
+
+        Called once during __init__. Non-fatal: if the tables do not exist yet
+        (first run before init_db(), or isolated test context without tables),
+        the exception is swallowed and the manager starts empty.
+        """
+        try:
+            with self._session_factory() as db:
+                session_rows = db.execute(_sa_select(ChatSessionRow)).scalars().all()
+                for row in session_rows:
+                    sess = SimpleSession(
+                        session_id=row.session_id,
+                        created_at=row.created_at,
+                        title=row.title,
+                        config=json.loads(row.config_json or "{}"),
+                        user_id=row.user_id,
+                    )
+                    self.sessions[row.session_id] = sess
+                    self.messages[row.session_id] = []
+                    self.tool_traces[row.session_id] = []
+                    self.retrieval_traces[row.session_id] = []
+
+                msg_rows = db.execute(
+                    _sa_select(ChatMessageRow).order_by(
+                        ChatMessageRow.session_id,
+                        ChatMessageRow.sequence_num,
+                        ChatMessageRow.message_id,
+                    )
+                ).scalars().all()
+
+                for row in msg_rows:
+                    if row.session_id not in self.messages:
+                        # Orphaned row (session was deleted externally) — skip.
+                        continue
+                    tool_calls = None
+                    if row.tool_calls_json:
+                        try:
+                            tc_list = json.loads(row.tool_calls_json)
+                            tool_calls = [ToolCall.model_validate(tc) for tc in tc_list]
+                        except Exception as _tc_exc:
+                            logger_internal.warning(
+                                "Skipping corrupt tool_calls for session %s: %s",
+                                row.session_id,
+                                _tc_exc,
+                            )
+                    self.messages[row.session_id].append(
+                        ChatMessage(
+                            role=row.role,
+                            content=row.content or "",
+                            tool_call_id=row.tool_call_id,
+                            tool_calls=tool_calls,
+                        )
+                    )
+
+            logger_internal.info(
+                "Loaded %d session(s) from persistent store", len(self.sessions)
+            )
+        except Exception as exc:
+            logger_internal.warning(
+                "Session DB load skipped (tables may not exist yet): %s", exc
+            )
+
     def create_session(self, session_id: Optional[str] = None, config: Optional[Dict[str, Any]] = None, user_id: Optional[str] = None) -> SimpleSession:
         """Create new chat session"""
         
@@ -52,7 +125,20 @@ class SessionManager:
         self.messages[session_id] = []
         self.tool_traces[session_id] = []
         self.retrieval_traces[session_id] = []
-        
+
+        try:
+            with self._session_factory() as db:
+                db.add(ChatSessionRow(
+                    session_id=session.session_id,
+                    title=session.title,
+                    user_id=session.user_id,
+                    config_json=json.dumps(session.config or {}),
+                    created_at=session.created_at,
+                ))
+                db.commit()
+        except Exception as _exc:
+            logger_internal.warning("Session persist skipped: %s", _exc)
+
         logger_internal.info(f"Created session: {session_id}")
         return session
     
@@ -74,7 +160,15 @@ class SessionManager:
         self.messages.pop(session_id, None)
         self.tool_traces.pop(session_id, None)
         self.retrieval_traces.pop(session_id, None)
-        
+
+        try:
+            with self._session_factory() as db:
+                db.execute(_sa_delete(ChatMessageRow).where(ChatMessageRow.session_id == session_id))
+                db.execute(_sa_delete(ChatSessionRow).where(ChatSessionRow.session_id == session_id))
+                db.commit()
+        except Exception as _exc:
+            logger_internal.warning("Session delete from DB skipped: %s", _exc)
+
         logger_internal.info(f"Deleted session: {session_id}")
         return True
     
@@ -84,8 +178,27 @@ class SessionManager:
         if session_id not in self.messages:
             logger_internal.warning(f"Session {session_id} not found, creating it")
             self.create_session(session_id)
-        
+
         self.messages[session_id].append(message)
+
+        try:
+            with self._session_factory() as db:
+                seq_num = len(self.messages[session_id]) - 1
+                tc_json: Optional[str] = None
+                if message.tool_calls:
+                    tc_json = json.dumps([tc.model_dump() for tc in message.tool_calls])
+                db.add(ChatMessageRow(
+                    session_id=session_id,
+                    sequence_num=seq_num,
+                    role=message.role,
+                    content=message.content or "",
+                    tool_call_id=message.tool_call_id,
+                    tool_calls_json=tc_json,
+                ))
+                db.commit()
+        except Exception as _exc:
+            logger_internal.warning("Message persist skipped: %s", _exc)
+
         logger_internal.info(f"Added {message.role} message to session {session_id}")
     
     def get_messages(self, session_id: str) -> List[ChatMessage]:
@@ -161,8 +274,18 @@ class SessionManager:
         
         if session_id not in self.sessions:
             return False
-        
+
         self.sessions[session_id].title = title
+
+        try:
+            with self._session_factory() as db:
+                row = db.get(ChatSessionRow, session_id)
+                if row:
+                    row.title = title
+                    db.commit()
+        except Exception as _exc:
+            logger_internal.warning("Session title update in DB skipped: %s", _exc)
+
         logger_internal.info(f"Updated session title: {session_id} -> {title}")
         return True
     
