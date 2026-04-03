@@ -177,8 +177,7 @@ DIRECT_QUERY_ROUTES: List[Dict[str, Any]] = [
             r"\btime.*running\b",         # "time it's been running"
         ],
         "tool_candidates": [
-            ["get_system_uptime"],
-            ["get_uptime"],
+            ["get_system_uptime", "get_uptime"],
             ["server_info"],
         ],
     },
@@ -1931,6 +1930,22 @@ def _find_matching_tool_names(
     return resolved
 
 
+def _select_one_tool_from_candidate_group(
+    candidate_names: List[str],
+    available_tool_names: List[str],
+) -> Optional[str]:
+    """Resolve one preferred tool from a prioritized candidate group.
+
+    Each inner ``tool_candidates`` list in ``DIRECT_QUERY_ROUTES`` is treated as
+    an OR-group ordered by preference. This keeps direct routing generic: route
+    authors can express semantic alternatives such as
+    ``["get_system_uptime", "get_uptime"]`` and the selector will expose only
+    the first available match instead of sending both overlapping tools.
+    """
+    matches = _find_matching_tool_names(candidate_names, available_tool_names)
+    return matches[0] if matches else None
+
+
 def _select_direct_tool_route(
     message_content: str,
     available_tool_names: List[str],
@@ -1948,9 +1963,9 @@ def _select_direct_tool_route(
 
         allowed_tool_names: List[str] = []
         for candidate_group in route["tool_candidates"]:
-            for tool_name in _find_matching_tool_names(candidate_group, available_tool_names):
-                if tool_name not in allowed_tool_names:
-                    allowed_tool_names.append(tool_name)
+            tool_name = _select_one_tool_from_candidate_group(candidate_group, available_tool_names)
+            if tool_name and tool_name not in allowed_tool_names:
+                allowed_tool_names.append(tool_name)
 
         if allowed_tool_names:
             return {

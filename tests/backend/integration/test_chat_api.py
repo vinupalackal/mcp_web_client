@@ -686,6 +686,95 @@ class TestToolCallingFlow:
         assert "mcp_repeated_exec" not in first_tool_names
 
     @respx.mock
+    def test_direct_uptime_query_prefers_one_uptime_tool_per_candidate_group(self, client, llm_openai, monkeypatch):
+        """Direct uptime routing should expose one preferred uptime tool plus server_info, not both uptime variants."""
+        monkeypatch.setenv("MCP_ALLOW_HTTP_INSECURE", "true")
+        client.post("/api/servers", json={
+            "alias": "home_mcp_server",
+            "base_url": "https://mcp.example.com",
+            "auth_type": "none",
+        })
+        from backend.models import ToolSchema
+        main_module.mcp_manager.tools["home_mcp_server__server_info"] = ToolSchema(
+            namespaced_id="home_mcp_server__server_info",
+            server_alias="home_mcp_server",
+            name="server_info",
+            description="Server info",
+        )
+        main_module.mcp_manager.tools["home_mcp_server__get_uptime"] = ToolSchema(
+            namespaced_id="home_mcp_server__get_uptime",
+            server_alias="home_mcp_server",
+            name="get_uptime",
+            description="Get uptime and load averages",
+        )
+        main_module.mcp_manager.tools["home_mcp_server__get_system_uptime"] = ToolSchema(
+            namespaced_id="home_mcp_server__get_system_uptime",
+            server_alias="home_mcp_server",
+            name="get_system_uptime",
+            description="Read uptime from /proc/uptime",
+        )
+
+        client.post("/api/llm/config", json=llm_openai)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+            captured_payloads.append(json.loads(request.content))
+            if len(captured_payloads) == 1:
+                return httpx.Response(200, json={
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "call_uptime",
+                                "type": "function",
+                                "function": {
+                                    "name": "home_mcp_server__get_system_uptime",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                })
+            return httpx.Response(200, json={
+                "choices": [{
+                    "message": {"role": "assistant", "content": "The system has been up for 6 days."},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 6, "total_tokens": 14},
+            })
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"uptime": "6d"},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "uptime?"},
+        )
+
+        assert response.status_code == 200
+        first_tool_names = [tool["function"]["name"] for tool in captured_payloads[0]["tools"]]
+        assert "home_mcp_server__get_system_uptime" in first_tool_names
+        assert "home_mcp_server__server_info" in first_tool_names
+        assert "home_mcp_server__get_uptime" not in first_tool_names
+
+    @respx.mock
     def test_direct_metric_query_dedupes_duplicate_tools_before_llm_request(self, client, llm_openai, monkeypatch):
         """Direct tool routes must not send duplicate tool entries to the LLM."""
         self._setup_server_with_tools(

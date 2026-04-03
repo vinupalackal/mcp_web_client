@@ -640,6 +640,43 @@ def test_split_phase_early_stop_only_applies_to_high_confidence_direct_fact(monk
     ) is False
 
 
+def test_select_one_tool_from_candidate_group_prefers_first_available_match():
+    """Direct-route candidate groups should resolve to one preferred tool only."""
+    main_module = importlib.import_module("backend.main")
+
+    selected = main_module._select_one_tool_from_candidate_group(
+        ["get_system_uptime", "get_uptime"],
+        [
+            "home_mcp_server__get_uptime",
+            "home_mcp_server__get_system_uptime",
+            "home_mcp_server__server_info",
+        ],
+    )
+
+    assert selected == "home_mcp_server__get_system_uptime"
+
+
+def test_select_direct_tool_route_chooses_one_tool_per_candidate_group():
+    """Direct routing should keep one preferred tool from each semantic alternative group."""
+    main_module = importlib.import_module("backend.main")
+
+    route = main_module._select_direct_tool_route(
+        "uptime?",
+        [
+            "home_mcp_server__server_info",
+            "home_mcp_server__get_uptime",
+            "home_mcp_server__get_system_uptime",
+        ],
+    )
+
+    assert route is not None
+    assert route["route_name"] == "uptime"
+    assert route["allowed_tool_names"] == [
+        "home_mcp_server__get_system_uptime",
+        "home_mcp_server__server_info",
+    ]
+
+
 def test_repeated_exec_triage_instruction_requests_explanatory_output_format():
     """Repeated execution synthesis should require the richer triaging output structure."""
     main_module = importlib.import_module("backend.main")
