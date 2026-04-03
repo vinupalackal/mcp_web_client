@@ -83,7 +83,7 @@ class TestMemoryRetrievalFlow:
 
         fake_llm = _CapturingLLMClient(response_text="Retrieved context was used.")
         monkeypatch.setattr(main_module.LLMClientFactory, "create", lambda *args, **kwargs: fake_llm)
-        main_module._memory_service = _FakeMemoryService(
+        fake_memory = _FakeMemoryService(
             RetrievalResult(
                 blocks=[
                     RetrievalBlock(
@@ -108,6 +108,7 @@ class TestMemoryRetrievalFlow:
                 collection_keys=("code_memory", "doc_memory"),
             )
         )
+        main_module._memory_service = fake_memory
 
         response = client.post(
             f"/api/sessions/{session_id}/messages",
@@ -132,6 +133,12 @@ class TestMemoryRetrievalFlow:
         assert "## Retrieved context" in sent_messages[0]["content"]
         assert "src/main.c (code_memory)" in sent_messages[0]["content"]
         assert "usage documentation" in sent_messages[0]["content"]
+
+        # Planning retrieval always uses include_code_memory=False (code vault excluded)
+        assert all(c["include_code_memory"] is False for c in fake_memory.calls), (
+            "Planning enrich_for_turn was called with include_code_memory=True — "
+            "code-memory must be excluded from the planning phase"
+        )
 
     def test_chat_memory_empty_results_records_zero_count(self, client, llm_mock, monkeypatch):
         """TC-FLOW-03: Non-degraded empty retrieval still records a zero-result trace."""
@@ -166,6 +173,60 @@ class TestMemoryRetrievalFlow:
         assert traces[0]["request_id"] == payload["transaction_id"]
         assert traces[0]["result_count"] == 0
         assert traces[0]["degraded"] is False
+
+    def test_chat_memory_degraded_skips_context_injection_but_records_trace(self, client, llm_mock, monkeypatch):
+        """TC-FLOW-06: Degraded planning retrieval records a degraded trace but does NOT
+        inject any context into the LLM messages (degraded mode means the vector store
+        was unreachable; injecting stale/empty context would be misleading)."""
+        client.post("/api/llm/config", json=llm_mock)
+        session_id = client.post("/api/sessions").json()["session_id"]
+
+        fake_llm = _CapturingLLMClient(response_text="Degraded memory — answer without context.")
+        monkeypatch.setattr(main_module.LLMClientFactory, "create", lambda *args, **kwargs: fake_llm)
+        main_module._memory_service = _FakeMemoryService(
+            RetrievalResult(
+                blocks=[
+                    RetrievalBlock(
+                        payload_ref="payload://code/repo/src/old.c#stale",
+                        collection="code_memory",
+                        score=0.9,
+                        snippet="stale snippet that should not appear",
+                        source_path="src/old.c",
+                    )
+                ],
+                degraded=True,
+                degraded_reason="Milvus connection timeout",
+                latency_ms=5000.0,
+                query_hash="degraded-hash",
+                collection_keys=("code_memory",),
+            )
+        )
+
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "what is the latency"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["message"]["content"] == "Degraded memory — answer without context."
+
+        # Trace must still be recorded, and must flag degraded=True
+        traces = main_module.session_manager.get_retrieval_traces(session_id)
+        assert len(traces) == 1
+        assert traces[0]["degraded"] is True
+        assert traces[0]["degraded_reason"] == "Milvus connection timeout"
+
+        # No "## Retrieved context" must reach the LLM (degrade silently)
+        sent_messages = fake_llm.calls[0]["messages"]
+        assert not any(
+            "## Retrieved context" in (msg.get("content") or "")
+            for msg in sent_messages
+        ), "Degraded retrieval result must NOT be injected into LLM messages"
+
+        # Degraded block's stale snippet must not appear either
+        full_context = " ".join(msg.get("content") or "" for msg in sent_messages)
+        assert "stale snippet" not in full_context
 
 
 # ---------------------------------------------------------------------------
@@ -456,3 +517,303 @@ class TestSynthesisRetrievalTiming:
             "enrich_for_turn(include_code_memory=False) never fired — "
             "planning retrieval is broken"
         )
+
+    @respx.mock
+    def test_synthesis_degraded_result_does_not_inject_context(
+        self, client, llm_mock, monkeypatch
+    ):
+        """TC-FLOW-07: When the synthesis enrich_for_turn returns degraded=True, the
+        guard ``if not _synth_retrieval.degraded and _synth_retrieval.blocks:`` must
+        prevent any context from reaching the synthesis LLM call.
+
+        The retrieval still *fires* (include_code_memory=True call tracked) — the
+        guard skips injection, not the call itself.
+        """
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_mock)
+        session_id = client.post("/api/sessions").json()["session_id"]
+
+        fake_llm = _ToolAwareCapturingLLMClient(
+            synthesis_content="Synthesis without code context (degraded)."
+        )
+        monkeypatch.setattr(
+            main_module.LLMClientFactory, "create", lambda *a, **kw: fake_llm
+        )
+
+        # Synthesis returns degraded=True — context must NOT be injected
+        fake_memory = _SynthesisAwareFakeMemoryService(
+            synthesis_result=RetrievalResult(
+                blocks=[
+                    RetrievalBlock(
+                        payload_ref="payload://code/repo/src/net.c#recv",
+                        collection="code_memory",
+                        score=0.1,
+                        snippet="should not appear in synthesis messages",
+                        source_path="src/net.c",
+                    )
+                ],
+                degraded=True,
+                degraded_reason="Milvus unreachable during synthesis",
+                latency_ms=5000.0,
+                query_hash="synth-degraded-hash",
+                collection_keys=("code_memory",),
+            )
+        )
+        main_module._memory_service = fake_memory
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"output": "pong"},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "ping 1.2.3.4"},
+        )
+        assert response.status_code == 200
+        assert len(response.json()["tool_executions"]) >= 1
+
+        # Synthesis retrieval must have fired despite degraded result
+        synthesis_calls = [c for c in fake_memory.calls if c["include_code_memory"]]
+        assert len(synthesis_calls) >= 1, (
+            "Synthesis enrich_for_turn was not called at all"
+        )
+
+        # Degraded result must NOT be injected into synthesis LLM call
+        synthesis_llm_messages = fake_llm.calls[-1]["messages"]
+        assert not any(
+            "## Retrieved context" in (msg.get("content") or "")
+            for msg in synthesis_llm_messages
+        ), (
+            "Degraded synthesis retrieval result was incorrectly injected into "
+            "the synthesis LLM call's messages"
+        )
+        full_text = " ".join(msg.get("content") or "" for msg in synthesis_llm_messages)
+        assert "should not appear in synthesis messages" not in full_text
+
+    @respx.mock
+    def test_synthesis_empty_blocks_does_not_inject_context(
+        self, client, llm_mock, monkeypatch
+    ):
+        """TC-FLOW-08: When synthesis enrich_for_turn returns non-degraded but empty
+        blocks, the ``and _synth_retrieval.blocks`` guard prevents context injection.
+
+        Distinct from TC-FLOW-05: here the tool *was* executed (synthesis retrieval
+        fires), but the vector store returned zero results.
+        """
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_mock)
+        session_id = client.post("/api/sessions").json()["session_id"]
+
+        fake_llm = _ToolAwareCapturingLLMClient(
+            synthesis_content="Synthesis with no extra context."
+        )
+        monkeypatch.setattr(
+            main_module.LLMClientFactory, "create", lambda *a, **kw: fake_llm
+        )
+
+        # Synthesis returns empty blocks (healthy, just no hits)
+        fake_memory = _SynthesisAwareFakeMemoryService(
+            synthesis_result=RetrievalResult(
+                blocks=[],
+                degraded=False,
+                degraded_reason="",
+                latency_ms=8.0,
+                query_hash="synth-empty-hash",
+                collection_keys=("code_memory",),
+            )
+        )
+        main_module._memory_service = fake_memory
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"output": "pong"},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "ping 1.2.3.4"},
+        )
+        assert response.status_code == 200
+        assert len(response.json()["tool_executions"]) >= 1
+
+        # Synthesis retrieval must have fired
+        synthesis_calls = [c for c in fake_memory.calls if c["include_code_memory"]]
+        assert len(synthesis_calls) >= 1, (
+            "Synthesis enrich_for_turn was not called — empty-blocks path not reached"
+        )
+
+        # Empty-blocks result must NOT add a context section
+        synthesis_llm_messages = fake_llm.calls[-1]["messages"]
+        assert not any(
+            "## Retrieved context" in (msg.get("content") or "")
+            for msg in synthesis_llm_messages
+        ), (
+            "Empty synthesis blocks caused '## Retrieved context' to appear in the "
+            "synthesis LLM call — context section must only appear when blocks are present"
+        )
+
+    @respx.mock
+    def test_synthesis_request_id_has_synthesis_suffix(
+        self, client, llm_mock, monkeypatch
+    ):
+        """TC-FLOW-09: The synthesis enrich_for_turn call receives
+        ``request_id = f\"{transaction_id}-synthesis\"``, while the planning call
+        receives the bare ``transaction_id``.
+
+        This naming convention lets operators correlate planning vs synthesis
+        retrievals in logs/traces without ambiguity.
+        """
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_mock)
+        session_id = client.post("/api/sessions").json()["session_id"]
+
+        fake_llm = _ToolAwareCapturingLLMClient()
+        monkeypatch.setattr(
+            main_module.LLMClientFactory, "create", lambda *a, **kw: fake_llm
+        )
+        fake_memory = _SynthesisAwareFakeMemoryService(
+            synthesis_result=RetrievalResult(
+                blocks=[
+                    RetrievalBlock(
+                        payload_ref="payload://code/repo/src/net.c#connect",
+                        collection="code_memory",
+                        score=0.03,
+                        snippet="network connect impl",
+                        source_path="src/net.c",
+                    )
+                ],
+                degraded=False,
+                degraded_reason="",
+                latency_ms=10.0,
+                query_hash="req-id-hash",
+                collection_keys=("code_memory",),
+            )
+        )
+        main_module._memory_service = fake_memory
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"output": "pong"},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "ping 1.2.3.4"},
+        )
+        assert response.status_code == 200
+        transaction_id = response.json()["transaction_id"]
+        assert len(response.json()["tool_executions"]) >= 1
+
+        planning_calls = [c for c in fake_memory.calls if not c["include_code_memory"]]
+        synthesis_calls = [c for c in fake_memory.calls if c["include_code_memory"]]
+        assert len(planning_calls) >= 1
+        assert len(synthesis_calls) >= 1
+
+        # Planning call uses the bare transaction_id
+        assert planning_calls[0]["request_id"] == transaction_id, (
+            f"Planning request_id expected '{transaction_id}', "
+            f"got '{planning_calls[0]['request_id']}'"
+        )
+        # Synthesis call appends '-synthesis'
+        assert synthesis_calls[0]["request_id"] == f"{transaction_id}-synthesis", (
+            f"Synthesis request_id expected '{transaction_id}-synthesis', "
+            f"got '{synthesis_calls[0]['request_id']}'"
+        )
+
+    @respx.mock
+    def test_record_turn_called_with_tool_names_after_synthesis(
+        self, client, llm_mock, monkeypatch
+    ):
+        """TC-FLOW-10: After the synthesis LLM call produces the final response,
+        ``record_turn`` is called exactly once and the ``tool_names`` kwarg includes
+        every namespaced tool that was executed in the turn.
+
+        Validates that the memory service's provenance recording still works
+        correctly after the synthesis-retrieval timing fix.
+        """
+        self._setup_server_and_tool(client, monkeypatch)
+        client.post("/api/llm/config", json=llm_mock)
+        session_id = client.post("/api/sessions").json()["session_id"]
+
+        fake_llm = _ToolAwareCapturingLLMClient(
+            synthesis_content="Pong received. Latency is 12 ms."
+        )
+        monkeypatch.setattr(
+            main_module.LLMClientFactory, "create", lambda *a, **kw: fake_llm
+        )
+        fake_memory = _SynthesisAwareFakeMemoryService(
+            synthesis_result=RetrievalResult(
+                blocks=[],
+                degraded=False,
+                degraded_reason="",
+                latency_ms=0.0,
+                query_hash="",
+                collection_keys=(),
+            )
+        )
+        main_module._memory_service = fake_memory
+
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 3,
+                    "result": {"output": "pong"},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"role": "user", "content": "ping 1.2.3.4"},
+        )
+        assert response.status_code == 200
+        assert len(response.json()["tool_executions"]) >= 1
+
+        # record_turn must be called exactly once (one user turn)
+        assert len(fake_memory.record_turn_calls) == 1, (
+            f"Expected 1 record_turn call, got {len(fake_memory.record_turn_calls)}"
+        )
+
+        record_kwargs = fake_memory.record_turn_calls[0]
+
+        # The tool that executed must appear in tool_names
+        assert "svc__ping" in record_kwargs.get("tool_names", []), (
+            f"'svc__ping' missing from record_turn tool_names: "
+            f"{record_kwargs.get('tool_names')}"
+        )
+
+        # user_message and assistant_response must be populated
+        assert record_kwargs.get("user_message") == "ping 1.2.3.4"
+        assert record_kwargs.get("assistant_response") == "Pong received. Latency is 12 ms."
+
+        # session_id must match the active session
+        assert record_kwargs.get("session_id") == session_id
