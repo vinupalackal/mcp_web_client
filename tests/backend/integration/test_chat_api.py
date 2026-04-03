@@ -186,6 +186,67 @@ _MOCK_LLM_TWO_TOOL_CALLS = {
     "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
 }
 
+_MOCK_LLM_THREE_TOOL_CALLS = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_t1",
+                    "type": "function",
+                    "function": {"name": "svc__tool1", "arguments": "{}"},
+                },
+                {
+                    "id": "call_t2",
+                    "type": "function",
+                    "function": {"name": "svc__tool2", "arguments": "{}"},
+                },
+                {
+                    "id": "call_t3",
+                    "type": "function",
+                    "function": {"name": "svc__tool3", "arguments": "{}"},
+                },
+            ],
+        },
+        "finish_reason": "tool_calls",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 30, "total_tokens": 40},
+}
+
+_MOCK_LLM_FOUR_TOOL_CALLS = {
+    "choices": [{
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_t1",
+                    "type": "function",
+                    "function": {"name": "svc__tool1", "arguments": "{}"},
+                },
+                {
+                    "id": "call_t2",
+                    "type": "function",
+                    "function": {"name": "svc__tool2", "arguments": "{}"},
+                },
+                {
+                    "id": "call_t3",
+                    "type": "function",
+                    "function": {"name": "svc__tool3", "arguments": "{}"},
+                },
+                {
+                    "id": "call_t4",
+                    "type": "function",
+                    "function": {"name": "svc__tool4", "arguments": "{}"},
+                },
+            ],
+        },
+        "finish_reason": "tool_calls",
+    }],
+    "usage": {"prompt_tokens": 10, "completion_tokens": 40, "total_tokens": 50},
+}
+
 _MOCK_OLLAMA_TOOL_CALL = {
     "message": {
         "role": "assistant",
@@ -1202,6 +1263,174 @@ class TestToolCallingFlow:
         assert "svc__get_cpu" in executed_tools
         assert "svc__get_memory" in executed_tools
         assert len(data["tool_executions"]) == 2
+
+    @respx.mock
+    def test_three_tools_at_threshold_execute_sequentially(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-BATCH-01: Exactly 3 tool calls (at threshold) must run sequentially.
+
+        Verifies _should_batch_tool_results returns False for count==3 and that
+        all three tools are still executed and their results returned correctly.
+        """
+        self._setup_server_with_tools(
+            client, monkeypatch,
+            ["svc__tool1", "svc__tool2", "svc__tool3"],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        monkeypatch.delenv("MCP_TOOL_BATCH_THRESHOLD", raising=False)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        # Confirm helper agrees this is below-batch
+        assert main_module._should_batch_tool_results(3) is False
+
+        mcp_responses = [
+            httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": 1,
+                "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+            }),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": {"v": "tool1_result"}}),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 3, "result": {"v": "tool2_result"}}),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 4, "result": {"v": "tool3_result"}}),
+        ]
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
+                httpx.Response(200, json=_MOCK_LLM_THREE_TOOL_CALLS),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(side_effect=mcp_responses)
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "run 3 tools"})
+        assert r.status_code == 200
+        data = r.json()
+        executed = [te["tool"] for te in data["tool_executions"]]
+        assert sorted(executed) == ["svc__tool1", "svc__tool2", "svc__tool3"]
+        assert len(data["tool_executions"]) == 3
+
+    @respx.mock
+    def test_four_tools_above_threshold_execute_in_batch(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-BATCH-02: 4 tool calls (above threshold) must use the batch parallel path.
+
+        Verifies _should_batch_tool_results returns True for count==4 and that
+        all four tools are executed and their results returned correctly.
+        """
+        self._setup_server_with_tools(
+            client, monkeypatch,
+            ["svc__tool1", "svc__tool2", "svc__tool3", "svc__tool4"],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        monkeypatch.delenv("MCP_TOOL_BATCH_THRESHOLD", raising=False)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        # Confirm helper agrees this is batch
+        assert main_module._should_batch_tool_results(4) is True
+
+        mcp_responses = [
+            httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": 1,
+                "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+            }),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": {"v": "tool1_result"}}),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 3, "result": {"v": "tool2_result"}}),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 4, "result": {"v": "tool3_result"}}),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 5, "result": {"v": "tool4_result"}}),
+        ]
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
+                httpx.Response(200, json=_MOCK_LLM_FOUR_TOOL_CALLS),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(side_effect=mcp_responses)
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "run 4 tools"})
+        assert r.status_code == 200
+        data = r.json()
+        executed = [te["tool"] for te in data["tool_executions"]]
+        assert sorted(executed) == ["svc__tool1", "svc__tool2", "svc__tool3", "svc__tool4"]
+        assert len(data["tool_executions"]) == 4
+
+    @respx.mock
+    def test_sequential_path_error_is_isolated_and_other_tools_still_run(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-BATCH-03: A failing MCP call in sequential mode must not block remaining tools."""
+        self._setup_server_with_tools(
+            client, monkeypatch,
+            ["svc__tool1", "svc__tool2", "svc__tool3"],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        monkeypatch.delenv("MCP_TOOL_BATCH_THRESHOLD", raising=False)
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        # tool2's MCP call returns an error response; tool1 and tool3 must still complete.
+        mcp_responses = [
+            httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": 1,
+                "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+            }),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": {"v": "tool1_ok"}}),
+            httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": 3,
+                "error": {"code": -32000, "message": "tool2 exploded"}
+            }),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 4, "result": {"v": "tool3_ok"}}),
+        ]
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
+                httpx.Response(200, json=_MOCK_LLM_THREE_TOOL_CALLS),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(side_effect=mcp_responses)
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "run all tools"})
+        assert r.status_code == 200
+        data = r.json()
+        # All three tools must appear in tool_executions (error is recorded, not raised)
+        executed = [te["tool"] for te in data["tool_executions"]]
+        assert "svc__tool1" in executed
+        assert "svc__tool2" in executed
+        assert "svc__tool3" in executed
+        assert len(data["tool_executions"]) == 3
+
+    @respx.mock
+    def test_env_override_changes_batch_boundary(self, client, llm_openai, monkeypatch):
+        """TC-CHAT-BATCH-04: MCP_TOOL_BATCH_THRESHOLD=2 causes 3 tools to use the batch path."""
+        self._setup_server_with_tools(
+            client, monkeypatch,
+            ["svc__tool1", "svc__tool2", "svc__tool3"],
+        )
+        client.post("/api/llm/config", json=llm_openai)
+        monkeypatch.setenv("MCP_TOOL_BATCH_THRESHOLD", "2")
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        # With threshold=2, 3 tools is above-threshold → batch path
+        assert main_module._should_batch_tool_results(3) is True
+
+        mcp_responses = [
+            httpx.Response(200, json={
+                "jsonrpc": "2.0", "id": 1,
+                "result": {"protocolVersion": "2024-11-05", "capabilities": {}}
+            }),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 2, "result": {"v": "r1"}}),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 3, "result": {"v": "r2"}}),
+            httpx.Response(200, json={"jsonrpc": "2.0", "id": 4, "result": {"v": "r3"}}),
+        ]
+        respx.post("https://api.openai.com/v1/chat/completions").mock(
+            side_effect=[
+                httpx.Response(200, json=_MOCK_LLM_CLASSIFICATION),
+                httpx.Response(200, json=_MOCK_LLM_THREE_TOOL_CALLS),
+                httpx.Response(200, json=_MOCK_LLM_STOP),
+            ]
+        )
+        respx.post("https://mcp.example.com/mcp").mock(side_effect=mcp_responses)
+
+        r = client.post(f"/api/sessions/{sid}/messages", json={"role": "user", "content": "run with custom threshold"})
+        assert r.status_code == 200
+        data = r.json()
+        executed = [te["tool"] for te in data["tool_executions"]]
+        assert sorted(executed) == ["svc__tool1", "svc__tool2", "svc__tool3"]
 
 
 # ============================================================================
