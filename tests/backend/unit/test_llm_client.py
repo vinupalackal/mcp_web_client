@@ -104,12 +104,28 @@ _OLLAMA_TOOL_RESPONSE = {
 class TestOpenAIClient:
 
     def test_timeout_uses_configured_llm_timeout(self, openai_config):
-        """TC-LLMC-00: Base client timeout derives from llm_timeout_ms."""
+        """TC-LLMC-00: Base client timeout derives from llm_timeout_ms and llm_connect_timeout_ms."""
         openai_config.llm_timeout_ms = 180000
+        openai_config.llm_connect_timeout_ms = 30000  # default
         client = OpenAIClient(openai_config)
         assert client.timeout.read == 180.0
-        assert client.timeout.connect == 15.0
+        assert client.timeout.connect == 30.0   # now driven by llm_connect_timeout_ms
         assert client.timeout.write == 30.0
+
+    def test_connect_timeout_is_independent_of_read_timeout(self, openai_config):
+        """TC-LLMC-00b: llm_connect_timeout_ms controls connect independently of llm_timeout_ms."""
+        openai_config.llm_timeout_ms = 180000
+        openai_config.llm_connect_timeout_ms = 60000
+        client = OpenAIClient(openai_config)
+        assert client.timeout.read == 180.0
+        assert client.timeout.connect == 60.0  # independent of read
+
+    def test_connect_timeout_default_is_30s(self, openai_config):
+        """TC-LLMC-00c: Default llm_connect_timeout_ms yields a 30s connect timeout."""
+        from backend.models import LLMConfig
+        cfg = LLMConfig(provider="openai", model="gpt-4o", base_url="https://api.openai.com")
+        client = OpenAIClient(cfg)
+        assert client.timeout.connect == 30.0
 
     @respx.mock
     @pytest.mark.asyncio

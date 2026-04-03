@@ -33,8 +33,9 @@ class BaseLLMClient(ABC):
     def __init__(self, config: LLMConfig):
         self.config = config
         timeout_seconds = max(float(config.llm_timeout_ms) / 1000.0, 5.0)
+        connect_seconds = max(float(config.llm_connect_timeout_ms) / 1000.0, 1.0)
         self.timeout = httpx.Timeout(
-            connect=min(15.0, timeout_seconds),
+            connect=connect_seconds,
             read=timeout_seconds,
             write=min(30.0, timeout_seconds),
             pool=5.0,
@@ -236,10 +237,11 @@ class BaseLLMClient(ABC):
         phase = self._timeout_phase(error)
         timeout_seconds = self._timeout_seconds_for_phase(phase)
         logger_internal.error(
-            "  %s timeout: phase=%s timeout_s=%.1f model=%s url=%s messages=%s tools=%s payload_bytes=%s raw_error=%r",
+            "  %s timeout: phase=%s timeout_s=%.1f connect_s=%.1f model=%s url=%s messages=%s tools=%s payload_bytes=%s raw_error=%r",
             provider_name,
             phase,
             timeout_seconds,
+            float(self.timeout.connect),
             self.config.model,
             url,
             messages_count,

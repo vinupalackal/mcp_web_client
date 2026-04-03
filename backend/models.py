@@ -218,6 +218,18 @@ class LLMConfig(BaseModel):
         le=600000,
         description="LLM request timeout in milliseconds"
     )
+    llm_connect_timeout_ms: int = Field(
+        default=30000,
+        ge=1000,
+        le=120000,
+        description=(
+            "TCP connect timeout for LLM requests in milliseconds. "
+            "Increase this when the LLM server is on a remote or slow network "
+            "(e.g. a multi-machine LAN deployment where the initial TCP handshake "
+            "may take longer than the default 30 s). "
+            "This is independent of llm_timeout_ms which controls the read/write phase."
+        ),
+    )
     max_tokens: Optional[int] = Field(
         None,
         ge=1,
