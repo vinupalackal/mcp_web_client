@@ -4624,7 +4624,30 @@ async def send_message(
                         latest_tool_result.get("role"),
                         str(latest_tool_result.get("content", ""))[:400],
                     )
-                
+
+                # Synthesis enrichment: inject code_memory / doc_memory context
+                # NOW (before the next LLM call) so the synthesis response can
+                # actually cite source material.  Running it after finish_reason=stop
+                # is too late — the answer is already built.
+                if _memory_service is not None and tool_executions:
+                    _synth_retrieval = await _memory_service.enrich_for_turn(
+                        user_message=message.content,
+                        session_id=session_id,
+                        request_id=f"{message_transaction_id}-synthesis",
+                        user_id=user_id or "",
+                        include_code_memory=True,  # synthesis phase — include code/doc memory
+                    )
+                    if not _synth_retrieval.degraded and _synth_retrieval.blocks:
+                        _synth_context = _format_retrieval_context(_synth_retrieval.blocks)
+                        messages_for_llm = _inject_context_section(
+                            messages_for_llm, _synth_context
+                        )
+                        logger_internal.info(
+                            "Synthesis code-memory context injected: %s block(s) collections=%s",
+                            len(_synth_retrieval.blocks),
+                            list(_synth_retrieval.collection_keys),
+                        )
+
                 # Continue loop to get next LLM response
                 continue
             
@@ -4640,28 +4663,6 @@ async def send_message(
                         finish_reason,
                         (assistant_msg.get("content", "")[:200] or "<empty>")
                     )
-
-                # Synthesis enrichment: now that tool results are in context,
-                # enrich with code_memory / doc_memory so the LLM can cite source
-                # material while writing its final answer.
-                if _memory_service is not None and tool_executions:
-                    _synth_retrieval = await _memory_service.enrich_for_turn(
-                        user_message=message.content,
-                        session_id=session_id,
-                        request_id=f"{message_transaction_id}-synthesis",
-                        user_id=user_id or "",
-                        include_code_memory=True,  # synthesis phase — include code/doc memory
-                    )
-                    if not _synth_retrieval.degraded and _synth_retrieval.blocks:
-                        _synth_context = _format_retrieval_context(_synth_retrieval.blocks)
-                        messages_for_llm = _inject_context_section(
-                            rebuild_messages_for_llm(), _synth_context
-                        )
-                        logger_internal.info(
-                            "Synthesis code-memory context injected: %s block(s) collections=%s",
-                            len(_synth_retrieval.blocks),
-                            list(_synth_retrieval.collection_keys),
-                        )
 
                 logger_internal.info(f"LLM gave final response (no tool calls). Response length: {len(assistant_msg.get('content', ''))}")
                 logger_internal.info(f"=== FINAL LLM MESSAGE ===\n{assistant_msg.get('content', '')}\n========================")
