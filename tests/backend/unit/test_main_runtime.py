@@ -671,10 +671,11 @@ def test_select_direct_tool_route_chooses_one_tool_per_candidate_group():
 
     assert route is not None
     assert route["route_name"] == "uptime"
+    # server_info is no longer a candidate group for uptime — only the uptime tool group.
     assert route["allowed_tool_names"] == [
         "home_mcp_server__get_system_uptime",
-        "home_mcp_server__server_info",
     ]
+    assert "home_mcp_server__server_info" not in route["allowed_tool_names"]
 
 
 def test_select_direct_tool_route_prefers_one_tool_for_free_memory_group():

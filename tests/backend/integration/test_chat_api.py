@@ -758,7 +758,11 @@ class TestToolCallingFlow:
 
     @respx.mock
     def test_direct_uptime_query_prefers_one_uptime_tool_per_candidate_group(self, client, llm_openai, monkeypatch):
-        """Direct uptime routing should expose one preferred uptime tool plus server_info, not both uptime variants."""
+        """Direct uptime routing should expose only the preferred uptime tool, not server_info.
+
+        server_info was removed from the uptime route's tool_candidates because it was
+        catalog noise — the model never used it for uptime queries.
+        """
         monkeypatch.setenv("MCP_ALLOW_HTTP_INSECURE", "true")
         client.post("/api/servers", json={
             "alias": "home_mcp_server",
@@ -766,12 +770,6 @@ class TestToolCallingFlow:
             "auth_type": "none",
         })
         from backend.models import ToolSchema
-        main_module.mcp_manager.tools["home_mcp_server__server_info"] = ToolSchema(
-            namespaced_id="home_mcp_server__server_info",
-            server_alias="home_mcp_server",
-            name="server_info",
-            description="Server info",
-        )
         main_module.mcp_manager.tools["home_mcp_server__get_uptime"] = ToolSchema(
             namespaced_id="home_mcp_server__get_uptime",
             server_alias="home_mcp_server",
@@ -783,6 +781,13 @@ class TestToolCallingFlow:
             server_alias="home_mcp_server",
             name="get_system_uptime",
             description="Read uptime from /proc/uptime",
+        )
+        # server_info is intentionally NOT registered — it must not appear in the route
+        main_module.mcp_manager.tools["home_mcp_server__server_info"] = ToolSchema(
+            namespaced_id="home_mcp_server__server_info",
+            server_alias="home_mcp_server",
+            name="server_info",
+            description="Server info",
         )
 
         client.post("/api/llm/config", json=llm_openai)
@@ -842,7 +847,10 @@ class TestToolCallingFlow:
         assert response.status_code == 200
         first_tool_names = [tool["function"]["name"] for tool in captured_payloads[0]["tools"]]
         assert "home_mcp_server__get_system_uptime" in first_tool_names
-        assert "home_mcp_server__server_info" in first_tool_names
+        assert "home_mcp_server__server_info" not in first_tool_names, (
+            "server_info must not be sent for uptime queries — it was removed from the "
+            "uptime route's tool_candidates as unused catalog noise"
+        )
         assert "home_mcp_server__get_uptime" not in first_tool_names
 
     @respx.mock

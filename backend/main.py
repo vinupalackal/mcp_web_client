@@ -176,7 +176,6 @@ DIRECT_QUERY_ROUTES: List[Dict[str, Any]] = [
         ],
         "tool_candidates": [
             ["get_system_uptime", "get_uptime"],
-            ["server_info"],
         ],
     },
     {
