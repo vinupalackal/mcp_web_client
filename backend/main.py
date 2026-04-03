@@ -2039,8 +2039,14 @@ def _build_synthesis_prompt(
     current_user_message: str,
     tool_names_executed: List[str],
     tool_executions: Optional[List[Dict[str, Any]]] = None,
+    is_direct_fact: bool = False,
 ) -> str:
-    """System prompt for the follow-up LLM turn after tool results are in context."""
+    """System prompt for the follow-up LLM turn after tool results are in context.
+
+    When ``is_direct_fact=True`` the prompt suppresses diagnostic commentary
+    (health assessment, speculative advice, maintenance recommendations) and
+    instructs the model to report only the fact that was asked for.
+    """
     tools_str = ", ".join(tool_names_executed) if tool_names_executed else "(none)"
 
     # Build a compact per-tool status table to orient the LLM
@@ -2058,6 +2064,24 @@ def _build_synthesis_prompt(
             preview = " ".join(preview.split())[:120]
             status_lines.append(f"  • {tool_name} [{status}]: {preview}")
     status_table = "\n".join(status_lines) if status_lines else "  (none)"
+
+    if is_direct_fact:
+        return (
+            "You are a live device assistant. The following tools have already executed "
+            "and their full outputs are in the conversation history above.\n\n"
+            f"Tools executed:\n{status_table}\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Do NOT call any more tools.\n"
+            "2. Read the tool output in the conversation above.\n"
+            "3. Convert raw numbers into human-readable form "
+            "(e.g. seconds → days/hours/minutes, kB → MB/GB).\n"
+            "4. State only the fact that was asked for. "
+            "Do NOT add health assessments, speculation about causes, "
+            "maintenance recommendations, or advice that was not requested.\n"
+            "5. If the tool failed, say what could not be determined.\n"
+            "6. One sentence or two is enough for a simple factual answer.\n"
+            f"\nUser request: {current_user_message}"
+        )
 
     return (
         "You are a live device assistant. The following tools have already executed "
@@ -3543,6 +3567,7 @@ async def send_message(
                         current_user_message=message.content,
                         tool_names_executed=executed_names,
                         tool_executions=tool_executions,
+                        is_direct_fact=(request_mode == "direct_fact"),
                     ),
                 }
 

@@ -640,6 +640,141 @@ def test_split_phase_early_stop_only_applies_to_high_confidence_direct_fact(monk
     ) is False
 
 
+# ---------------------------------------------------------------------------
+# Tests: _build_synthesis_prompt
+# ---------------------------------------------------------------------------
+
+class TestBuildSynthesisPrompt:
+    """Verify that the synthesis prompt varies correctly between direct_fact
+    and full-diagnostic turns."""
+
+    def setup_method(self):
+        self.main_module = importlib.import_module("backend.main")
+
+    def _make_executions(self, success=True, preview="6d 2h"):
+        return [
+            {
+                "tool": "svc__get_system_uptime",
+                "success": success,
+                "result": {"uptime_seconds": 525720, "text": preview},
+            }
+        ]
+
+    def test_direct_fact_excludes_health_assessment_instruction(self):
+        """direct_fact synthesis must NOT instruct the model to assess health
+        or highlight conditions that need attention."""
+        prompt = self.main_module._build_synthesis_prompt(
+            current_user_message="uptime?",
+            tool_names_executed=["svc__get_system_uptime"],
+            tool_executions=self._make_executions(),
+            is_direct_fact=True,
+        )
+        # The diagnostic instruction must be absent
+        assert "assess whether" not in prompt
+        assert "healthy / degraded / critical" not in prompt
+        assert "highlight" not in prompt
+        assert "needs attention" not in prompt
+
+    def test_direct_fact_includes_no_speculation_instruction(self):
+        """direct_fact synthesis must explicitly forbid speculation, maintenance
+        advice, and unsolicited assessments."""
+        prompt = self.main_module._build_synthesis_prompt(
+            current_user_message="uptime?",
+            tool_names_executed=["svc__get_system_uptime"],
+            tool_executions=self._make_executions(),
+            is_direct_fact=True,
+        )
+        assert "Do NOT add health assessments" in prompt or "Do NOT" in prompt
+        assert "speculation" in prompt.lower() or "not requested" in prompt.lower()
+
+    def test_direct_fact_still_converts_units(self):
+        """direct_fact synthesis must still ask for unit conversion (seconds → days)."""
+        prompt = self.main_module._build_synthesis_prompt(
+            current_user_message="uptime?",
+            tool_names_executed=["svc__get_system_uptime"],
+            tool_executions=self._make_executions(),
+            is_direct_fact=True,
+        )
+        assert "seconds" in prompt and ("days" in prompt or "hours" in prompt)
+
+    def test_direct_fact_includes_no_tool_calls_instruction(self):
+        """Synthesis prompt must always block further tool calls."""
+        prompt = self.main_module._build_synthesis_prompt(
+            current_user_message="uptime?",
+            tool_names_executed=["svc__get_system_uptime"],
+            tool_executions=self._make_executions(),
+            is_direct_fact=True,
+        )
+        assert "Do NOT call any more tools" in prompt
+
+    def test_direct_fact_embeds_user_message(self):
+        """User request must appear verbatim so the model stays on topic."""
+        prompt = self.main_module._build_synthesis_prompt(
+            current_user_message="how long has the router been up?",
+            tool_names_executed=["svc__get_system_uptime"],
+            tool_executions=self._make_executions(),
+            is_direct_fact=True,
+        )
+        assert "how long has the router been up?" in prompt
+
+    def test_default_mode_includes_health_assessment_instruction(self):
+        """Full-diagnostic synthesis must retain the analytical assessment instruction."""
+        prompt = self.main_module._build_synthesis_prompt(
+            current_user_message="diagnose the device",
+            tool_names_executed=["svc__get_system_uptime"],
+            tool_executions=self._make_executions(),
+            is_direct_fact=False,
+        )
+        assert "assess whether" in prompt
+        assert "healthy / degraded / critical" in prompt
+        assert "needs attention" in prompt
+
+    def test_default_mode_is_default_when_flag_omitted(self):
+        """is_direct_fact defaults to False — omitting it must give the
+        full-diagnostic prompt, not the terse fact prompt."""
+        prompt = self.main_module._build_synthesis_prompt(
+            current_user_message="diagnose the device",
+            tool_names_executed=["svc__get_system_uptime"],
+            tool_executions=self._make_executions(),
+        )
+        assert "assess whether" in prompt
+        assert "healthy / degraded / critical" in prompt
+
+    def test_status_table_appears_in_both_variants(self):
+        """Tool name and result preview must appear in the status table for
+        both direct_fact and diagnostic variants."""
+        executions = [
+            {
+                "tool": "svc__get_system_uptime",
+                "success": True,
+                "result": "uptime: 6d 2h",
+            }
+        ]
+        for flag in (True, False):
+            prompt = self.main_module._build_synthesis_prompt(
+                current_user_message="uptime?",
+                tool_names_executed=["svc__get_system_uptime"],
+                tool_executions=executions,
+                is_direct_fact=flag,
+            )
+            assert "svc__get_system_uptime" in prompt
+            assert "✓ success" in prompt
+
+    def test_failed_tool_flagged_in_both_variants(self):
+        """A failed tool execution must show ✗ failed in both prompt variants."""
+        executions = [
+            {"tool": "svc__get_system_uptime", "success": False, "result": "timeout"}
+        ]
+        for flag in (True, False):
+            prompt = self.main_module._build_synthesis_prompt(
+                current_user_message="uptime?",
+                tool_names_executed=["svc__get_system_uptime"],
+                tool_executions=executions,
+                is_direct_fact=flag,
+            )
+            assert "✗ failed" in prompt
+
+
 def test_select_one_tool_from_candidate_group_prefers_first_available_match():
     """Direct-route candidate groups should resolve to one preferred tool only."""
     main_module = importlib.import_module("backend.main")
