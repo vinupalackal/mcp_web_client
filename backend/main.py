@@ -3327,53 +3327,65 @@ async def send_message(
                     "Memory tool route: no confident match — falling back to LLM tool selection"
                 )
 
-        # Get available tools
-        tools_for_llm = mcp_manager.get_tools_for_llm(
-            allowed_tool_names=allowed_tool_names,
-            include_virtual_repeated=include_virtual_repeated,
-        )
+        def _prepare_initial_tool_catalog(
+            *,
+            dedupe_context_label: Optional[str] = None,
+        ) -> tuple[List[Dict[str, Any]], List[List[Dict[str, Any]]], int, int, bool]:
+            tools = mcp_manager.get_tools_for_llm(
+                allowed_tool_names=allowed_tool_names,
+                include_virtual_repeated=include_virtual_repeated,
+            )
 
-        # Effective per-request limit: LLM config field overrides env var
-        _env_limit = int(os.getenv("MCP_MAX_TOOLS_PER_REQUEST", "128"))
-        _effective_limit = active_llm_config.tools_split_limit or _env_limit
-        tool_chunks = mcp_manager.get_tools_for_llm_chunks(
-            _effective_limit,
-            allowed_tool_names=allowed_tool_names,
-            include_virtual_repeated=include_virtual_repeated,
-        )
-        if direct_tool_route is not None:
-            tools_for_llm, tool_chunks = _dedupe_llm_tool_catalog_and_chunks(
-                tools_for_llm,
-                tool_chunks,
-                context_label=f"route {direct_tool_route['route_name']}",
+            env_limit = int(os.getenv("MCP_MAX_TOOLS_PER_REQUEST", "128"))
+            effective_limit = active_llm_config.tools_split_limit or env_limit
+            chunks = mcp_manager.get_tools_for_llm_chunks(
+                effective_limit,
+                allowed_tool_names=allowed_tool_names,
+                include_virtual_repeated=include_virtual_repeated,
             )
-        _split_phase_needed = (
-            len(tool_chunks) > 1
-            and active_llm_config.tools_split_enabled
-        )
 
-        if _split_phase_needed:
-            logger_internal.info(
-                "Tool catalog: %s tools → %s chunk(s) of ≤%s "
-                "(tools_split_limit=%s, env_limit=%s)",
-                len(tools_for_llm), len(tool_chunks), _effective_limit,
-                active_llm_config.tools_split_limit, _env_limit,
+            if dedupe_context_label is not None:
+                tools, chunks = _dedupe_llm_tool_catalog_and_chunks(
+                    tools,
+                    chunks,
+                    context_label=dedupe_context_label,
+                )
+
+            split_phase_needed = (
+                len(chunks) > 1
+                and active_llm_config.tools_split_enabled
             )
-        elif len(tool_chunks) > 1 and not active_llm_config.tools_split_enabled:
-            logger_internal.warning(
-                "Tool catalog has %s tools across %s chunk(s) but tools_split_enabled=False; "
-                "using full catalog without splitting. Enable 'Split Tools List' in LLM Settings "
-                "to activate split-phase mode.",
-                len(tools_for_llm), len(tool_chunks),
+
+            if split_phase_needed:
+                logger_internal.info(
+                    "Tool catalog: %s tools → %s chunk(s) of ≤%s "
+                    "(tools_split_limit=%s, env_limit=%s)",
+                    len(tools), len(chunks), effective_limit,
+                    active_llm_config.tools_split_limit, env_limit,
+                )
+            elif len(chunks) > 1 and not active_llm_config.tools_split_enabled:
+                logger_internal.warning(
+                    "Tool catalog has %s tools across %s chunk(s) but tools_split_enabled=False; "
+                    "using full catalog without splitting. Enable 'Split Tools List' in LLM Settings "
+                    "to activate split-phase mode.",
+                    len(tools), len(chunks),
+                )
+            elif len(tools) > effective_limit:
+                logger_internal.warning(
+                    "Tool catalog has %s tools but effective limit=%s; truncating. "
+                    "Enable 'Split Tools List' in LLM Settings to activate split-phase mode instead.",
+                    len(tools), effective_limit,
+                )
+                tools = tools[:effective_limit]
+                chunks = [tools]
+
+            return tools, chunks, env_limit, effective_limit, split_phase_needed
+
+        tools_for_llm, tool_chunks, _env_limit, _effective_limit, _split_phase_needed = _prepare_initial_tool_catalog(
+            dedupe_context_label=(
+                f"route {direct_tool_route['route_name']}" if direct_tool_route is not None else None
             )
-        elif len(tools_for_llm) > _effective_limit:
-            logger_internal.warning(
-                "Tool catalog has %s tools but effective limit=%s; truncating. "
-                "Enable 'Split Tools List' in LLM Settings to activate split-phase mode instead.",
-                len(tools_for_llm), _effective_limit,
-            )
-            tools_for_llm = tools_for_llm[:_effective_limit]
-            tool_chunks = [tools_for_llm]
+        )
 
         logger_internal.info(f"Available tools for LLM: {len(tools_for_llm)} tools")
         if tools_for_llm:
