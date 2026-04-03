@@ -9,6 +9,41 @@ from backend.models import ChatMessage
 
 
 # ---------------------------------------------------------------------------
+# _should_batch_tool_results
+# ---------------------------------------------------------------------------
+
+def test_should_batch_tool_results_returns_false_at_or_below_threshold(monkeypatch):
+    """Tool counts at or below the threshold must NOT use the batch path."""
+    main_module = importlib.import_module("backend.main")
+    monkeypatch.delenv("MCP_TOOL_BATCH_THRESHOLD", raising=False)
+
+    assert main_module._should_batch_tool_results(0) is False
+    assert main_module._should_batch_tool_results(1) is False
+    assert main_module._should_batch_tool_results(2) is False
+    assert main_module._should_batch_tool_results(3) is False  # exactly at threshold → sequential
+
+
+def test_should_batch_tool_results_returns_true_above_threshold(monkeypatch):
+    """Tool counts above the threshold must use the batch path."""
+    main_module = importlib.import_module("backend.main")
+    monkeypatch.delenv("MCP_TOOL_BATCH_THRESHOLD", raising=False)
+
+    assert main_module._should_batch_tool_results(4) is True
+    assert main_module._should_batch_tool_results(8) is True
+    assert main_module._should_batch_tool_results(128) is True
+
+
+def test_should_batch_tool_results_respects_env_override(monkeypatch):
+    """MCP_TOOL_BATCH_THRESHOLD env var must override the default of 3."""
+    main_module = importlib.import_module("backend.main")
+    monkeypatch.setenv("MCP_TOOL_BATCH_THRESHOLD", "5")
+
+    assert main_module._should_batch_tool_results(5) is False   # at threshold → sequential
+    assert main_module._should_batch_tool_results(6) is True    # above threshold → batch
+    assert main_module._should_batch_tool_results(3) is False   # below threshold → sequential
+
+
+# ---------------------------------------------------------------------------
 # _stream_split_phase_tool_calls
 # ---------------------------------------------------------------------------
 

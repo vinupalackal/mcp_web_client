@@ -1247,6 +1247,23 @@ def _split_phase_has_real_tool_calls(tool_calls: List[Dict[str, Any]]) -> bool:
     return False
 
 
+def _should_batch_tool_results(num_tool_calls: int) -> bool:
+    """Return True when the tool-call count exceeds the batch threshold.
+
+    When True  → all MCP tools are fired concurrently and their results are
+                 collected in a single asyncio.gather before the LLM sees any
+                 of them (batch path).
+    When False → tools are executed sequentially; results are still injected
+                 together into the follow-up LLM request, but execution is
+                 ordered rather than concurrent.  This avoids unnecessary
+                 concurrency overhead for small tool sets.
+
+    Threshold is controlled by ``MCP_TOOL_BATCH_THRESHOLD`` (default 3).
+    """
+    threshold = _get_int_env("MCP_TOOL_BATCH_THRESHOLD", 3)
+    return num_tool_calls > threshold
+
+
 def _merge_split_phase_tool_calls(chunk_results: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
     merged: List[Dict[str, Any]] = []
     seen: set = set()
@@ -4105,22 +4122,49 @@ async def send_message(
                     and pc["dedupe_key"] not in executed_tool_results
                     and pc["tool_id"] not in _parallel_results_map  # skip pipeline-pre-executed
                 ]
+                _use_batch = _should_batch_tool_results(num_tool_calls)
                 if len(_parallel_candidates) > 1:
-                    logger_internal.info(
-                        "Executing %s tool calls in parallel: %s",
-                        len(_parallel_candidates),
-                        ", ".join(pc["namespaced_tool_name"] for pc in _parallel_candidates),
-                    )
-                    logger_external.info(
-                        "→ PARALLEL TOOL DISPATCH: %s tool(s) fired concurrently",
-                        len(_parallel_candidates),
-                    )
+                    if _use_batch:
+                        logger_internal.info(
+                            "Executing %s tool calls in parallel (batch mode, threshold=%s): %s",
+                            len(_parallel_candidates),
+                            _get_int_env("MCP_TOOL_BATCH_THRESHOLD", 3),
+                            ", ".join(pc["namespaced_tool_name"] for pc in _parallel_candidates),
+                        )
+                        logger_external.info(
+                            "→ PARALLEL TOOL DISPATCH: %s tool(s) fired concurrently",
+                            len(_parallel_candidates),
+                        )
+                    else:
+                        logger_internal.info(
+                            "Executing %s tool calls sequentially (below batch threshold=%s): %s",
+                            len(_parallel_candidates),
+                            _get_int_env("MCP_TOOL_BATCH_THRESHOLD", 3),
+                            ", ".join(pc["namespaced_tool_name"] for pc in _parallel_candidates),
+                        )
+                        logger_external.info(
+                            "→ SEQUENTIAL TOOL DISPATCH: %s tool(s) run one-at-a-time",
+                            len(_parallel_candidates),
+                        )
+
                 _raw_parallel: List[Any] = []
                 if _parallel_candidates:
-                    _raw_parallel = list(await asyncio.gather(
-                        *[_run_one_mcp_tool(pc) for pc in _parallel_candidates],
-                        return_exceptions=True,
-                    ))
+                    if _use_batch:
+                        # Batch path: fire all in parallel, wait for all results.
+                        _raw_parallel = list(await asyncio.gather(
+                            *[_run_one_mcp_tool(pc) for pc in _parallel_candidates],
+                            return_exceptions=True,
+                        ))
+                    else:
+                        # Sequential path: run one at a time; results are still
+                        # injected together in Phase 3 after all tools complete.
+                        for _seq_pc in _parallel_candidates:
+                            try:
+                                _seq_result = await _run_one_mcp_tool(_seq_pc)
+                            except Exception as _seq_exc:  # noqa: BLE001
+                                _seq_result = _seq_exc
+                            _raw_parallel.append(_seq_result)
+
                 for _pc, _raw in zip(_parallel_candidates, _raw_parallel):
                     if isinstance(_raw, BaseException):
                         _parallel_results_map[_pc["tool_id"]] = {
