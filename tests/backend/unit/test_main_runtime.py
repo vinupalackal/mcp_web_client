@@ -607,6 +607,7 @@ def test_row_counts_endpoint_returns_active_collection_counts(monkeypatch):
         collection_generation = "v1"
         enable_conversation_memory = True
         enable_tool_cache = True
+        enable_adaptive_learning = True
 
     class _FakeMilvusStore:
         def build_collection_name(self, collection_key, generation):
@@ -618,6 +619,7 @@ def test_row_counts_endpoint_returns_active_collection_counts(monkeypatch):
                 "doc_memory": 4,
                 "conversation_memory": 2,
                 "tool_cache": -1,
+                "tool_execution_quality": 0,
             }
             return mapping[collection_key]
 
@@ -641,6 +643,88 @@ def test_row_counts_endpoint_returns_active_collection_counts(monkeypatch):
     assert counts["conversation_memory"]["row_count"] == 2
     assert counts["tool_cache"]["row_count"] == -1
     assert counts["tool_cache"]["available"] is False
+    assert counts["tool_execution_quality"]["row_count"] == 0
+    assert counts["tool_execution_quality"]["available"] is True
+
+
+def test_default_milvus_config_from_env_parses_aql_fields(monkeypatch):
+    """TC-AQL-P1-CFG-01: env-backed defaults should populate Phase 1 AQL config fields."""
+    main_module = importlib.import_module("backend.main")
+
+    monkeypatch.setenv("AQL_ENABLE", "true")
+    monkeypatch.setenv("AQL_QUALITY_RETENTION_DAYS", "45")
+    monkeypatch.setenv("AQL_MIN_RECORDS", "33")
+    monkeypatch.setenv("AQL_AFFINITY_THRESHOLD", "0.72")
+
+    config = main_module._default_milvus_config_from_env()
+
+    assert config.enable_adaptive_learning is True
+    assert config.aql_quality_retention_days == 45
+    assert config.aql_min_records_for_routing == 33
+    assert config.aql_affinity_confidence_threshold == 0.72
+
+
+def test_initialize_memory_service_passes_aql_config_fields(monkeypatch):
+    """TC-AQL-P1-CFG-02: memory-service init should pass Phase 1 AQL fields into runtime config."""
+    main_module = importlib.import_module("backend.main")
+    memory_service_module = importlib.import_module("backend.memory_service")
+    embedding_service_module = importlib.import_module("backend.embedding_service")
+    memory_persistence_module = importlib.import_module("backend.memory_persistence")
+    milvus_store_module = importlib.import_module("backend.milvus_store")
+
+    captured = {}
+
+    class _FakeEmbeddingService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class _FakeMemoryPersistence:
+        pass
+
+    class _FakeMilvusStore:
+        def __init__(self, *, milvus_uri=None, collection_prefix="mcp_client", client=None, client_factory=None):
+            self.milvus_uri = milvus_uri
+            self.collection_prefix = collection_prefix
+
+        def delete_by_filter(self, *, collection_key, generation, filter_expression):
+            return {"delete_count": 0}
+
+    class _FakeMemoryService:
+        def __init__(self, *, embedding_service, milvus_store, memory_persistence, config):
+            captured["config"] = config
+
+        def run_expiry_cleanup_if_due(self, *args, **kwargs):
+            return {"ran": False}
+
+    monkeypatch.setattr(main_module, "llm_config_storage", LLMConfig(provider="ollama", model="llama3.1", base_url="http://127.0.0.1:11434"))
+    monkeypatch.setattr(embedding_service_module, "EmbeddingService", _FakeEmbeddingService)
+    monkeypatch.setattr(memory_persistence_module, "MemoryPersistence", _FakeMemoryPersistence)
+    monkeypatch.setattr(milvus_store_module, "MilvusStore", _FakeMilvusStore)
+    monkeypatch.setattr(memory_service_module, "MemoryService", _FakeMemoryService)
+
+    config = MilvusConfig(
+        enabled=True,
+        milvus_uri="http://127.0.0.1:19530",
+        enable_adaptive_learning=True,
+        aql_quality_retention_days=21,
+        aql_min_records_for_routing=12,
+        aql_affinity_confidence_threshold=0.61,
+        aql_chunk_reorder_threshold=0.74,
+        aql_affinity_weights={"similarity": 0.9},
+        aql_correction_patterns=[r"\\bwrong\\b", r"\\bactually\\b"],
+    )
+
+    result = main_module._initialize_memory_service(config)
+
+    assert result is not None
+    runtime_config = captured["config"]
+    assert runtime_config.enable_adaptive_learning is True
+    assert runtime_config.aql_quality_retention_days == 21
+    assert runtime_config.aql_min_records_for_routing == 12
+    assert runtime_config.aql_affinity_confidence_threshold == 0.61
+    assert runtime_config.aql_chunk_reorder_threshold == 0.74
+    assert runtime_config.aql_affinity_weights["similarity"] == 0.9
+    assert runtime_config.aql_correction_patterns == (r"\\bwrong\\b", r"\\bactually\\b")
 
 
 def test_direct_route_single_tool_bypasses_first_llm_call(monkeypatch):

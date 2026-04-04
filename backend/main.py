@@ -693,6 +693,10 @@ def _default_milvus_config_from_env() -> MilvusConfig:
                 for kw in os.getenv("MEMORY_TOOL_CACHE_FRESHNESS_KEYWORDS", "").split(",")
                 if kw.strip()
             ],
+            enable_adaptive_learning=_get_bool_env("AQL_ENABLE", False),
+            aql_quality_retention_days=_get_int_env("AQL_QUALITY_RETENTION_DAYS", 30),
+            aql_min_records_for_routing=_get_int_env("AQL_MIN_RECORDS", 20),
+            aql_affinity_confidence_threshold=_get_float_env("AQL_AFFINITY_THRESHOLD", 0.65),
             enable_expiry_cleanup=_get_bool_env("MEMORY_EXPIRY_CLEANUP_ENABLED", True),
             expiry_cleanup_interval_s=_get_float_env("MEMORY_EXPIRY_CLEANUP_INTERVAL_S", 300.0),
         )
@@ -836,6 +840,13 @@ def _initialize_memory_service(config: Optional[MilvusConfig] = None) -> Optiona
                 tool_cache_freshness_keywords=tuple(
                     effective_config.tool_cache_freshness_keywords
                 ) or MemoryServiceConfig().tool_cache_freshness_keywords,
+                enable_adaptive_learning=effective_config.enable_adaptive_learning,
+                aql_quality_retention_days=effective_config.aql_quality_retention_days,
+                aql_min_records_for_routing=effective_config.aql_min_records_for_routing,
+                aql_affinity_confidence_threshold=effective_config.aql_affinity_confidence_threshold,
+                aql_chunk_reorder_threshold=effective_config.aql_chunk_reorder_threshold,
+                aql_affinity_weights=dict(effective_config.aql_affinity_weights),
+                aql_correction_patterns=tuple(effective_config.aql_correction_patterns),
                 enable_expiry_cleanup=effective_config.enable_expiry_cleanup,
                 expiry_cleanup_interval_s=effective_config.expiry_cleanup_interval_s,
             ),
@@ -2666,6 +2677,11 @@ async def admin_memory_row_counts(request: Request) -> MemoryRowCountsResponse:
         known_keys.append("conversation_memory")
     if _memory_service.config.enable_tool_cache and "tool_cache" not in known_keys:
         known_keys.append("tool_cache")
+    if (
+        getattr(_memory_service.config, "enable_adaptive_learning", False)
+        and "tool_execution_quality" not in known_keys
+    ):
+        known_keys.append("tool_execution_quality")
 
     counts = [
         MemoryCollectionRowCount(

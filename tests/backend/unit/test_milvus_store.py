@@ -89,6 +89,12 @@ class _FakeMilvusClient:
     def list_collections(self, **kwargs):
         return list(self.collections.keys())
 
+    def get_collection_stats(self, collection_name, **kwargs):
+        collection = self.collections.get(collection_name)
+        if collection is None:
+            return {"row_count": 0}
+        return {"row_count": int(collection.get("row_count", 0))}
+
 
 class TestMilvusStore:
 
@@ -393,6 +399,11 @@ class TestMilvusStoreCollectionKeys:
         store = self._make_store()
         assert store.build_collection_name("tool_cache", "v1") == "mcp_client_tool_cache_v1"
 
+    def test_tool_execution_quality_name(self):
+        """TR-MVS-AQL-01: AQL quality collection key must map to the versioned Milvus name."""
+        store = self._make_store()
+        assert store.build_collection_name("tool_execution_quality", "v1") == "mcp_client_tool_execution_quality_v1"
+
     def test_unknown_collection_key_raises(self):
         """TR-MVS-09: Unknown collection keys are rejected at the naming boundary."""
         store = self._make_store()
@@ -464,6 +475,46 @@ class TestMilvusStoreGenerationIsolation:
             store.ensure_collection(collection_key="tool_cache", generation="v1", dimension=8)
 
         assert len(client.created_calls) == 1
+
+
+class TestMilvusStoreAdaptiveQueryLearningPhase1:
+    """TR-MVS-AQL-02+: Phase 1 AQL store plumbing is additive and schema-ready."""
+
+    def _make_store_and_client(self):
+        client = _FakeMilvusClient()
+        store = MilvusStore(
+            milvus_uri="http://milvus.local",
+            client=client,
+            client_factory=_FakeMilvusClientFactory,
+        )
+        return store, client
+
+    def test_ensure_collection_creates_tool_execution_quality_schema(self):
+        store, client = self._make_store_and_client()
+
+        collection_name = store.ensure_collection(
+            collection_key="tool_execution_quality",
+            generation="v1",
+            dimension=4096,
+        )
+
+        assert collection_name == "mcp_client_tool_execution_quality_v1"
+        created = client.created_calls[0]
+        schema_fields = {field["field_name"]: field for field in created["schema"].fields}
+        assert created["vector_field_name"] == "embedding"
+        assert schema_fields["embedding"]["dim"] == 4096
+        assert "query_hash" in schema_fields
+        assert "tools_selected" in schema_fields
+        assert "user_corrected" in schema_fields
+        assert "expires_at" in schema_fields
+
+    def test_get_record_count_supports_tool_execution_quality(self):
+        store, client = self._make_store_and_client()
+        client.collections["mcp_client_tool_execution_quality_v1"] = {"row_count": 7}
+
+        count = store.get_record_count(collection_key="tool_execution_quality", generation="v1")
+
+        assert count == 7
 
 
 class TestMilvusStoreInputValidation:

@@ -55,6 +55,30 @@ class MemoryServiceConfig:
     # Phase 4: operations hardening / expiry maintenance
     enable_expiry_cleanup: bool = True
     expiry_cleanup_interval_s: float = 300.0
+    # Phase 5+: Adaptive Query Learning (plumbing only in Phase 1)
+    enable_adaptive_learning: bool = False
+    aql_quality_retention_days: int = 30
+    aql_min_records_for_routing: int = 20
+    aql_affinity_confidence_threshold: float = 0.65
+    aql_chunk_reorder_threshold: float = 0.70
+    aql_affinity_weights: dict[str, float] = field(
+        default_factory=lambda: {
+            "similarity": 0.5,
+            "success_rate": 0.3,
+            "bypass_rate": -0.1,
+            "corrected_penalty": -0.3,
+        }
+    )
+    aql_correction_patterns: tuple[str, ...] = (
+        r"\bwrong\b",
+        r"\bincorrect\b",
+        r"\bactually\b",
+        r"\bnot right\b",
+        r"\bthat's not\b",
+        r"\bthat is not\b",
+        r"\bnot what I\b",
+        r"\bno[,.]\b",
+    )
 
 
 @dataclass(frozen=True)
@@ -112,8 +136,10 @@ class MemoryService:
             "ran": False,
             "conversation_deleted": 0,
             "tool_cache_deleted": 0,
+            "tool_execution_quality_deleted": 0,
             "conversation_vector_deleted": None,
             "tool_cache_vector_deleted": None,
+            "tool_execution_quality_vector_deleted": None,
             "reason": None,
         }
 
@@ -745,8 +771,10 @@ class MemoryService:
             "ran": True,
             "conversation_deleted": 0,
             "tool_cache_deleted": 0,
+            "tool_execution_quality_deleted": 0,
             "conversation_vector_deleted": None,
             "tool_cache_vector_deleted": None,
+            "tool_execution_quality_vector_deleted": None,
             "reason": None,
             "cleaned_at": now.isoformat(),
         }
@@ -787,6 +815,19 @@ class MemoryService:
                         "Tool-cache vector cleanup failed: %s", error
                     )
                     summary["tool_cache_vector_deleted"] = {"error": str(error)}
+
+            if self.config.enable_adaptive_learning:
+                try:
+                    summary["tool_execution_quality_vector_deleted"] = self.milvus_store.delete_by_filter(
+                        collection_key="tool_execution_quality",
+                        generation=self.config.collection_generation,
+                        filter_expression=f"expires_at < {now_ts}",
+                    )
+                except Exception as error:
+                    logger_internal.warning(
+                        "Tool-execution-quality vector cleanup failed: %s", error
+                    )
+                    summary["tool_execution_quality_vector_deleted"] = {"error": str(error)}
         except Exception as error:
             logger_internal.warning("Expiry cleanup failed: %s", error)
             summary["reason"] = str(error)
@@ -1159,6 +1200,11 @@ class MemoryService:
                 known_keys.append("conversation_memory")
             if self.config.enable_tool_cache and "tool_cache" not in known_keys:
                 known_keys.append("tool_cache")
+            if (
+                self.config.enable_adaptive_learning
+                and "tool_execution_quality" not in known_keys
+            ):
+                known_keys.append("tool_execution_quality")
 
             rows: list[tuple[str, str]] = []
             for key in known_keys:

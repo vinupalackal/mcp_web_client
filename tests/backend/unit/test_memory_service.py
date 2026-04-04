@@ -115,6 +115,38 @@ class _FakeMemoryPersistence:
 
 class TestMemoryService:
 
+    def test_memory_service_config_accepts_aql_defaults(self):
+        """TC-AQL-P1-CFG-03: runtime config should expose passive AQL defaults in Phase 1."""
+        config = MemoryServiceConfig()
+
+        assert config.enable_adaptive_learning is False
+        assert config.aql_quality_retention_days == 30
+        assert config.aql_min_records_for_routing == 20
+        assert config.aql_affinity_confidence_threshold == 0.65
+        assert config.aql_chunk_reorder_threshold == 0.70
+        assert config.aql_affinity_weights["similarity"] == 0.5
+        assert r"\bwrong\b" in config.aql_correction_patterns
+
+    def test_memory_service_config_accepts_custom_aql_values(self):
+        """TC-AQL-P1-CFG-04: runtime config should accept custom Phase 1 AQL values."""
+        config = MemoryServiceConfig(
+            enable_adaptive_learning=True,
+            aql_quality_retention_days=14,
+            aql_min_records_for_routing=9,
+            aql_affinity_confidence_threshold=0.55,
+            aql_chunk_reorder_threshold=0.66,
+            aql_affinity_weights={"similarity": 0.8},
+            aql_correction_patterns=(r"\bwrong\b",),
+        )
+
+        assert config.enable_adaptive_learning is True
+        assert config.aql_quality_retention_days == 14
+        assert config.aql_min_records_for_routing == 9
+        assert config.aql_affinity_confidence_threshold == 0.55
+        assert config.aql_chunk_reorder_threshold == 0.66
+        assert config.aql_affinity_weights == {"similarity": 0.8}
+        assert config.aql_correction_patterns == (r"\bwrong\b",)
+
     @pytest.mark.asyncio
     async def test_disabled_service_returns_empty_without_dependency_calls(self):
         """TC-MEM-01: Disabled service returns empty blocks and does not touch deps."""

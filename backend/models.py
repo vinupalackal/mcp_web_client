@@ -9,6 +9,15 @@ from datetime import datetime
 import uuid
 
 
+def _default_aql_affinity_weights() -> Dict[str, float]:
+    return {
+        "similarity": 0.5,
+        "success_rate": 0.3,
+        "bypass_rate": -0.1,
+        "corrected_penalty": -0.3,
+    }
+
+
 # ---------------------------------------------------------------------------
 # SSO / Auth models  (v0.4.0-sso-user-settings)
 # ---------------------------------------------------------------------------
@@ -466,6 +475,51 @@ class MilvusConfig(BaseModel):
         le=86400.0,
         description="Minimum interval in seconds between background expiry-cleanup passes",
     )
+    enable_adaptive_learning: bool = Field(
+        default=False,
+        description="Enable Adaptive Query Learning (AQL) feedback capture and future routing hints",
+    )
+    aql_quality_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=365,
+        description="Retention period in days for tool execution quality records",
+    )
+    aql_min_records_for_routing: int = Field(
+        default=20,
+        ge=1,
+        le=1000,
+        description="Minimum quality-history records required before affinity routing may activate",
+    )
+    aql_affinity_confidence_threshold: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence required before affinity routing can narrow the tool set",
+    )
+    aql_chunk_reorder_threshold: float = Field(
+        default=0.70,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence required before split-phase tool chunks may be reordered",
+    )
+    aql_affinity_weights: Dict[str, float] = Field(
+        default_factory=_default_aql_affinity_weights,
+        description="Weight map used by Adaptive Query Learning affinity scoring",
+    )
+    aql_correction_patterns: List[str] = Field(
+        default_factory=lambda: [
+            r"\bwrong\b",
+            r"\bincorrect\b",
+            r"\bactually\b",
+            r"\bnot right\b",
+            r"\bthat's not\b",
+            r"\bthat is not\b",
+            r"\bnot what I\b",
+            r"\bno[,.]\b",
+        ],
+        description="Regex patterns used to detect corrective user follow-up messages",
+    )
     repo_roots: List[str] = Field(
         default_factory=list,
         description="Filesystem paths scanned for code files during workspace ingestion",
@@ -492,6 +546,19 @@ class MilvusConfig(BaseModel):
             for kw in self.tool_cache_freshness_keywords
             if isinstance(kw, str) and kw.strip()
         ]
+        merged_aql_weights = _default_aql_affinity_weights()
+        if isinstance(self.aql_affinity_weights, dict) and self.aql_affinity_weights:
+            for key, value in self.aql_affinity_weights.items():
+                normalized_key = str(key).strip().lower()
+                if not normalized_key:
+                    continue
+                merged_aql_weights[normalized_key] = float(value)
+        self.aql_affinity_weights = merged_aql_weights
+        self.aql_correction_patterns = [
+            pattern.strip()
+            for pattern in self.aql_correction_patterns
+            if isinstance(pattern, str) and pattern.strip()
+        ]
 
         if self.enabled and not self.milvus_uri:
             raise ValueError("Milvus config requires milvus_uri when enabled=true")
@@ -515,6 +582,18 @@ class MilvusConfig(BaseModel):
                     "enable_tool_cache": True,
                     "tool_cache_ttl_s": 3600.0,
                     "tool_cache_allowlist": ["weather__get_forecast", "github__get_issue"],
+                    "enable_adaptive_learning": False,
+                    "aql_quality_retention_days": 30,
+                    "aql_min_records_for_routing": 20,
+                    "aql_affinity_confidence_threshold": 0.65,
+                    "aql_chunk_reorder_threshold": 0.7,
+                    "aql_affinity_weights": {
+                        "similarity": 0.5,
+                        "success_rate": 0.3,
+                        "bypass_rate": -0.1,
+                        "corrected_penalty": -0.3,
+                    },
+                    "aql_correction_patterns": ["\\bwrong\\b", "\\bactually\\b"],
                     "enable_expiry_cleanup": True,
                     "expiry_cleanup_interval_s": 300.0,
                 },
@@ -532,6 +611,18 @@ class MilvusConfig(BaseModel):
                     "enable_tool_cache": False,
                     "tool_cache_ttl_s": 3600.0,
                     "tool_cache_allowlist": [],
+                    "enable_adaptive_learning": False,
+                    "aql_quality_retention_days": 30,
+                    "aql_min_records_for_routing": 20,
+                    "aql_affinity_confidence_threshold": 0.65,
+                    "aql_chunk_reorder_threshold": 0.7,
+                    "aql_affinity_weights": {
+                        "similarity": 0.5,
+                        "success_rate": 0.3,
+                        "bypass_rate": -0.1,
+                        "corrected_penalty": -0.3,
+                    },
+                    "aql_correction_patterns": ["\\bwrong\\b", "\\bactually\\b"],
                     "enable_expiry_cleanup": True,
                     "expiry_cleanup_interval_s": 300.0,
                 },
@@ -1930,3 +2021,39 @@ class MemoryRowCountsResponse(BaseModel):
             }
         }
     )
+
+
+class ToolFrequencyStat(BaseModel):
+    """Frequency summary for a single tool in an AQL report."""
+
+    tool: str = Field(..., description="Namespaced tool name")
+    count: int = Field(..., ge=0, description="Observed frequency for this tool")
+
+
+class FreshnessCandidate(BaseModel):
+    """Suggested freshness keyword candidate surfaced by AQL reporting."""
+
+    pattern: str = Field(..., description="Suggested keyword or tool-name fragment")
+    signal: str = Field(..., description="Primary signal that produced this candidate")
+    score: float = Field(..., description="Relative recommendation score for ranking")
+
+
+class QualityReportResponse(BaseModel):
+    """Aggregated Adaptive Query Learning quality report payload."""
+
+    total_turns: int = Field(..., ge=0, description="Total quality records included in the report")
+    avg_tools_per_turn: float = Field(..., ge=0.0, description="Average number of tools selected per turn")
+    avg_llm_turns: float = Field(..., ge=0.0, description="Average number of LLM turns per completed request")
+    avg_synthesis_tokens: float = Field(..., ge=0.0, description="Average tokens consumed in synthesis turns")
+    correction_rate: float = Field(..., ge=0.0, le=1.0, description="Fraction of turns later marked as corrected")
+    top_succeeded_tools: List[ToolFrequencyStat] = Field(default_factory=list, description="Most frequently successful tools")
+    top_failed_tools: List[ToolFrequencyStat] = Field(default_factory=list, description="Most frequently failing tools")
+    freshness_keyword_candidates: List[FreshnessCandidate] = Field(default_factory=list, description="Recommended additions to tool-cache freshness keywords")
+    routing_distribution: Dict[str, float] = Field(default_factory=dict, description="Fractional routing-mode distribution over the report window")
+
+
+class FreshnessCandidatesResponse(BaseModel):
+    """Read-only AQL freshness keyword recommendation payload."""
+
+    candidates: List[FreshnessCandidate] = Field(default_factory=list, description="Ranked freshness keyword candidates")
+    current_keywords: List[str] = Field(default_factory=list, description="Current configured tool-cache freshness keywords")

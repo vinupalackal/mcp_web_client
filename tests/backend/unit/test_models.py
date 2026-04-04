@@ -32,6 +32,12 @@ from backend.models import (
     MemoryCollectionStatus,
     MemoryIngestionJobStatus,
     MemoryDiagnosticsResponse,
+    MemoryCollectionRowCount,
+    MemoryRowCountsResponse,
+    ToolFrequencyStat,
+    FreshnessCandidate,
+    QualityReportResponse,
+    FreshnessCandidatesResponse,
 )
 
 
@@ -319,8 +325,56 @@ class TestMilvusConfig:
         assert cfg.enable_tool_cache is False
         assert cfg.tool_cache_ttl_s == 3600.0
         assert cfg.tool_cache_allowlist == []
+        assert cfg.enable_adaptive_learning is False
+        assert cfg.aql_quality_retention_days == 30
+        assert cfg.aql_min_records_for_routing == 20
+        assert cfg.aql_affinity_confidence_threshold == 0.65
+        assert cfg.aql_chunk_reorder_threshold == 0.70
+        assert cfg.aql_affinity_weights == {
+            "similarity": 0.5,
+            "success_rate": 0.3,
+            "bypass_rate": -0.1,
+            "corrected_penalty": -0.3,
+        }
+        assert r"\bwrong\b" in cfg.aql_correction_patterns
         assert cfg.enable_expiry_cleanup is True
         assert cfg.expiry_cleanup_interval_s == 300.0
+
+    def test_aql_correction_patterns_trim_blank_values(self):
+        """TC-AQL-P1-MODEL-01: correction-pattern list is normalized and blank entries are removed."""
+        cfg = MilvusConfig(
+            aql_correction_patterns=["  ", r"\bwrong\b", " actually ", ""],
+        )
+
+        assert cfg.aql_correction_patterns == [r"\bwrong\b", "actually"]
+
+    def test_aql_affinity_weights_merge_with_defaults(self):
+        """TC-AQL-P1-MODEL-02: partial AQL affinity weight maps merge into the default set."""
+        cfg = MilvusConfig(aql_affinity_weights={"similarity": 0.8, "success_rate": 0.25})
+
+        assert cfg.aql_affinity_weights == {
+            "similarity": 0.8,
+            "success_rate": 0.25,
+            "bypass_rate": -0.1,
+            "corrected_penalty": -0.3,
+        }
+
+    def test_aql_numeric_boundaries_enforced(self):
+        """TC-AQL-P1-MODEL-03: AQL numeric fields enforce documented bounds."""
+        MilvusConfig(
+            aql_quality_retention_days=365,
+            aql_min_records_for_routing=1000,
+            aql_affinity_confidence_threshold=1.0,
+            aql_chunk_reorder_threshold=0.0,
+        )
+        with pytest.raises(ValidationError):
+            MilvusConfig(aql_quality_retention_days=0)
+        with pytest.raises(ValidationError):
+            MilvusConfig(aql_min_records_for_routing=0)
+        with pytest.raises(ValidationError):
+            MilvusConfig(aql_affinity_confidence_threshold=1.1)
+        with pytest.raises(ValidationError):
+            MilvusConfig(aql_chunk_reorder_threshold=-0.01)
 
     def test_enabled_with_valid_uri_accepted(self):
         """TC-MODEL-09h: Enabled config with a non-empty URI constructs without error."""
@@ -504,6 +558,62 @@ class TestChatMessage:
         """TC-MODEL-15: tool_calls defaults to None."""
         msg = ChatMessage(role="assistant", content="hi")
         assert msg.tool_calls is None
+
+
+# ============================================================================
+# TR-MODEL-AQL: Adaptive Query Learning response models
+# ============================================================================
+
+class TestAdaptiveQueryLearningModels:
+
+    def test_memory_row_counts_response_instantiates(self):
+        """TC-AQL-P1-MODEL-04: MemoryRowCountsResponse accepts the additive row-count payload shape."""
+        response = MemoryRowCountsResponse(
+            success=True,
+            generation="v1",
+            counts=[
+                MemoryCollectionRowCount(
+                    collection_key="tool_execution_quality",
+                    collection_name="mcp_client_tool_execution_quality_v1",
+                    row_count=0,
+                    available=True,
+                )
+            ],
+        )
+
+        assert response.success is True
+        assert response.generation == "v1"
+        assert response.counts[0].collection_key == "tool_execution_quality"
+
+    def test_quality_report_response_instantiates(self):
+        """TC-AQL-P1-MODEL-05: QualityReportResponse supports the future AQL admin summary payload."""
+        response = QualityReportResponse(
+            total_turns=10,
+            avg_tools_per_turn=2.5,
+            avg_llm_turns=1.4,
+            avg_synthesis_tokens=1800.0,
+            correction_rate=0.1,
+            top_succeeded_tools=[ToolFrequencyStat(tool="svc__get_memory_info", count=4)],
+            top_failed_tools=[ToolFrequencyStat(tool="svc__device_processor_speed", count=2)],
+            freshness_keyword_candidates=[
+                FreshnessCandidate(pattern="loadavg", signal="bypass_rate", score=0.82)
+            ],
+            routing_distribution={"llm_fallback": 0.7, "direct": 0.3},
+        )
+
+        assert response.total_turns == 10
+        assert response.top_succeeded_tools[0].tool == "svc__get_memory_info"
+        assert response.freshness_keyword_candidates[0].pattern == "loadavg"
+
+    def test_freshness_candidates_response_instantiates(self):
+        """TC-AQL-P1-MODEL-06: FreshnessCandidatesResponse supports read-only recommendation payloads."""
+        response = FreshnessCandidatesResponse(
+            candidates=[FreshnessCandidate(pattern="cpu_stats", signal="cache_stale", score=0.61)],
+            current_keywords=["uptime", "health"],
+        )
+
+        assert response.candidates[0].pattern == "cpu_stats"
+        assert response.current_keywords == ["uptime", "health"]
 
 
 # ============================================================================

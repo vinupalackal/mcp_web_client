@@ -126,9 +126,42 @@ TOOL_CACHE_SPEC = CollectionSpec(
     ],
 )
 
+TOOL_EXECUTION_QUALITY_SPEC = CollectionSpec(
+    collection_key="tool_execution_quality",
+    vector_field="embedding",
+    metric_type="COSINE",
+    fields=[
+        CollectionFieldSpec("id", DataType.VARCHAR, {"is_primary": True, "max_length": 128}),
+        CollectionFieldSpec("embedding", DataType.FLOAT_VECTOR, {}),
+        CollectionFieldSpec("query_hash", DataType.VARCHAR, {"max_length": 128}),
+        CollectionFieldSpec("domain_tags", DataType.VARCHAR, {"max_length": 2048}),
+        CollectionFieldSpec("issue_type", DataType.VARCHAR, {"max_length": 128}),
+        CollectionFieldSpec("tools_selected", DataType.VARCHAR, {"max_length": 8192}),
+        CollectionFieldSpec("tools_succeeded", DataType.VARCHAR, {"max_length": 8192}),
+        CollectionFieldSpec("tools_failed", DataType.VARCHAR, {"max_length": 8192}),
+        CollectionFieldSpec("tools_bypassed", DataType.VARCHAR, {"max_length": 8192}),
+        CollectionFieldSpec("tools_cache_hit", DataType.VARCHAR, {"max_length": 8192}),
+        CollectionFieldSpec("chunk_yields", DataType.VARCHAR, {"max_length": 8192}),
+        CollectionFieldSpec("llm_turn_count", DataType.INT64, {}),
+        CollectionFieldSpec("synthesis_tokens", DataType.INT64, {}),
+        CollectionFieldSpec("routing_mode", DataType.VARCHAR, {"max_length": 64}),
+        CollectionFieldSpec("user_corrected", DataType.BOOL, {}),
+        CollectionFieldSpec("follow_up_gap_s", DataType.INT64, {}),
+        CollectionFieldSpec("session_id", DataType.VARCHAR, {"max_length": 64}),
+        CollectionFieldSpec("timestamp", DataType.INT64, {}),
+        CollectionFieldSpec("expires_at", DataType.INT64, {}),
+    ],
+)
+
 COLLECTION_SPECS = {
     spec.collection_key: spec
-    for spec in [CODE_MEMORY_SPEC, DOC_MEMORY_SPEC, CONVERSATION_MEMORY_SPEC, TOOL_CACHE_SPEC]
+    for spec in [
+        CODE_MEMORY_SPEC,
+        DOC_MEMORY_SPEC,
+        CONVERSATION_MEMORY_SPEC,
+        TOOL_CACHE_SPEC,
+        TOOL_EXECUTION_QUALITY_SPEC,
+    ]
 }
 
 
