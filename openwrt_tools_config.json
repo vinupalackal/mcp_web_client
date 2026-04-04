@@ -9,20 +9,18 @@
   "tools": [
     {
       "name": "get_wan_ip_config",
-      "description": "Get WAN (Wide Area Network) IP configuration including public IP, gateway, subnet mask, and connection status.",
+      "description": "Get WAN IP, gateway, subnet, and connection status.",
       "category": "network",
       "inputSchema": {
         "type": "object",
         "properties": {
           "interface": {
             "type": "string",
-            "description": "WAN interface name (e.g., 'wan', 'wan6', 'eth1')",
-            "default": "wan"
+            "description": "WAN interface (e.g., 'wan', 'eth1')"
           },
           "include_ipv6": {
             "type": "boolean",
-            "description": "Include IPv6 configuration",
-            "default": true
+            "description": "Include IPv6 configuration"
           }
         },
         "required": []
@@ -50,15 +48,14 @@
     },
     {
       "name": "get_lan_ip_config",
-      "description": "Get LAN (Local Area Network) IP configuration including gateway IP, subnet mask, and DHCP range.",
+      "description": "Get LAN gateway IP, subnet, and DHCP range.",
       "category": "network",
       "inputSchema": {
         "type": "object",
         "properties": {
           "interface": {
             "type": "string",
-            "description": "LAN interface name (e.g., 'lan', 'br-lan')",
-            "default": "lan"
+            "description": "LAN interface (e.g., 'lan', 'br-lan')"
           }
         },
         "required": []
@@ -78,20 +75,18 @@
     },
     {
       "name": "get_dhcp_server_status",
-      "description": "Get DHCP server configuration and status including IP pool, lease time, and active leases.",
+      "description": "Get DHCP server config: pool, lease time, and active leases.",
       "category": "dhcp",
       "inputSchema": {
         "type": "object",
         "properties": {
           "interface": {
             "type": "string",
-            "description": "Interface name for DHCP server (e.g., 'lan')",
-            "default": "lan"
+            "description": "DHCP server interface (e.g., 'lan')"
           },
           "include_leases": {
             "type": "boolean",
-            "description": "Include active DHCP leases",
-            "default": true
+            "description": "Include active DHCP leases"
           }
         },
         "required": []
@@ -111,16 +106,15 @@
     },
     {
       "name": "get_dhcp_leases",
-      "description": "Get list of active DHCP leases showing connected clients with IP, MAC, hostname, and lease expiry.",
+      "description": "List active DHCP leases with IP, MAC, hostname, and expiry.",
       "category": "dhcp",
       "inputSchema": {
         "type": "object",
         "properties": {
           "sort_by": {
             "type": "string",
-            "description": "Sort leases by field",
-            "enum": ["ip", "mac", "hostname", "expiry"],
-            "default": "ip"
+            "description": "Sort field",
+            "enum": ["ip", "mac", "hostname", "expiry"]
           }
         },
         "required": []
@@ -140,15 +134,14 @@
     },
     {
       "name": "get_dns_config",
-      "description": "Get DNS server configuration including upstream DNS servers, DNS forwarders, and DNS cache status.",
+      "description": "Get upstream DNS servers, forwarders, and cache status.",
       "category": "dns",
       "inputSchema": {
         "type": "object",
         "properties": {
           "include_cache_stats": {
             "type": "boolean",
-            "description": "Include DNS cache statistics",
-            "default": true
+            "description": "Include cache stats"
           }
         },
         "required": []
@@ -168,15 +161,14 @@
     },
     {
       "name": "get_ntp_status",
-      "description": "Get NTP (Network Time Protocol) server status including configured servers, sync status, and current time offset.",
+      "description": "Get NTP server config, sync status, and time offset.",
       "category": "system",
       "inputSchema": {
         "type": "object",
         "properties": {
           "include_peers": {
             "type": "boolean",
-            "description": "Include NTP peer information",
-            "default": true
+            "description": "Include peer info"
           }
         },
         "required": []
@@ -196,20 +188,18 @@
     },
     {
       "name": "get_ipv6_config",
-      "description": "Get IPv6 configuration including addresses, prefix delegation, DHCPv6, and IPv6 firewall status.",
+      "description": "Get IPv6 addresses, prefix delegation, DHCPv6, and firewall status.",
       "category": "ipv6",
       "inputSchema": {
         "type": "object",
         "properties": {
           "interface": {
             "type": "string",
-            "description": "Interface name (e.g., 'wan6', 'lan')",
-            "default": "all"
+            "description": "Interface (e.g., 'wan6', 'lan')"
           },
           "include_routing": {
             "type": "boolean",
-            "description": "Include IPv6 routing table",
-            "default": false
+            "description": "Include IPv6 routing table"
           }
         },
         "required": []
@@ -236,25 +226,23 @@
     },
     {
       "name": "get_firewall_rules",
-      "description": "Get firewall/IP filter rules including zones, forwarding rules, and NAT configuration.",
+      "description": "Get firewall rules by zone, chain, and NAT config.",
       "category": "firewall",
       "inputSchema": {
         "type": "object",
         "properties": {
           "zone": {
             "type": "string",
-            "description": "Filter by firewall zone (e.g., 'wan', 'lan', 'guest')"
+            "description": "Firewall zone filter (e.g., 'wan', 'lan')"
           },
           "chain": {
             "type": "string",
-            "description": "Filter by iptables chain",
-            "enum": ["INPUT", "FORWARD", "OUTPUT", "PREROUTING", "POSTROUTING", "all"],
-            "default": "all"
+            "description": "iptables chain",
+            "enum": ["INPUT", "FORWARD", "OUTPUT", "PREROUTING", "POSTROUTING", "all"]
           },
           "include_counters": {
             "type": "boolean",
-            "description": "Include packet/byte counters",
-            "default": true
+            "description": "Include packet/byte counters"
           }
         },
         "required": []
@@ -286,8 +274,7 @@
         "properties": {
           "enabled_only": {
             "type": "boolean",
-            "description": "Show only enabled rules",
-            "default": false
+            "description": "Show only enabled rules"
           }
         },
         "required": []
@@ -314,14 +301,12 @@
         "properties": {
           "interface_type": {
             "type": "string",
-            "description": "Filter by interface type",
-            "enum": ["all", "physical", "virtual", "wireless", "bridge"],
-            "default": "all"
+            "description": "Interface type filter",
+            "enum": ["all", "physical", "virtual", "wireless", "bridge"]
           },
           "include_statistics": {
             "type": "boolean",
-            "description": "Include RX/TX statistics",
-            "default": true
+            "description": "Include RX/TX stats"
           }
         },
         "required": []
@@ -342,19 +327,18 @@
     },
     {
       "name": "get_wireless_status",
-      "description": "Get WiFi/wireless interface status including SSIDs, channels, encryption, and connected clients.",
+      "description": "Get wireless status: SSIDs, channels, encryption, and connected clients.",
       "category": "wireless",
       "inputSchema": {
         "type": "object",
         "properties": {
           "radio": {
             "type": "string",
-            "description": "Radio interface (e.g., 'radio0', 'radio1' for 2.4GHz/5GHz)"
+            "description": "Radio interface (e.g., 'radio0', 'radio1')"
           },
           "include_clients": {
             "type": "boolean",
-            "description": "Include connected wireless clients",
-            "default": true
+            "description": "Include connected wireless clients"
           }
         },
         "required": []
@@ -380,21 +364,19 @@
     },
     {
       "name": "get_connected_clients",
-      "description": "Get list of all connected clients (wired and wireless) with IP, MAC, hostname, and connection type.",
+      "description": "List all connected clients with IP, MAC, hostname, and connection type.",
       "category": "network",
       "inputSchema": {
         "type": "object",
         "properties": {
           "connection_type": {
             "type": "string",
-            "description": "Filter by connection type",
-            "enum": ["all", "wired", "wireless"],
-            "default": "all"
+            "description": "Connection type",
+            "enum": ["all", "wired", "wireless"]
           },
           "include_bandwidth": {
             "type": "boolean",
-            "description": "Include bandwidth usage statistics",
-            "default": false
+            "description": "Include bandwidth stats"
           }
         },
         "required": []
@@ -421,7 +403,7 @@
     },
     {
       "name": "get_routing_table",
-      "description": "Get routing table showing all configured routes including default gateway and static routes.",
+      "description": "Get routes including default gateway and static routes.",
       "category": "network",
       "inputSchema": {
         "type": "object",
@@ -429,13 +411,11 @@
           "ip_version": {
             "type": "string",
             "description": "IP version",
-            "enum": ["ipv4", "ipv6", "both"],
-            "default": "ipv4"
+            "enum": ["ipv4", "ipv6", "both"]
           },
           "table": {
             "type": "string",
-            "description": "Routing table name/number (e.g., 'main', 'default')",
-            "default": "main"
+            "description": "Routing table (e.g., 'main', 'default')"
           }
         },
         "required": []
@@ -461,7 +441,7 @@
     },
     {
       "name": "get_qos_config",
-      "description": "Get QoS (Quality of Service) configuration and statistics for traffic shaping and prioritization.",
+      "description": "Get QoS config and per-class traffic statistics.",
       "category": "qos",
       "inputSchema": {
         "type": "object",
@@ -472,8 +452,7 @@
           },
           "include_statistics": {
             "type": "boolean",
-            "description": "Include traffic statistics per class",
-            "default": true
+            "description": "Include per-class stats"
           }
         },
         "required": []
@@ -493,15 +472,14 @@
     },
     {
       "name": "get_gateway_system_info",
-      "description": "Get gateway system information including model, firmware version, uptime, CPU, and memory usage.",
+      "description": "Get gateway model, firmware, uptime, CPU, and memory.",
       "category": "system",
       "inputSchema": {
         "type": "object",
         "properties": {
           "include_hardware": {
             "type": "boolean",
-            "description": "Include hardware details",
-            "default": true
+            "description": "Include hardware details"
           }
         },
         "required": []
@@ -521,20 +499,18 @@
     },
     {
       "name": "get_wan_connection_status",
-      "description": "Get WAN connection status including link status, connection type (PPPoE, DHCP, Static), and uptime.",
+      "description": "Get WAN link status, connection type (PPPoE/DHCP/Static), and uptime.",
       "category": "network",
       "inputSchema": {
         "type": "object",
         "properties": {
           "interface": {
             "type": "string",
-            "description": "WAN interface name",
-            "default": "wan"
+            "description": "WAN interface name"
           },
           "include_diagnostics": {
             "type": "boolean",
-            "description": "Include connection diagnostics",
-            "default": false
+            "description": "Include connection diagnostics"
           }
         },
         "required": []
@@ -554,7 +530,7 @@
     },
     {
       "name": "get_nat_sessions",
-      "description": "Get active NAT (Network Address Translation) sessions showing connections through the gateway.",
+      "description": "List active NAT sessions through the gateway.",
       "category": "firewall",
       "inputSchema": {
         "type": "object",
@@ -562,13 +538,11 @@
           "protocol": {
             "type": "string",
             "description": "Filter by protocol",
-            "enum": ["tcp", "udp", "icmp", "all"],
-            "default": "all"
+            "enum": ["tcp", "udp", "icmp", "all"]
           },
           "limit": {
             "type": "number",
-            "description": "Maximum number of sessions to return",
-            "default": 100,
+            "description": "Session limit",
             "minimum": 1,
             "maximum": 10000
           }
@@ -598,15 +572,14 @@
     },
     {
       "name": "get_upnp_status",
-      "description": "Get UPnP (Universal Plug and Play) status and active port mappings.",
+      "description": "Get UPnP status and active port mappings.",
       "category": "network",
       "inputSchema": {
         "type": "object",
         "properties": {
           "include_mappings": {
             "type": "boolean",
-            "description": "Include active UPnP port mappings",
-            "default": true
+            "description": "Include port mappings"
           }
         },
         "required": []
@@ -626,7 +599,7 @@
     },
     {
       "name": "get_static_dhcp_reservations",
-      "description": "Get configured DHCP static IP reservations (MAC to IP bindings).",
+      "description": "List static DHCP MAC-to-IP reservations.",
       "category": "dhcp",
       "inputSchema": {
         "type": "object",
@@ -646,21 +619,19 @@
     },
     {
       "name": "get_bandwidth_usage",
-      "description": "Get bandwidth usage statistics for WAN interface including current rates and historical data.",
+      "description": "Get WAN bandwidth stats: current rates and history.",
       "category": "network",
       "inputSchema": {
         "type": "object",
         "properties": {
           "interface": {
             "type": "string",
-            "description": "Interface to monitor",
-            "default": "wan"
+            "description": "Interface to monitor"
           },
           "period": {
             "type": "string",
-            "description": "Time period for statistics",
-            "enum": ["current", "hourly", "daily", "monthly"],
-            "default": "current"
+            "description": "Time period",
+            "enum": ["current", "hourly", "daily", "monthly"]
           }
         },
         "required": []

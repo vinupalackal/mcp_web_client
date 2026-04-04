@@ -32,10 +32,9 @@ VIRTUAL_REPEATED_EXEC_TOOL: Dict[str, Any] = {
     "function": {
         "name": "mcp_repeated_exec",
         "description": (
-            "Execute an MCP tool N times at a fixed interval for trend analysis and "
-            "longitudinal diagnostics. repeat_count and interval_ms are mandatory — "
-            "the tool will return an error if either is missing. "
-            "Results are saved to files and all runs are sent to the LLM for final synthesis."
+            "Run any MCP tool N times at a fixed interval; "
+            "all results are collected and sent to the LLM. "
+            "Requires repeat_count and interval_ms."
         ),
         "parameters": {
             "type": "object",
@@ -43,22 +42,22 @@ VIRTUAL_REPEATED_EXEC_TOOL: Dict[str, Any] = {
             "properties": {
                 "target_tool": {
                     "type": "string",
-                    "description": "Namespaced MCP tool ID to repeat (server_alias__tool_name)",
+                    "description": "Namespaced tool to call (server_alias__tool_name)",
                 },
                 "tool_arguments": {
                     "type": "object",
-                    "description": "Arguments to pass to the target tool on every run (optional, defaults to {})",
+                    "description": "Arguments for the target tool; defaults to {}",
                 },
                 "repeat_count": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 10,
-                    "description": "Number of times to execute the target tool (1\u201310)",
+                    "description": "Run count (1\u201310)",
                 },
                 "interval_ms": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Delay between consecutive runs in milliseconds (0 = back-to-back)",
+                    "description": "Delay between runs in ms (0 = back-to-back)",
                 },
             },
         },
