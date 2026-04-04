@@ -15,6 +15,14 @@
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-REQUIREMENTS.md`
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-HLD.md`
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-REQUIREMENTS.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-HLD.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-IMPLEMENTATION-SPEC.md`
+
+**Per-phase execution workflow**:
+- Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → implementation → test development → focused validation → full test execution.
+- Do not treat a phase as complete after docs alone; the expected execution order is phase docs, code implementation, test updates/additions, focused test runs, and then full regression execution.
+- For Phase 2 and later, do not start code from only the parent AQL docs when the repo is following a per-phase documentation workflow.
 
 ---
 
@@ -36,6 +44,12 @@
 ## 2. Implementation Order
 
 Implementation must proceed in seven phases. Phases 1–4 are passive or read-only and must land before any routing behavior changes. Phases 5–7 are gated by `enable_adaptive_learning` and confidence thresholds.
+
+Each phase must follow the same execution order before moving to the next one:
+1. Create or update that phase's requirements, HLD, and implementation spec docs.
+2. Implement the phase code in the repo.
+3. Develop or update focused test coverage for the new behavior.
+4. Run focused validation first, then broader integration coverage if applicable, then the full backend regression suite.
 
 ```
 Phase 1  Schema + Config + Store plumbing
@@ -342,6 +356,11 @@ Add tests:
 ---
 
 ## Phase 3 — Correction Detection + Retroactive Patch
+
+Companion docs:
+- `docs/AQL-P3-CORRECTION-PATCHING-REQUIREMENTS.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-HLD.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-IMPLEMENTATION-SPEC.md`
 
 ### Objective
 Mark poor prior answers when the next user message looks like a correction.

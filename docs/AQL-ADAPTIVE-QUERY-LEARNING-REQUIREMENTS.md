@@ -15,6 +15,14 @@
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-REQUIREMENTS.md`
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-HLD.md`
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-REQUIREMENTS.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-HLD.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-IMPLEMENTATION-SPEC.md`
+
+**Per-phase execution workflow**:
+- Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → implementation → test development → focused validation → full test execution.
+- Do not treat a phase as complete after docs alone; the expected execution order is phase docs, code implementation, test updates/additions, focused test runs, and then full regression execution.
+- For Phase 2 and later, do not start code from only the parent AQL docs when the repo is following a per-phase documentation workflow.
 
 ---
 

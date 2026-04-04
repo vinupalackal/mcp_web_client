@@ -68,6 +68,9 @@ Results to LLM → Next turn (max 8 tool calls/turn)
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-REQUIREMENTS.md`
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-HLD.md`
 - `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-REQUIREMENTS.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-HLD.md`
+- `docs/AQL-P3-CORRECTION-PATCHING-IMPLEMENTATION-SPEC.md`
 
 **AQL requirement summary**:
 - Additive only: never break current chat, routing, cache, or admin behavior.
@@ -88,10 +91,12 @@ Results to LLM → Next turn (max 8 tool calls/turn)
 2. Implement phases in order: Phase 1 schema/config/store → Phase 2 passive quality recording → Phase 3 correction patching → Phase 4 admin reporting → Phase 5 affinity lookup → Phase 6 routing integration → Phase 7 chunk reordering.
 3. Before implementing any phase, create or update that phase's own requirements doc, HLD doc, and implementation spec doc. Do not start Phase 2+ code from only the parent AQL docs when the repo is following a per-phase documentation workflow.
 4. Follow the established naming pattern for per-phase docs, e.g. `docs/AQL-P1-SCHEMA-CONFIG-STORE-*.md`, and create the matching Phase 2/3/etc. triplet before code changes.
-5. Keep Phase 1 non-behavioral: config, models, collection schema, row counts, snapshot visibility, and cleanup readiness only.
-6. Extend existing files instead of adding parallel AQL subsystems: `backend/models.py`, `backend/milvus_store.py`, `backend/memory_service.py`, `backend/main.py`.
-7. Validate each phase with focused unit tests first, then full regression.
-8. Preserve degraded-mode behavior: log warnings on AQL failures and suppress them from end users.
+5. After the phase docs are in place, implement the phase code in the repo before moving on to later phases.
+6. After implementation, develop or update the phase's focused test coverage so the new behavior is explicitly validated at the unit/integration level where appropriate.
+7. Execute the full phase validation sequence in order: focused tests first, then broader integration coverage if applicable, then the entire backend regression suite before marking the phase complete.
+8. Keep Phase 1 non-behavioral: config, models, collection schema, row counts, snapshot visibility, and cleanup readiness only.
+9. Extend existing files instead of adding parallel AQL subsystems: `backend/models.py`, `backend/milvus_store.py`, `backend/memory_service.py`, `backend/main.py`.
+10. Preserve degraded-mode behavior: log warnings on AQL failures and suppress them from end users.
 
 ## Project-Specific Conventions
 
@@ -166,9 +171,10 @@ timeout = httpx.Timeout(
 - New AQL admin response shapes must remain OpenAPI-friendly and additive.
 
 ### AQL Phase Documentation Discipline
-- Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → code → tests.
+- Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → implementation → test development → focused validation → full test execution.
 - For Phase 2 and later, do not skip the phase-specific docs even if the parent AQL docs already describe the behavior at a high level.
 - When a phase is already partially implemented without its own docs, reconcile by backfilling the missing phase docs before continuing to the next phase.
+- Do not treat a phase as complete after docs alone; the expected execution order is phase docs, code implementation, test updates/additions, focused test runs, and then full regression execution.
 - Keep the phase docs aligned with the actual file-level plan so implementation and GitHub issue updates reference the same scope boundaries.
 
 ### Frontend Emoji Logging
