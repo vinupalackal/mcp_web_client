@@ -2015,6 +2015,7 @@ def _run_affinity_route_request(
     main_module = importlib.import_module("backend.main")
     llm_calls: list[dict] = []
     tracking: dict[str, object] = {"affinity_called": False, "memory_called": False}
+    scheduled_quality_payloads: list[dict] = []
 
     class _FakeLLMClient:
         async def chat_completion(self, *, messages, tools):
@@ -2042,6 +2043,11 @@ def _run_affinity_route_request(
 
     monkeypatch.setattr(main_module, "LLMClientFactory", _FakeLLMClientFactory)
     monkeypatch.setattr(main_module, "_select_direct_tool_route", lambda content, tool_names: direct_route)
+    monkeypatch.setattr(
+        main_module,
+        "_schedule_execution_quality_record",
+        lambda *, memory_service, payload: scheduled_quality_payloads.append(dict(payload)) or True,
+    )
 
     class _FakeConfig:
         enable_adaptive_learning = True
@@ -2128,12 +2134,12 @@ def _run_affinity_route_request(
         json={"role": "user", "content": "show cpu status"},
     )
     assert response.status_code == 200
-    return llm_calls, tracking
+    return llm_calls, tracking, scheduled_quality_payloads
 
 
 def test_affinity_route_applies_when_enabled_and_confident(monkeypatch):
     """TC-AQL-P6-RT-01: confident affinity lookup narrows the tool catalog sent to the LLM."""
-    llm_calls, tracking = _run_affinity_route_request(
+    llm_calls, tracking, scheduled_quality_payloads = _run_affinity_route_request(
         monkeypatch,
         direct_route=None,
         memory_tool_names=[],
@@ -2144,11 +2150,12 @@ def test_affinity_route_applies_when_enabled_and_confident(monkeypatch):
     assert tracking["affinity_called"] is True
     first_tool_call = next(call for call in llm_calls if call["tool_names"])
     assert first_tool_call["tool_names"] == ["svc__tool_a", "svc__tool_c"]
+    assert scheduled_quality_payloads[-1]["routing_mode"] == "affinity"
 
 
 def test_affinity_route_skips_when_confidence_below_threshold(monkeypatch):
     """TC-AQL-P6-RT-02: low-confidence affinity results must leave the broader catalog intact."""
-    llm_calls, tracking = _run_affinity_route_request(
+    llm_calls, tracking, _scheduled_quality_payloads = _run_affinity_route_request(
         monkeypatch,
         direct_route=None,
         memory_tool_names=[],
@@ -2163,7 +2170,7 @@ def test_affinity_route_skips_when_confidence_below_threshold(monkeypatch):
 
 def test_affinity_route_skips_when_direct_route_exists(monkeypatch):
     """TC-AQL-P6-RT-03: existing direct routes must bypass affinity lookup entirely."""
-    llm_calls, tracking = _run_affinity_route_request(
+    llm_calls, tracking, _scheduled_quality_payloads = _run_affinity_route_request(
         monkeypatch,
         direct_route={
             "route_name": "custom_direct",
@@ -2182,7 +2189,7 @@ def test_affinity_route_skips_when_direct_route_exists(monkeypatch):
 
 def test_affinity_route_skips_when_memory_route_already_confident(monkeypatch):
     """TC-AQL-P6-RT-04: existing memory routes keep priority over affinity routing."""
-    llm_calls, tracking = _run_affinity_route_request(
+    llm_calls, tracking, _scheduled_quality_payloads = _run_affinity_route_request(
         monkeypatch,
         direct_route=None,
         memory_tool_names=["svc__tool_b"],
