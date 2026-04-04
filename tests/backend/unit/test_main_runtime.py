@@ -1816,6 +1816,52 @@ class TestRechunkLLMToolCatalog:
 
 
 # ---------------------------------------------------------------------------
+# _reorder_tools_by_affinity
+# ---------------------------------------------------------------------------
+
+class TestReorderToolsByAffinity:
+
+    def test_moves_preferred_tools_to_front(self):
+        """TC-AQL-CHUNK-01: affinity-preferred tools must be front-loaded in affinity order."""
+        m = _main()
+        catalog = [_tool("svc__tool_a"), _tool("svc__tool_b"), _tool("svc__tool_c"), _tool("svc__tool_d")]
+
+        reordered = m._reorder_tools_by_affinity(
+            catalog,
+            ["svc__tool_c", "svc__tool_a"],
+        )
+
+        assert [tool["function"]["name"] for tool in reordered] == [
+            "svc__tool_c",
+            "svc__tool_a",
+            "svc__tool_b",
+            "svc__tool_d",
+        ]
+
+    def test_preserves_virtual_tool_and_non_affinity_order(self):
+        """TC-AQL-CHUNK-02: non-affinity order stays stable and virtual tool handling is preserved."""
+        m = _main()
+        catalog = [
+            _tool("svc__tool_a"),
+            _tool("svc__tool_b"),
+            {"type": "function", "function": {"name": "mcp_repeated_exec"}},
+            _tool("svc__tool_c"),
+        ]
+
+        reordered = m._reorder_tools_by_affinity(
+            catalog,
+            ["svc__tool_c"],
+        )
+
+        assert [tool["function"]["name"] for tool in reordered] == [
+            "svc__tool_c",
+            "svc__tool_a",
+            "svc__tool_b",
+            "mcp_repeated_exec",
+        ]
+
+
+# ---------------------------------------------------------------------------
 # _narrow_tools_by_domain
 # ---------------------------------------------------------------------------
 
@@ -2007,6 +2053,12 @@ def _run_affinity_route_request(
     memory_tool_names=None,
     affinity_tool_names=None,
     affinity_confidence=0.0,
+    affinity_threshold=0.65,
+    chunk_reorder_threshold=0.70,
+    available_tools=None,
+    tools_split_enabled=False,
+    tools_split_mode="sequential",
+    tools_split_limit=None,
 ):
     from fastapi.testclient import TestClient
     from backend.models import LLMConfig
@@ -2051,7 +2103,8 @@ def _run_affinity_route_request(
 
     class _FakeConfig:
         enable_adaptive_learning = True
-        aql_affinity_confidence_threshold = 0.65
+        aql_affinity_confidence_threshold = affinity_threshold
+        aql_chunk_reorder_threshold = chunk_reorder_threshold
 
     class _FakeMemoryService:
         config = _FakeConfig()
@@ -2097,17 +2150,17 @@ def _run_affinity_route_request(
 
     monkeypatch.setattr(main_module, "_memory_service", _FakeMemoryService())
 
-    available_tools = [
+    available_tool_names = list(available_tools or [
         "svc__tool_a",
         "svc__tool_b",
         "svc__tool_c",
-    ]
+    ])
 
     class _FakeMCPManager:
-        tools = {tool_name: None for tool_name in available_tools}
+        tools = {tool_name: None for tool_name in available_tool_names}
 
         def get_tools_for_llm(self, *, allowed_tool_names=None, include_virtual_repeated=True):
-            names = list(allowed_tool_names or available_tools)
+            names = list(allowed_tool_names or available_tool_names)
             return [
                 {
                     "type": "function",
@@ -2117,13 +2170,28 @@ def _run_affinity_route_request(
             ]
 
         def get_tools_for_llm_chunks(self, limit, *, allowed_tool_names=None, include_virtual_repeated=True):
-            return [self.get_tools_for_llm(allowed_tool_names=allowed_tool_names, include_virtual_repeated=include_virtual_repeated)]
+            tools = self.get_tools_for_llm(
+                allowed_tool_names=allowed_tool_names,
+                include_virtual_repeated=include_virtual_repeated,
+            )
+            return main_module._rechunk_llm_tool_catalog(
+                tools,
+                effective_limit=limit,
+                include_virtual_repeated=include_virtual_repeated,
+            )
 
     monkeypatch.setattr(main_module, "mcp_manager", _FakeMCPManager())
     monkeypatch.setattr(
         main_module,
         "llm_config_storage",
-        LLMConfig(provider="mock", model="mock-model", base_url="http://localhost"),
+        LLMConfig(
+            provider="mock",
+            model="mock-model",
+            base_url="http://localhost",
+            tools_split_enabled=tools_split_enabled,
+            tools_split_mode=tools_split_mode,
+            tools_split_limit=tools_split_limit,
+        ),
     )
     monkeypatch.setattr(main_module, "_sso_enabled", lambda: False)
 
@@ -2201,4 +2269,72 @@ def test_affinity_route_skips_when_memory_route_already_confident(monkeypatch):
     assert tracking["affinity_called"] is False
     first_tool_call = next(call for call in llm_calls if call["tool_names"])
     assert first_tool_call["tool_names"] == ["svc__tool_b"]
+
+
+def test_chunk_reorder_moves_affinity_tools_to_front_when_threshold_met(monkeypatch):
+    """TC-AQL-CHUNK-03: split-phase fallback should front-load affinity tools when threshold is met."""
+    llm_calls, tracking, _scheduled_quality_payloads = _run_affinity_route_request(
+        monkeypatch,
+        direct_route=None,
+        memory_tool_names=[],
+        affinity_tool_names=["svc__tool_c", "svc__tool_a"],
+        affinity_confidence=0.80,
+        affinity_threshold=0.95,
+        chunk_reorder_threshold=0.70,
+        available_tools=["svc__tool_a", "svc__tool_b", "svc__tool_c", "svc__tool_d"],
+        tools_split_enabled=True,
+        tools_split_mode="sequential",
+        tools_split_limit=3,
+    )
+
+    assert tracking["affinity_called"] is True
+    tool_payloads = [call["tool_names"] for call in llm_calls if call["tool_names"]]
+    assert tool_payloads[:2] == [
+        ["svc__tool_c", "svc__tool_a"],
+        ["svc__tool_b", "svc__tool_d"],
+    ]
+
+
+def test_chunk_reorder_skips_when_confidence_below_threshold(monkeypatch):
+    """TC-AQL-CHUNK-04: split-phase fallback should preserve original order below the reorder threshold."""
+    llm_calls, tracking, _scheduled_quality_payloads = _run_affinity_route_request(
+        monkeypatch,
+        direct_route=None,
+        memory_tool_names=[],
+        affinity_tool_names=["svc__tool_c", "svc__tool_a"],
+        affinity_confidence=0.60,
+        affinity_threshold=0.95,
+        chunk_reorder_threshold=0.70,
+        available_tools=["svc__tool_a", "svc__tool_b", "svc__tool_c", "svc__tool_d"],
+        tools_split_enabled=True,
+        tools_split_mode="sequential",
+        tools_split_limit=3,
+    )
+
+    assert tracking["affinity_called"] is True
+    tool_payloads = [call["tool_names"] for call in llm_calls if call["tool_names"]]
+    assert tool_payloads[:2] == [
+        ["svc__tool_a", "svc__tool_b"],
+        ["svc__tool_c", "svc__tool_d"],
+    ]
+
+
+def test_chunk_reorder_does_not_change_chunk_size(monkeypatch):
+    """TC-AQL-CHUNK-05: reordering must not change the effective split-phase chunk size."""
+    llm_calls, _tracking, _scheduled_quality_payloads = _run_affinity_route_request(
+        monkeypatch,
+        direct_route=None,
+        memory_tool_names=[],
+        affinity_tool_names=["svc__tool_d", "svc__tool_b"],
+        affinity_confidence=0.85,
+        affinity_threshold=0.95,
+        chunk_reorder_threshold=0.70,
+        available_tools=["svc__tool_a", "svc__tool_b", "svc__tool_c", "svc__tool_d"],
+        tools_split_enabled=True,
+        tools_split_mode="sequential",
+        tools_split_limit=3,
+    )
+
+    tool_payloads = [call["tool_names"] for call in llm_calls if call["tool_names"]]
+    assert [len(payload) for payload in tool_payloads[:2]] == [2, 2]
 

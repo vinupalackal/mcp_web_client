@@ -27,6 +27,9 @@
 - `docs/AQL-P6-ROUTING-INTEGRATION-REQUIREMENTS.md`
 - `docs/AQL-P6-ROUTING-INTEGRATION-HLD.md`
 - `docs/AQL-P6-ROUTING-INTEGRATION-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P7-SPLIT-PHASE-CHUNK-REORDERING-REQUIREMENTS.md`
+- `docs/AQL-P7-SPLIT-PHASE-CHUNK-REORDERING-HLD.md`
+- `docs/AQL-P7-SPLIT-PHASE-CHUNK-REORDERING-IMPLEMENTATION-SPEC.md`
 
 **Per-phase execution workflow**:
 - Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → implementation → test development → focused validation → full test execution.

@@ -446,6 +446,46 @@ def _rechunk_llm_tool_catalog(
     ]
 
 
+def _reorder_tools_by_affinity(
+    tools_for_llm: List[Dict[str, Any]],
+    preferred_tool_names: List[str],
+) -> List[Dict[str, Any]]:
+    """Move affinity-preferred tools to the front while preserving other order."""
+    if not tools_for_llm or not preferred_tool_names:
+        return list(tools_for_llm)
+
+    preferred_set = {
+        tool_name.strip()
+        for tool_name in preferred_tool_names
+        if isinstance(tool_name, str) and tool_name.strip()
+    }
+    if not preferred_set:
+        return list(tools_for_llm)
+
+    preferred_lookup: Dict[str, Dict[str, Any]] = {}
+    passthrough_tools: List[Dict[str, Any]] = []
+    remaining_tools: List[Dict[str, Any]] = []
+
+    for tool in tools_for_llm:
+        tool_name = tool.get("function", {}).get("name", "")
+        if not tool_name or tool_name == "mcp_repeated_exec":
+            passthrough_tools.append(tool)
+        elif tool_name in preferred_set and tool_name not in preferred_lookup:
+            preferred_lookup[tool_name] = tool
+        else:
+            remaining_tools.append(tool)
+
+    preferred_tools = [
+        preferred_lookup[tool_name]
+        for tool_name in preferred_tool_names
+        if tool_name in preferred_lookup
+    ]
+    if not preferred_tools:
+        return list(tools_for_llm)
+
+    return preferred_tools + remaining_tools + passthrough_tools
+
+
 FOLLOW_UP_PATTERNS = (
     r"\bwhat about\b",
     r"\bhow about\b",
@@ -3696,6 +3736,8 @@ async def send_message(
             direct_tool_route=direct_tool_route,
             conversation_summary=mode_classification_summary,
         )
+        memory_service_config = None
+        affinity_route_result = None
         affinity_route_applied = False
 
         if direct_tool_route:
@@ -3903,6 +3945,43 @@ async def send_message(
                 tools_for_llm = _narrow_tools_by_domain(tools_for_llm, _matched_domains)
                 # Recompute tool_names and chunks from the narrowed list
                 tool_names = [t["function"]["name"] for t in tools_for_llm]
+                if (
+                    active_llm_config.tools_split_enabled
+                    and len(tools_for_llm) > _effective_limit
+                    and not affinity_route_applied
+                    and getattr(memory_service_config, "enable_adaptive_learning", False)
+                    and affinity_route_result is not None
+                    and getattr(affinity_route_result, "tool_names", None)
+                ):
+                    chunk_reorder_threshold = getattr(
+                        memory_service_config,
+                        "aql_chunk_reorder_threshold",
+                        0.70,
+                    )
+                    if affinity_route_result.confidence >= chunk_reorder_threshold:
+                        reordered_tool_names = [
+                            tool_name
+                            for tool_name in affinity_route_result.tool_names
+                            if tool_name in tool_names
+                        ]
+                        if reordered_tool_names:
+                            tools_for_llm = _reorder_tools_by_affinity(
+                                tools_for_llm,
+                                reordered_tool_names,
+                            )
+                            logger_internal.info(
+                                "AQL chunk reorder applied: moved=%s tools=%s confidence=%.3f threshold=%.3f",
+                                len(reordered_tool_names),
+                                ", ".join(reordered_tool_names),
+                                affinity_route_result.confidence,
+                                chunk_reorder_threshold,
+                            )
+                    else:
+                        logger_internal.info(
+                            "AQL chunk reorder skipped: confidence=%.3f threshold=%.3f",
+                            affinity_route_result.confidence,
+                            chunk_reorder_threshold,
+                        )
                 tool_chunks = _rechunk_llm_tool_catalog(
                     tools_for_llm,
                     effective_limit=_effective_limit,

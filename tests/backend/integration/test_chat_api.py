@@ -1983,6 +1983,135 @@ class TestToolCallingFlow:
         assert first_tool_names == ["svc__tool_a", "svc__tool_c"]
         assert response.json()["message"]["content"] == "Affinity-routed tool returned successfully."
 
+    @respx.mock
+    def test_chunk_reorder_front_loads_affinity_tools_in_split_phase(self, client, llm_openai, monkeypatch):
+        """TC-AQL-P7-INT-01: split-phase fallback should reorder chunk 1 using affinity history without changing chunk size."""
+        self._setup_server_with_tools(
+            client,
+            monkeypatch,
+            [
+                "svc__tool_a",
+                "svc__tool_b",
+                "svc__tool_c",
+                "svc__tool_d",
+            ],
+        )
+        client.post(
+            "/api/llm/config",
+            json={
+                **llm_openai,
+                "tools_split_enabled": True,
+                "tools_split_mode": "sequential",
+                "tools_split_limit": 3,
+            },
+        )
+        sid = client.post("/api/sessions").json()["session_id"]
+
+        from backend.memory_service import RetrievalResult, ToolCacheResult, AffinityRouteResult
+
+        class _FakeMemoryService:
+            class config:
+                enable_adaptive_learning = True
+                aql_affinity_confidence_threshold = 0.95
+                aql_chunk_reorder_threshold = 0.70
+
+            async def resolve_tools_from_memory(self, **kwargs):
+                return []
+
+            async def resolve_tools_from_quality_history(self, **kwargs):
+                return AffinityRouteResult(
+                    tool_names=["svc__tool_c", "svc__tool_a"],
+                    confidence=0.80,
+                    record_count=8,
+                )
+
+            async def enrich_for_turn(self, **kwargs):
+                return RetrievalResult(collection_keys=())
+
+            def run_expiry_cleanup_if_due(self, *args, **kwargs):
+                return {"ran": False}
+
+            def lookup_tool_cache(self, *args, **kwargs):
+                return ToolCacheResult()
+
+            def record_tool_cache(self, *args, **kwargs):
+                return None
+
+            async def record_turn(self, **kwargs):
+                return None
+
+            async def record_execution_quality(self, **kwargs):
+                return None
+
+            def build_quality_query_hash(self, user_message):
+                return "chunk-qh"
+
+            def is_correction_message(self, text):
+                return False
+
+            async def patch_correction_signal(self, **kwargs):
+                return None
+
+        monkeypatch.setattr(main_module, "_memory_service", _FakeMemoryService())
+
+        captured_payloads = []
+
+        def capture(request):
+            import json
+
+            payload = json.loads(request.content)
+            captured_payloads.append(payload)
+            if payload.get("tools"):
+                return httpx.Response(200, json={
+                    "choices": [{
+                        "message": {"role": "assistant", "content": ""},
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+                })
+            return httpx.Response(200, json={
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Chunk-reordered split-phase completed.",
+                    },
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 8, "completion_tokens": 8, "total_tokens": 16},
+            })
+
+        respx.post("https://api.openai.com/v1/chat/completions").mock(side_effect=capture)
+        respx.post("https://mcp.example.com/mcp").mock(
+            side_effect=[
+                httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": 1,
+                    "result": {"protocolVersion": "2024-11-05", "capabilities": {}},
+                }),
+            ]
+        )
+
+        response = client.post(
+            f"/api/sessions/{sid}/messages",
+            json={"role": "user", "content": "show cpu status"},
+        )
+
+        assert response.status_code == 200
+        tool_payloads = [payload for payload in captured_payloads if payload.get("tools")]
+        assert len(tool_payloads) >= 2
+        assert [tool["function"]["name"] for tool in tool_payloads[0]["tools"][:2]] == [
+            "svc__tool_c",
+            "svc__tool_a",
+        ]
+        assert tool_payloads[0]["tools"][-1]["function"]["name"] == "mcp_repeated_exec"
+        assert [tool["function"]["name"] for tool in tool_payloads[1]["tools"][:2]] == [
+            "svc__tool_b",
+            "svc__tool_d",
+        ]
+        assert tool_payloads[1]["tools"][-1]["function"]["name"] == "mcp_repeated_exec"
+        assert len(tool_payloads[0]["tools"]) == 3
+        assert len(tool_payloads[1]["tools"]) == 3
+        assert response.json()["message"]["content"] == "Chunk-reordered split-phase completed."
+
 
 # ============================================================================
 # TR-CHAT-3: Get Message History
