@@ -2207,3 +2207,184 @@ class TestNormalizeBlock:
         hit = {"payload_ref": "ref", "summary": long_summary, "distance": 0.1}
         block = svc._normalize_block(collection_key="code_memory", hit=hit)
         assert len(block.snippet) == 500
+
+
+# ---------------------------------------------------------------------------
+# TC-AQL-P4: get_quality_report
+# ---------------------------------------------------------------------------
+
+def _p4_record(
+    *,
+    tools_selected=None,
+    tools_succeeded=None,
+    tools_failed=None,
+    tools_bypassed=None,
+    tools_cache_hit=None,
+    llm_turn_count=1,
+    synthesis_tokens=100,
+    routing_mode="llm_fallback",
+    user_corrected=False,
+    timestamp=None,
+) -> dict:
+    """Build a minimal synthetic quality record for Phase 4 tests."""
+    import time, json
+    return {
+        "tools_selected":  json.dumps(tools_selected  or []),
+        "tools_succeeded": json.dumps(tools_succeeded or []),
+        "tools_failed":    json.dumps(tools_failed    or []),
+        "tools_bypassed":  json.dumps(tools_bypassed  or []),
+        "tools_cache_hit": json.dumps(tools_cache_hit or []),
+        "llm_turn_count":  llm_turn_count,
+        "synthesis_tokens": synthesis_tokens,
+        "routing_mode":    routing_mode,
+        "user_corrected":  user_corrected,
+        "timestamp":       timestamp or int(time.time()),
+    }
+
+
+class TestAdaptiveQueryLearningPhase4:
+
+    def _svc(self, query_results=None, query_error=None):
+        store = _FakeUpsertMilvusStore()
+        store.query_results = query_results or []
+        store.query_error = query_error
+        return MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_adaptive_learning=True),
+        )
+
+    @pytest.mark.asyncio
+    async def test_quality_report_empty_collection_returns_zeros(self):
+        """TC-AQL-P4-01: empty collection returns a zero-value report, not an error."""
+        svc = self._svc(query_results=[])
+        report = await svc.get_quality_report(days=7)
+
+        assert report.total_turns == 0
+        assert report.avg_tools_per_turn == 0.0
+        assert report.correction_rate == 0.0
+        assert report.routing_distribution == {}
+        assert report.top_succeeded_tools == []
+        assert report.freshness_keyword_candidates == []
+
+    @pytest.mark.asyncio
+    async def test_quality_report_aggregates_correctly(self):
+        """TC-AQL-P4-02: aggregation is correct for a known set of records."""
+        records = [
+            _p4_record(
+                tools_selected=["svc__get_mem"],
+                tools_succeeded=["svc__get_mem"],
+                tools_failed=[],
+                routing_mode="llm_fallback",
+                user_corrected=False,
+                llm_turn_count=2,
+                synthesis_tokens=200,
+            ),
+            _p4_record(
+                tools_selected=["svc__get_cpu", "svc__get_mem"],
+                tools_succeeded=["svc__get_cpu"],
+                tools_failed=["svc__get_mem"],
+                routing_mode="direct",
+                user_corrected=True,
+                llm_turn_count=1,
+                synthesis_tokens=150,
+            ),
+            _p4_record(
+                tools_selected=["svc__get_cpu"],
+                tools_succeeded=["svc__get_cpu"],
+                tools_failed=[],
+                routing_mode="direct",
+                user_corrected=False,
+                llm_turn_count=1,
+                synthesis_tokens=100,
+            ),
+        ]
+        svc = self._svc(query_results=records)
+        report = await svc.get_quality_report(days=7)
+
+        assert report.total_turns == 3
+        # avg tools: (1 + 2 + 1) / 3 = 4/3
+        assert abs(report.avg_tools_per_turn - (4 / 3)) < 0.001
+        # correction_rate: 1/3
+        assert abs(report.correction_rate - (1 / 3)) < 0.001
+        # avg_llm_turns: (2+1+1)/3
+        assert abs(report.avg_llm_turns - (4 / 3)) < 0.001
+        # routing distribution
+        assert abs(report.routing_distribution.get("direct", 0) - (2 / 3)) < 0.001
+        assert abs(report.routing_distribution.get("llm_fallback", 0) - (1 / 3)) < 0.001
+        # top succeeded: get_cpu(2), get_mem(1)
+        top_names = [s.tool for s in report.top_succeeded_tools]
+        assert "svc__get_cpu" in top_names
+        assert report.top_succeeded_tools[0].count >= report.top_succeeded_tools[-1].count
+
+    @pytest.mark.asyncio
+    async def test_freshness_candidate_bypass_rate(self):
+        """TC-AQL-P4-03: tool bypassed in >60% of its turns → bypass_rate candidate."""
+        records = [
+            _p4_record(tools_selected=["svc__get_mem"], tools_bypassed=["svc__get_mem"]),
+            _p4_record(tools_selected=["svc__get_mem"], tools_bypassed=["svc__get_mem"]),
+            _p4_record(tools_selected=["svc__get_mem"], tools_bypassed=["svc__get_mem"]),
+            _p4_record(tools_selected=["svc__get_mem"], tools_bypassed=[]),
+        ]
+        svc = self._svc(query_results=records)
+        report = await svc.get_quality_report(days=7)
+
+        patterns = {c.pattern for c in report.freshness_keyword_candidates}
+        signals  = {c.signal  for c in report.freshness_keyword_candidates}
+        assert "get_mem" in patterns
+        assert "bypass_rate" in signals
+
+    @pytest.mark.asyncio
+    async def test_freshness_candidate_cache_stale(self):
+        """TC-AQL-P4-04: tool fails with cache-hit in >30% of turns → cache_stale candidate."""
+        records = [
+            _p4_record(
+                tools_selected=["svc__check_disk"],
+                tools_failed=["svc__check_disk"],
+                tools_cache_hit=["svc__check_disk"],
+            ),
+            _p4_record(
+                tools_selected=["svc__check_disk"],
+                tools_failed=["svc__check_disk"],
+                tools_cache_hit=["svc__check_disk"],
+            ),
+            _p4_record(
+                tools_selected=["svc__check_disk"],
+                tools_failed=[],
+                tools_cache_hit=[],
+            ),
+        ]
+        svc = self._svc(query_results=records)
+        report = await svc.get_quality_report(days=7)
+
+        patterns = {c.pattern for c in report.freshness_keyword_candidates}
+        signals  = {c.signal  for c in report.freshness_keyword_candidates}
+        assert "check_disk" in patterns
+        assert "cache_stale" in signals
+
+    @pytest.mark.asyncio
+    async def test_quality_report_milvus_error_returns_empty(self):
+        """TC-AQL-P4-05: Milvus query error swallowed; empty report returned."""
+        svc = self._svc(query_error=RuntimeError("milvus down"))
+        report = await svc.get_quality_report(days=7)
+
+        assert report.total_turns == 0
+        assert report.correction_rate == 0.0
+
+    @pytest.mark.asyncio
+    async def test_quality_report_disabled_returns_empty(self):
+        """TC-AQL-P4-06: AQL disabled → empty report without any Milvus call."""
+        store = _FakeUpsertMilvusStore()
+        store.query_results = [_p4_record()]
+        svc = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_adaptive_learning=False),
+        )
+        report = await svc.get_quality_report(days=7)
+
+        assert report.total_turns == 0
+        assert store.query_calls == []
+

@@ -20,6 +20,9 @@
 - `docs/AQL-P3-CORRECTION-PATCHING-REQUIREMENTS.md`
 - `docs/AQL-P3-CORRECTION-PATCHING-HLD.md`
 - `docs/AQL-P3-CORRECTION-PATCHING-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P4-QUALITY-REPORT-API-REQUIREMENTS.md`
+- `docs/AQL-P4-QUALITY-REPORT-API-HLD.md`
+- `docs/AQL-P4-QUALITY-REPORT-API-IMPLEMENTATION-SPEC.md`
 
 **Per-phase execution workflow**:
 - Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → implementation → test development → focused validation → full test execution.

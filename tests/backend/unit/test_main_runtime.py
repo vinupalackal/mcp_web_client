@@ -1939,3 +1939,63 @@ class TestSelectDirectToolRouteEdgeCases:
         )
         assert route is not None
         assert route["route_name"] == "kernel_logs"
+
+
+# ---------------------------------------------------------------------------
+# TC-AQL-P4-RT: Quality-Report and Freshness-Candidates admin endpoints
+# ---------------------------------------------------------------------------
+
+def test_quality_report_endpoint_503_when_memory_service_is_none(monkeypatch):
+    """TC-AQL-P4-RT-01: quality-report returns 503 when _memory_service is None."""
+    from fastapi.testclient import TestClient
+
+    main_module = importlib.import_module("backend.main")
+
+    class _FakeConfig:
+        enabled = True
+        enable_adaptive_learning = True
+        tool_cache_freshness_keywords = []
+
+    monkeypatch.setattr(main_module, "_memory_service", None)
+    monkeypatch.setattr(main_module, "_require_admin", lambda request: None)
+    monkeypatch.setattr(
+        main_module,
+        "_get_effective_milvus_config",
+        lambda: _FakeConfig(),
+    )
+
+    client = TestClient(main_module.app, raise_server_exceptions=False)
+    resp = client.get("/api/admin/memory/quality-report")
+
+    assert resp.status_code == 503
+    assert "not available" in resp.json().get("detail", "").lower()
+
+
+def test_freshness_candidates_endpoint_503_when_aql_disabled(monkeypatch):
+    """TC-AQL-P4-RT-02: freshness-candidates returns 503 when enable_adaptive_learning is False."""
+    from fastapi.testclient import TestClient
+
+    main_module = importlib.import_module("backend.main")
+
+    class _FakeConfig:
+        enabled = True
+        enable_adaptive_learning = False
+        tool_cache_freshness_keywords = []
+
+    class _FakeMemoryService:
+        pass
+
+    monkeypatch.setattr(main_module, "_memory_service", _FakeMemoryService())
+    monkeypatch.setattr(main_module, "_require_admin", lambda request: None)
+    monkeypatch.setattr(
+        main_module,
+        "_get_effective_milvus_config",
+        lambda: _FakeConfig(),
+    )
+
+    client = TestClient(main_module.app, raise_server_exceptions=False)
+    resp = client.get("/api/admin/memory/freshness-candidates")
+
+    assert resp.status_code == 503
+    assert "not available" in resp.json().get("detail", "").lower()
+

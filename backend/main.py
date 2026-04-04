@@ -17,7 +17,7 @@ import httpx
 from pathlib import Path as PathLib
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Path, Body, status, Request, Depends, Response
+from fastapi import FastAPI, HTTPException, Path, Body, Query, status, Request, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -65,6 +65,8 @@ from backend.models import (
     MemoryIngestTriggerResponse,
     MemoryCollectionRowCount,
     MemoryRowCountsResponse,
+    QualityReportResponse,
+    FreshnessCandidatesResponse,
 )
 
 # SSO imports (v0.4.0-sso-user-settings)
@@ -2820,6 +2822,74 @@ async def admin_memory_row_counts(request: Request) -> MemoryRowCountsResponse:
         success=True,
         generation=_memory_service.config.collection_generation,
         counts=counts,
+    )
+
+
+@app.get(
+    "/api/admin/memory/quality-report",
+    response_model=QualityReportResponse,
+    tags=["Admin"],
+    summary="AQL execution quality report (admin only)",
+    responses={
+        200: {"description": "Quality report returned"},
+        403: {"description": "Admin role required"},
+        503: {"description": "AQL reporting not available"},
+    },
+)
+async def admin_quality_report(
+    request: Request,
+    days: int = Query(default=7, ge=1, le=365, description="Lookback window in days"),
+    domain: Optional[str] = Query(default=None, description="Optional domain tag filter"),
+) -> QualityReportResponse:
+    """Return an aggregated AQL quality report for the given time window."""
+    _require_admin(request)
+    config = _get_effective_milvus_config()
+    if _memory_service is None or not getattr(config, "enable_adaptive_learning", False):
+        raise HTTPException(
+            status_code=503, detail="AQL memory reporting not available"
+        )
+    logger_external.info(
+        "\u2192 GET /api/admin/memory/quality-report (days=%s domain=%s)", days, domain
+    )
+    report = await _memory_service.get_quality_report(days=days, domain=domain)
+    logger_external.info(
+        "\u2190 200 OK (total_turns=%s)", report.total_turns
+    )
+    return report
+
+
+@app.get(
+    "/api/admin/memory/freshness-candidates",
+    response_model=FreshnessCandidatesResponse,
+    tags=["Admin"],
+    summary="AQL freshness keyword candidates (admin only)",
+    responses={
+        200: {"description": "Freshness candidates returned"},
+        403: {"description": "Admin role required"},
+        503: {"description": "AQL reporting not available"},
+    },
+)
+async def admin_freshness_candidates(
+    request: Request,
+) -> FreshnessCandidatesResponse:
+    """Return AQL freshness keyword candidates derived from the last 30 days of quality history."""
+    _require_admin(request)
+    config = _get_effective_milvus_config()
+    if _memory_service is None or not getattr(config, "enable_adaptive_learning", False):
+        raise HTTPException(
+            status_code=503, detail="AQL memory reporting not available"
+        )
+    logger_external.info("\u2192 GET /api/admin/memory/freshness-candidates")
+    report = await _memory_service.get_quality_report(days=30, domain=None)
+    current_keywords = list(config.tool_cache_freshness_keywords)
+    logger_external.info(
+        "\u2190 200 OK (candidates=%s current_keywords=%s)",
+        len(report.freshness_keyword_candidates),
+        len(current_keywords),
+    )
+    return FreshnessCandidatesResponse(
+        candidates=report.freshness_keyword_candidates,
+        current_keywords=current_keywords,
     )
 
 

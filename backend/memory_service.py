@@ -656,6 +656,207 @@ class MemoryService:
             )
 
     # ------------------------------------------------------------------ #
+    # Phase 4: Quality Report API                                         #
+    # ------------------------------------------------------------------ #
+
+    async def get_quality_report(
+        self,
+        *,
+        days: int = 7,
+        domain: Optional[str] = None,
+    ) -> Any:
+        """Return an aggregated AQL quality report for the given time window.
+
+        Uses a scalar-only Milvus query (no vector search).  Errors are swallowed
+        and an empty report is returned, matching the graceful-degradation policy
+        throughout this service.
+        """
+        from collections import Counter
+        from backend.models import (
+            QualityReportResponse,
+            ToolFrequencyStat,
+            FreshnessCandidate,
+        )
+
+        def _empty() -> QualityReportResponse:
+            return QualityReportResponse(
+                total_turns=0,
+                avg_tools_per_turn=0.0,
+                avg_llm_turns=0.0,
+                avg_synthesis_tokens=0.0,
+                correction_rate=0.0,
+                top_succeeded_tools=[],
+                top_failed_tools=[],
+                freshness_keyword_candidates=[],
+                routing_distribution={},
+            )
+
+        if not self.config.enabled or not self.config.enable_adaptive_learning:
+            return _empty()
+
+        safe_days = max(int(days), 1)
+        since_ts = int(time.time()) - safe_days * 86400
+
+        filter_expr = f"timestamp >= {since_ts}"
+        if domain and str(domain).strip():
+            safe_domain = str(domain).strip().replace("'", "")
+            filter_expr += f" AND domain_tags like '%{safe_domain}%'"
+
+        output_fields = [
+            "tools_selected",
+            "tools_succeeded",
+            "tools_failed",
+            "tools_bypassed",
+            "tools_cache_hit",
+            "llm_turn_count",
+            "synthesis_tokens",
+            "routing_mode",
+            "user_corrected",
+        ]
+
+        query_method = getattr(self.milvus_store, "query", None)
+        if not callable(query_method):
+            logger_internal.warning("AQL quality report skipped: Milvus query helper unavailable")
+            return _empty()
+
+        try:
+            records = query_method(
+                collection_key="tool_execution_quality",
+                generation=self.config.collection_generation,
+                filter_expression=filter_expr,
+                output_fields=output_fields,
+            )
+        except Exception as error:
+            logger_internal.warning("AQL quality report query failed: reason=%s", error)
+            return _empty()
+
+        if not records:
+            return _empty()
+
+        total = len(records)
+
+        def _pjl(value: Any) -> list[str]:
+            """Parse a JSON-encoded string list safely."""
+            if isinstance(value, list):
+                return [str(v) for v in value if v]
+            if not value:
+                return []
+            try:
+                parsed = json.loads(value)
+                return [str(v) for v in parsed if v] if isinstance(parsed, list) else []
+            except (TypeError, ValueError):
+                return []
+
+        def _tool_basename(name: str) -> str:
+            """Strip server-alias prefix from a namespaced tool name."""
+            if "__" in name:
+                return name.split("__", 1)[1]
+            return name
+
+        selected_lists  = [_pjl(r.get("tools_selected"))  for r in records]
+        succeeded_lists = [_pjl(r.get("tools_succeeded")) for r in records]
+        failed_lists    = [_pjl(r.get("tools_failed"))    for r in records]
+        bypassed_lists  = [_pjl(r.get("tools_bypassed"))  for r in records]
+        cache_hit_lists = [_pjl(r.get("tools_cache_hit")) for r in records]
+
+        total_selected = sum(len(s) for s in selected_lists)
+        avg_tools_per_turn    = total_selected / total
+        avg_llm_turns         = sum(self._safe_int(r.get("llm_turn_count"), 0) for r in records) / total
+        avg_synthesis_tokens  = sum(self._safe_int(r.get("synthesis_tokens"), 0) for r in records) / total
+        corrected_count       = sum(1 for r in records if r.get("user_corrected"))
+        correction_rate       = corrected_count / total
+
+        succeeded_ctr = Counter(tool for lst in succeeded_lists for tool in lst)
+        failed_ctr    = Counter(tool for lst in failed_lists    for tool in lst)
+
+        top_succeeded = [
+            ToolFrequencyStat(tool=tool, count=count)
+            for tool, count in succeeded_ctr.most_common(10)
+        ]
+        top_failed = [
+            ToolFrequencyStat(tool=tool, count=count)
+            for tool, count in failed_ctr.most_common(10)
+        ]
+
+        mode_ctr = Counter(
+            (r.get("routing_mode") or "llm_fallback")
+            for r in records
+        )
+        routing_distribution = {
+            mode: round(count / total, 4)
+            for mode, count in mode_ctr.items()
+        }
+
+        # ---- Freshness candidates ---- #
+        tool_selected_ctr: Counter[str] = Counter(
+            tool for lst in selected_lists for tool in lst
+        )
+        tool_bypassed_ctr: Counter[str] = Counter(
+            tool for lst in bypassed_lists for tool in lst
+        )
+
+        # cache_stale: tool appears in failed AND cache_hit for the same turn
+        cache_stale_ctr: Counter[str] = Counter()
+        for fail_lst, hit_lst in zip(failed_lists, cache_hit_lists):
+            hit_set = set(hit_lst)
+            for tool in fail_lst:
+                if tool in hit_set:
+                    cache_stale_ctr[tool] += 1
+
+        raw_candidates: list[FreshnessCandidate] = []
+        for tool, sel_count in tool_selected_ctr.items():
+            if sel_count == 0:
+                continue
+            bypass_rate = tool_bypassed_ctr.get(tool, 0) / sel_count
+            stale_rate  = cache_stale_ctr.get(tool, 0) / sel_count
+
+            if bypass_rate > 0.60:
+                raw_candidates.append(FreshnessCandidate(
+                    pattern=_tool_basename(tool),
+                    signal="bypass_rate",
+                    score=round(bypass_rate, 4),
+                ))
+            elif stale_rate > 0.30:
+                raw_candidates.append(FreshnessCandidate(
+                    pattern=_tool_basename(tool),
+                    signal="cache_stale",
+                    score=round(stale_rate, 4),
+                ))
+
+        # De-duplicate by pattern, keep highest score
+        seen_patterns: dict[str, FreshnessCandidate] = {}
+        for cand in raw_candidates:
+            existing = seen_patterns.get(cand.pattern)
+            if existing is None or cand.score > existing.score:
+                seen_patterns[cand.pattern] = cand
+        freshness_candidates = sorted(
+            seen_patterns.values(), key=lambda c: c.score, reverse=True
+        )[:10]
+
+        logger_internal.info(
+            "AQL quality report built: days=%s domain=%s total_turns=%s correction_rate=%.3f "
+            "freshness_candidates=%s routing_distribution=%s",
+            safe_days,
+            domain or "(all)",
+            total,
+            correction_rate,
+            len(freshness_candidates),
+            routing_distribution,
+        )
+
+        return QualityReportResponse(
+            total_turns=total,
+            avg_tools_per_turn=round(avg_tools_per_turn, 4),
+            avg_llm_turns=round(avg_llm_turns, 4),
+            avg_synthesis_tokens=round(avg_synthesis_tokens, 4),
+            correction_rate=round(correction_rate, 4),
+            top_succeeded_tools=top_succeeded,
+            top_failed_tools=top_failed,
+            freshness_keyword_candidates=freshness_candidates,
+            routing_distribution=routing_distribution,
+        )
+
+    # ------------------------------------------------------------------ #
     # Phase 3: Safe tool cache                                             #
     # ------------------------------------------------------------------ #
 
