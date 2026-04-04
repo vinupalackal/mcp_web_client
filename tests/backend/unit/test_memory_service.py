@@ -689,6 +689,9 @@ class _FakeUpsertMilvusStore(_FakeMilvusStore):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.upsert_calls = []
+        self.query_results = []
+        self.query_error = None
+        self.query_calls = []
 
     def upsert(self, *, collection_key, generation, dimension, records):
         self.upsert_calls.append(
@@ -699,6 +702,20 @@ class _FakeUpsertMilvusStore(_FakeMilvusStore):
                 "records": records,
             }
         )
+
+    def query(self, *, collection_key, generation, filter_expression, output_fields=None, limit=None):
+        self.query_calls.append(
+            {
+                "collection_key": collection_key,
+                "generation": generation,
+                "filter_expression": filter_expression,
+                "output_fields": output_fields,
+                "limit": limit,
+            }
+        )
+        if self.query_error is not None:
+            raise self.query_error
+        return list(self.query_results)
 
 
 class _FakePersistenceWithTurns(_FakeMemoryPersistence):
@@ -998,6 +1015,102 @@ class TestAdaptiveQueryLearningPhase2:
             tools_selected=["svc__cpu"],
         )
 
+        assert store.upsert_calls == []
+
+
+class TestAdaptiveQueryLearningPhase3:
+
+    def test_is_correction_message_matches_configured_patterns(self):
+        """TC-AQL-P3-01: correction detection should use configured regex patterns only."""
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=_FakeUpsertMilvusStore(),
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_adaptive_learning=True,
+                aql_correction_patterns=(r"\bwrong\b", r"\bactually\b"),
+            ),
+        )
+
+        assert service.is_correction_message("That answer is wrong.") is True
+        assert service.is_correction_message("Actually, check the previous result") is True
+        assert service.is_correction_message("Looks good to me") is False
+
+    @pytest.mark.asyncio
+    async def test_patch_correction_signal_sets_user_corrected_true(self):
+        """TC-AQL-P3-02: patching should mark the matched quality record as corrected."""
+        store = _FakeUpsertMilvusStore()
+        store.query_results = [
+            {
+                "id": "quality-1",
+                "embedding": [0.1, 0.2, 0.3],
+                "query_hash": "abc123",
+                "domain_tags": '["logs"]',
+                "issue_type": "Kernel / Logs",
+                "tools_selected": '["svc__get_dmesg"]',
+                "tools_succeeded": '["svc__get_dmesg"]',
+                "tools_failed": '[]',
+                "tools_bypassed": '[]',
+                "tools_cache_hit": '[]',
+                "chunk_yields": '[]',
+                "llm_turn_count": 1,
+                "synthesis_tokens": 12,
+                "routing_mode": "llm_fallback",
+                "user_corrected": False,
+                "follow_up_gap_s": -1,
+                "session_id": "sess-aql",
+                "timestamp": 123456,
+                "expires_at": 123999,
+            }
+        ]
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_adaptive_learning=True),
+        )
+
+        await service.patch_correction_signal(session_id="sess-aql", query_hash="abc123")
+
+        assert len(store.query_calls) == 1
+        assert len(store.upsert_calls) == 1
+        record = store.upsert_calls[0]["records"][0]
+        assert record["id"] == "quality-1"
+        assert record["user_corrected"] is True
+        assert record["routing_mode"] == "llm_fallback"
+
+    @pytest.mark.asyncio
+    async def test_patch_correction_signal_noops_when_record_missing(self):
+        """TC-AQL-P3-03: missing prior records should be a silent no-op."""
+        store = _FakeUpsertMilvusStore()
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_adaptive_learning=True),
+        )
+
+        await service.patch_correction_signal(session_id="sess-aql", query_hash="missing")
+
+        assert len(store.query_calls) == 1
+        assert store.upsert_calls == []
+
+    @pytest.mark.asyncio
+    async def test_patch_correction_signal_swallows_milvus_failures(self):
+        """TC-AQL-P3-04: correction patching must fail open on Milvus errors."""
+        store = _FakeUpsertMilvusStore()
+        store.query_error = RuntimeError("milvus unavailable")
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_adaptive_learning=True),
+        )
+
+        await service.patch_correction_signal(session_id="sess-aql", query_hash="abc123")
+
+        assert len(store.query_calls) == 1
         assert store.upsert_calls == []
 
     @pytest.mark.asyncio

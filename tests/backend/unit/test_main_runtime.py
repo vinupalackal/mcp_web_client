@@ -792,6 +792,112 @@ def test_schedule_execution_quality_record_skips_when_disabled(monkeypatch):
     assert create_task_calls == []
 
 
+def test_schedule_correction_patch_creates_background_task(monkeypatch):
+    """TC-AQL-P3-RT-01: runtime helper should schedule correction patching for corrective follow-ups."""
+    main_module = importlib.import_module("backend.main")
+
+    class _FakeTask:
+        def __init__(self, coro):
+            self.coro = coro
+            self.callbacks = []
+
+        def add_done_callback(self, callback):
+            self.callbacks.append(callback)
+
+    class _FakeConfig:
+        enable_adaptive_learning = True
+
+    captured = {}
+
+    class _FakeMemoryService:
+        config = _FakeConfig()
+
+        def is_correction_message(self, text):
+            captured["detected_text"] = text
+            return True
+
+        async def patch_correction_signal(self, **kwargs):
+            captured["payload"] = kwargs
+
+    def _fake_create_task(coro):
+        captured["task"] = _FakeTask(coro)
+        return captured["task"]
+
+    monkeypatch.setattr(main_module.asyncio, "create_task", _fake_create_task)
+
+    scheduled = main_module._schedule_correction_patch(
+        memory_service=_FakeMemoryService(),
+        session_id="sess-1",
+        user_message="Actually, that's wrong",
+        previous_turn_metadata={"query_hash": "abc123"},
+    )
+
+    assert scheduled is True
+    assert captured["detected_text"] == "Actually, that's wrong"
+    assert len(captured["task"].callbacks) == 1
+    captured["task"].coro.close()
+
+
+def test_schedule_correction_patch_skips_when_not_corrective(monkeypatch):
+    """TC-AQL-P3-RT-02: non-corrective follow-ups should not schedule a patch task."""
+    main_module = importlib.import_module("backend.main")
+
+    class _FakeConfig:
+        enable_adaptive_learning = True
+
+    class _FakeMemoryService:
+        config = _FakeConfig()
+
+        def is_correction_message(self, text):
+            return False
+
+        async def patch_correction_signal(self, **kwargs):
+            return None
+
+    create_task_calls = []
+    monkeypatch.setattr(main_module.asyncio, "create_task", lambda coro: create_task_calls.append(coro))
+
+    scheduled = main_module._schedule_correction_patch(
+        memory_service=_FakeMemoryService(),
+        session_id="sess-1",
+        user_message="Thanks, continue",
+        previous_turn_metadata={"query_hash": "abc123"},
+    )
+
+    assert scheduled is False
+    assert create_task_calls == []
+
+
+def test_schedule_correction_patch_skips_when_previous_metadata_missing(monkeypatch):
+    """TC-AQL-P3-RT-03: missing previous-turn metadata should keep correction patching disabled."""
+    main_module = importlib.import_module("backend.main")
+
+    class _FakeConfig:
+        enable_adaptive_learning = True
+
+    class _FakeMemoryService:
+        config = _FakeConfig()
+
+        def is_correction_message(self, text):
+            return True
+
+        async def patch_correction_signal(self, **kwargs):
+            return None
+
+    create_task_calls = []
+    monkeypatch.setattr(main_module.asyncio, "create_task", lambda coro: create_task_calls.append(coro))
+
+    scheduled = main_module._schedule_correction_patch(
+        memory_service=_FakeMemoryService(),
+        session_id="sess-1",
+        user_message="Actually, that's wrong",
+        previous_turn_metadata=None,
+    )
+
+    assert scheduled is False
+    assert create_task_calls == []
+
+
 def test_direct_route_single_tool_bypasses_first_llm_call(monkeypatch):
     """When direct_tool_route resolves to a single tool, Turn 0 must skip the LLM.
 

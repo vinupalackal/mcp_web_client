@@ -23,7 +23,7 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import Any, List, Optional, Dict, Callable
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 CURRENT_DIR = PathLib(__file__).resolve().parent
@@ -1432,6 +1432,83 @@ def _schedule_execution_quality_record(
             logger_internal.warning("AQL quality background task failed: %s", error)
 
     task.add_done_callback(_log_background_result)
+    return True
+
+
+def _schedule_correction_patch(
+    *,
+    memory_service: Any,
+    session_id: str,
+    user_message: str,
+    previous_turn_metadata: Optional[Dict[str, Any]],
+) -> bool:
+    """Schedule retroactive correction labeling for the previous quality record."""
+    if memory_service is None:
+        return False
+    config = getattr(memory_service, "config", None)
+    if not getattr(config, "enable_adaptive_learning", False):
+        return False
+
+    detector = getattr(memory_service, "is_correction_message", None)
+    patch_method = getattr(memory_service, "patch_correction_signal", None)
+    if not callable(detector) or not callable(patch_method):
+        return False
+
+    if not previous_turn_metadata:
+        return False
+    query_hash = str(previous_turn_metadata.get("query_hash", "")).strip()
+    if not query_hash:
+        return False
+
+    try:
+        if not detector(user_message):
+            return False
+    except Exception as error:  # pragma: no cover - defensive only
+        logger_internal.warning("AQL correction detection failed: %s", error)
+        return False
+
+    task = asyncio.create_task(
+        patch_method(session_id=session_id, query_hash=query_hash)
+    )
+
+    def _log_background_result(completed_task: asyncio.Task) -> None:
+        try:
+            completed_task.result()
+        except Exception as error:  # pragma: no cover - defensive only
+            logger_internal.warning("AQL correction background task failed: %s", error)
+
+    task.add_done_callback(_log_background_result)
+    return True
+
+
+def _remember_last_quality_turn(
+    *,
+    memory_service: Any,
+    session_id: str,
+    user_message: str,
+    request_id: str,
+) -> bool:
+    """Persist internal-only metadata needed to patch the immediately prior turn."""
+    if memory_service is None:
+        return False
+    build_hash = getattr(memory_service, "build_quality_query_hash", None)
+    if not callable(build_hash):
+        return False
+    try:
+        query_hash = str(build_hash(user_message) or "").strip()
+    except Exception as error:  # pragma: no cover - defensive only
+        logger_internal.warning("AQL turn metadata generation failed: %s", error)
+        return False
+    if not query_hash:
+        return False
+    session_manager.set_last_turn_metadata(
+        session_id,
+        {
+            "query_hash": query_hash,
+            "request_id": request_id,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
     return True
 
 
@@ -3476,9 +3553,17 @@ async def send_message(
             detail="Message content must not be empty"
         )
     
-    # Add user message to session
     existing_messages = list(session_manager.get_messages(session_id))
     existing_message_count = len(existing_messages)
+    previous_turn_metadata = session_manager.get_last_turn_metadata(session_id)
+    _schedule_correction_patch(
+        memory_service=_memory_service,
+        session_id=session_id,
+        user_message=message.content,
+        previous_turn_metadata=previous_turn_metadata,
+    )
+
+    # Add user message to session
     session_manager.add_message(session_id, message)
     
     # Check LLM config
@@ -5055,6 +5140,12 @@ async def send_message(
                         tool_names=_tool_names,
                         turn_number=existing_message_count,
                     )
+                    _remember_last_quality_turn(
+                        memory_service=_memory_service,
+                        session_id=session_id,
+                        user_message=message.content,
+                        request_id=message_transaction_id,
+                    )
                     _schedule_execution_quality_record(
                         memory_service=_memory_service,
                         payload=_build_execution_quality_payload(),
@@ -5092,6 +5183,12 @@ async def send_message(
                 user_id=user_id or "",
                 tool_names=_tool_names,
                 turn_number=existing_message_count,
+            )
+            _remember_last_quality_turn(
+                memory_service=_memory_service,
+                session_id=session_id,
+                user_message=message.content,
+                request_id=message_transaction_id,
             )
             _schedule_execution_quality_record(
                 memory_service=_memory_service,

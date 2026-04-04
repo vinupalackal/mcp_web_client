@@ -40,6 +40,7 @@ class SessionManager:
         self.messages: Dict[str, List[ChatMessage]] = {}  # session_id -> messages
         self.tool_traces: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> traces
         self.retrieval_traces: Dict[str, List[Dict[str, Any]]] = {}  # session_id -> retrieval diagnostics
+        self.turn_metadata: Dict[str, Dict[str, Any]] = {}  # session_id -> last-turn internal metadata
 
         self._load_from_db()
         logger_internal.info("SessionManager initialized")
@@ -66,6 +67,7 @@ class SessionManager:
                     self.messages[row.session_id] = []
                     self.tool_traces[row.session_id] = []
                     self.retrieval_traces[row.session_id] = []
+                    self.turn_metadata[row.session_id] = {}
 
                 msg_rows = db.execute(
                     _sa_select(ChatMessageRow).order_by(
@@ -125,6 +127,7 @@ class SessionManager:
         self.messages[session_id] = []
         self.tool_traces[session_id] = []
         self.retrieval_traces[session_id] = []
+        self.turn_metadata[session_id] = {}
 
         try:
             with self._session_factory() as db:
@@ -160,6 +163,7 @@ class SessionManager:
         self.messages.pop(session_id, None)
         self.tool_traces.pop(session_id, None)
         self.retrieval_traces.pop(session_id, None)
+        self.turn_metadata.pop(session_id, None)
 
         try:
             with self._session_factory() as db:
@@ -268,6 +272,20 @@ class SessionManager:
     def get_retrieval_traces(self, session_id: str) -> List[Dict[str, Any]]:
         """Get retrieval traces for a session."""
         return list(self.retrieval_traces.get(session_id, []))
+
+    def set_last_turn_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
+        """Store internal-only metadata for the latest completed assistant turn."""
+        if session_id not in self.sessions:
+            logger_internal.warning("Cannot store turn metadata for unknown session %s", session_id)
+            return
+        self.turn_metadata[session_id] = dict(metadata or {})
+
+    def get_last_turn_metadata(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return a copy of the latest internal turn metadata for a session."""
+        metadata = self.turn_metadata.get(session_id)
+        if not metadata:
+            return None
+        return dict(metadata)
     
     def update_session_title(self, session_id: str, title: str) -> bool:
         """Update session title"""

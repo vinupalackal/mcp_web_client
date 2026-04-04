@@ -334,6 +334,52 @@ class MilvusStore:
         )
         return result
 
+    def query(
+        self,
+        *,
+        collection_key: str,
+        generation: str,
+        filter_expression: str,
+        output_fields: Optional[list[str]] = None,
+        limit: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        if not filter_expression:
+            raise MilvusCollectionConfigError("filter_expression is required")
+        collection_name = self.build_collection_name(collection_key, generation)
+        if not self.client.has_collection(collection_name):
+            logger_internal.debug(
+                "Milvus query skipped: collection=%s does not exist",
+                collection_name,
+            )
+            return []
+        _log_transaction_banner("MCP CLIENT", "MILVUS", f"query {collection_key}", "start")
+        logger_internal.info(
+            "  Milvus query start: collection=%s key=%s generation=%s filter=%s output_fields=%s limit=%s",
+            collection_name,
+            collection_key,
+            generation,
+            self._preview_text(filter_expression),
+            self._preview_text(output_fields or []),
+            limit,
+        )
+        query_kwargs: dict[str, Any] = {
+            "collection_name": collection_name,
+            "filter": filter_expression,
+            "output_fields": output_fields,
+        }
+        if limit is not None:
+            query_kwargs["limit"] = limit
+        result = self.client.query(**query_kwargs)
+        _log_transaction_banner("MILVUS", "MCP CLIENT", f"query {collection_key}", "end")
+        logger_internal.info(
+            "  Milvus query complete: collection=%s key=%s generation=%s rows=%s",
+            collection_name,
+            collection_key,
+            generation,
+            len(result) if isinstance(result, list) else 0,
+        )
+        return result if isinstance(result, list) else []
+
     def delete_by_ids(self, *, collection_key: str, generation: str, ids: list[str]) -> dict[str, int]:
         collection_name = self.build_collection_name(collection_key, generation)
         if not self.client.has_collection(collection_name):

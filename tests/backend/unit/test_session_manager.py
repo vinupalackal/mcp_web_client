@@ -335,6 +335,27 @@ class TestRetrievalTrace:
         assert [trace["query_hash"] for trace in traces] == ["first", "second"]
 
 
+class TestTurnMetadata:
+
+    def test_set_and_get_last_turn_metadata(self, mgr):
+        """TC-TRACE-05: Last-turn metadata is stored and returned as a copy."""
+        s = mgr.create_session()
+        mgr.set_last_turn_metadata(s.session_id, {"query_hash": "abc123", "request_id": "chat-1"})
+
+        metadata = mgr.get_last_turn_metadata(s.session_id)
+        assert metadata == {"query_hash": "abc123", "request_id": "chat-1"}
+        metadata["query_hash"] = "mutated"
+        assert mgr.get_last_turn_metadata(s.session_id) == {"query_hash": "abc123", "request_id": "chat-1"}
+
+    def test_delete_session_cleans_last_turn_metadata(self, mgr):
+        """TC-TRACE-06: delete_session removes internal turn metadata."""
+        s = mgr.create_session()
+        mgr.set_last_turn_metadata(s.session_id, {"query_hash": "abc123"})
+
+        mgr.delete_session(s.session_id)
+        assert mgr.get_last_turn_metadata(s.session_id) is None
+
+
 class TestUpdateSessionTitle:
 
     def test_title_updated(self, mgr):

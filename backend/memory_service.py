@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -135,6 +136,7 @@ class MemoryService:
         self.milvus_store = milvus_store
         self.memory_persistence = memory_persistence
         self.config = config or MemoryServiceConfig()
+        self._compiled_correction_patterns: Optional[tuple[re.Pattern[str], ...]] = None
         self._last_expiry_cleanup_at: Optional[datetime] = None
         self._last_expiry_cleanup_summary: dict[str, Any] = {
             "ran": False,
@@ -558,6 +560,98 @@ class MemoryService:
                 "AQL quality transaction failed: record_id=%s session=%s reason=%s",
                 record_id,
                 session_id,
+                error,
+            )
+
+    def build_quality_query_hash(self, user_message: str) -> str:
+        """Return the stable query hash used for AQL quality records."""
+        return self._query_hash(self._build_query(user_message))
+
+    def is_correction_message(self, text: str) -> bool:
+        """Return True when a follow-up message matches configured correction patterns."""
+        if not (text or "").strip():
+            return False
+        try:
+            patterns = self._get_compiled_correction_patterns()
+        except Exception as error:
+            logger_internal.warning("AQL correction-pattern compilation failed: %s", error)
+            return False
+        for pattern in patterns:
+            try:
+                if pattern.search(text):
+                    return True
+            except Exception as error:
+                logger_internal.warning("AQL correction-pattern evaluation failed: %s", error)
+        return False
+
+    async def patch_correction_signal(
+        self,
+        *,
+        session_id: str,
+        query_hash: str,
+    ) -> None:
+        """Patch the immediately prior quality record with a correction signal."""
+        if not self.config.enabled or not self.config.enable_adaptive_learning:
+            return
+        safe_session_id = str(session_id or "").strip()
+        safe_query_hash = str(query_hash or "").strip()
+        if not safe_session_id or not safe_query_hash:
+            return
+
+        query_method = getattr(self.milvus_store, "query", None)
+        if not callable(query_method):
+            logger_internal.warning("AQL correction patch skipped: Milvus query helper unavailable")
+            return
+
+        try:
+            records = query_method(
+                collection_key="tool_execution_quality",
+                generation=self.config.collection_generation,
+                filter_expression=self._build_quality_filter_expression(
+                    session_id=safe_session_id,
+                    query_hash=safe_query_hash,
+                ),
+                output_fields=self._quality_record_output_fields(),
+                limit=5,
+            )
+            if not records:
+                logger_internal.info(
+                    "AQL correction patch skipped: no quality record found for session=%s query_hash=%s",
+                    safe_session_id,
+                    safe_query_hash,
+                )
+                return
+
+            record = max(records, key=lambda item: self._safe_int(item.get("timestamp"), 0))
+            vector = record.get("embedding")
+            if not isinstance(vector, list) or not vector:
+                logger_internal.warning(
+                    "AQL correction patch skipped: missing embedding for session=%s query_hash=%s",
+                    safe_session_id,
+                    safe_query_hash,
+                )
+                return
+
+            patched_record = dict(record)
+            patched_record["user_corrected"] = True
+
+            self.milvus_store.upsert(
+                collection_key="tool_execution_quality",
+                generation=self.config.collection_generation,
+                dimension=len(vector),
+                records=[patched_record],
+            )
+            logger_internal.info(
+                "AQL correction patch applied: session=%s query_hash=%s record_id=%s",
+                safe_session_id,
+                safe_query_hash,
+                patched_record.get("id", ""),
+            )
+        except Exception as error:
+            logger_internal.warning(
+                "AQL correction patch failed: session=%s query_hash=%s reason=%s",
+                safe_session_id,
+                safe_query_hash,
                 error,
             )
 
@@ -1330,6 +1424,56 @@ class MemoryService:
                 }
             )
         return cleaned
+
+    def _get_compiled_correction_patterns(self) -> tuple[re.Pattern[str], ...]:
+        if self._compiled_correction_patterns is not None:
+            return self._compiled_correction_patterns
+        compiled: list[re.Pattern[str]] = []
+        for pattern_text in self.config.aql_correction_patterns:
+            try:
+                compiled.append(re.compile(pattern_text, re.IGNORECASE))
+            except re.error as error:
+                logger_internal.warning(
+                    "Skipping invalid AQL correction pattern %s: %s",
+                    pattern_text,
+                    error,
+                )
+        self._compiled_correction_patterns = tuple(compiled)
+        return self._compiled_correction_patterns
+
+    def _build_quality_filter_expression(self, *, session_id: str, query_hash: str) -> str:
+        escaped_session_id = str(session_id).replace('"', '\\"')
+        escaped_query_hash = str(query_hash).replace('"', '\\"')
+        return f'session_id == "{escaped_session_id}" && query_hash == "{escaped_query_hash}"'
+
+    def _quality_record_output_fields(self) -> list[str]:
+        return [
+            "id",
+            "embedding",
+            "query_hash",
+            "domain_tags",
+            "issue_type",
+            "tools_selected",
+            "tools_succeeded",
+            "tools_failed",
+            "tools_bypassed",
+            "tools_cache_hit",
+            "chunk_yields",
+            "llm_turn_count",
+            "synthesis_tokens",
+            "routing_mode",
+            "user_corrected",
+            "follow_up_gap_s",
+            "session_id",
+            "timestamp",
+            "expires_at",
+        ]
+
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     def _split_namespaced_tool_name(self, tool_name: str) -> tuple[str, str]:
         """Split `server__tool` into `(server, tool)`; bare names become `("", name)`.
