@@ -10,6 +10,14 @@
 **Requirements**: `docs/AQL-ADAPTIVE-QUERY-LEARNING-REQUIREMENTS.md`  
 **Baseline Tag**: `v0.9.0-adaptive-cache-routing`
 
+**Per-phase companion docs**:
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-REQUIREMENTS.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-HLD.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-REQUIREMENTS.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-HLD.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-IMPLEMENTATION-SPEC.md`
+
 ---
 
 ## 1. Executive Summary

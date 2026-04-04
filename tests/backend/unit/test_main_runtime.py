@@ -727,6 +727,71 @@ def test_initialize_memory_service_passes_aql_config_fields(monkeypatch):
     assert runtime_config.aql_correction_patterns == (r"\\bwrong\\b", r"\\bactually\\b")
 
 
+def test_schedule_execution_quality_record_creates_background_task(monkeypatch):
+    """TC-AQL-P2-RT-01: runtime helper should schedule passive quality recording when AQL is enabled."""
+    main_module = importlib.import_module("backend.main")
+
+    class _FakeTask:
+        def __init__(self, coro):
+            self.coro = coro
+            self.callbacks = []
+
+        def add_done_callback(self, callback):
+            self.callbacks.append(callback)
+
+    class _FakeConfig:
+        enable_adaptive_learning = True
+
+    captured = {}
+
+    class _FakeMemoryService:
+        config = _FakeConfig()
+
+        async def record_execution_quality(self, **kwargs):
+            captured["payload"] = kwargs
+
+    def _fake_create_task(coro):
+        captured["task"] = _FakeTask(coro)
+        return captured["task"]
+
+    monkeypatch.setattr(main_module.asyncio, "create_task", _fake_create_task)
+
+    scheduled = main_module._schedule_execution_quality_record(
+        memory_service=_FakeMemoryService(),
+        payload={"session_id": "sess-1", "user_message": "check uptime"},
+    )
+
+    assert scheduled is True
+    assert "task" in captured
+    assert len(captured["task"].callbacks) == 1
+    captured["task"].coro.close()
+
+
+def test_schedule_execution_quality_record_skips_when_disabled(monkeypatch):
+    """TC-AQL-P2-RT-02: runtime helper should no-op when AQL is disabled."""
+    main_module = importlib.import_module("backend.main")
+
+    class _FakeConfig:
+        enable_adaptive_learning = False
+
+    class _FakeMemoryService:
+        config = _FakeConfig()
+
+        async def record_execution_quality(self, **kwargs):
+            return None
+
+    create_task_calls = []
+    monkeypatch.setattr(main_module.asyncio, "create_task", lambda coro: create_task_calls.append(coro))
+
+    scheduled = main_module._schedule_execution_quality_record(
+        memory_service=_FakeMemoryService(),
+        payload={"session_id": "sess-1", "user_message": "check uptime"},
+    )
+
+    assert scheduled is False
+    assert create_task_calls == []
+
+
 def test_direct_route_single_tool_bypasses_first_llm_call(monkeypatch):
     """When direct_tool_route resolves to a single tool, Turn 0 must skip the LLM.
 

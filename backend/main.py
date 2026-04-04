@@ -1408,6 +1408,33 @@ def _merge_split_phase_tool_calls(chunk_results: List[List[Dict[str, Any]]]) -> 
     return merged
 
 
+def _schedule_execution_quality_record(
+    *,
+    memory_service: Any,
+    payload: Dict[str, Any],
+) -> bool:
+    """Schedule passive AQL quality recording without blocking the response path."""
+    if memory_service is None:
+        return False
+    record_method = getattr(memory_service, "record_execution_quality", None)
+    config = getattr(memory_service, "config", None)
+    if not callable(record_method):
+        return False
+    if not getattr(config, "enable_adaptive_learning", False):
+        return False
+
+    task = asyncio.create_task(record_method(**payload))
+
+    def _log_background_result(completed_task: asyncio.Task) -> None:
+        try:
+            completed_task.result()
+        except Exception as error:  # pragma: no cover - defensive only
+            logger_internal.warning("AQL quality background task failed: %s", error)
+
+    task.add_done_callback(_log_background_result)
+    return True
+
+
 async def _collect_split_phase_tool_calls(
     *,
     llm_client: Any,
@@ -1417,6 +1444,7 @@ async def _collect_split_phase_tool_calls(
     request_mode: str,
     request_mode_details: Dict[str, Any],
     extract_tool_calls_from_content: Callable[[str, int], List[Dict[str, Any]]],
+    chunk_yield_collector: Optional[Callable[[int, int, int], None]] = None,
 ) -> List[Dict[str, Any]]:
     ordinals = [
         "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH",
@@ -1481,6 +1509,8 @@ async def _collect_split_phase_tool_calls(
         )
         for seq_idx, seq_chunk in enumerate(tool_chunks, 1):
             chunk_index, chunk_calls = await query_chunk(seq_idx, seq_chunk)
+            if chunk_yield_collector is not None:
+                chunk_yield_collector(chunk_index, len(seq_chunk), len(chunk_calls))
             chunk_results[chunk_index - 1] = chunk_calls
             if stop_on_first_real_tool and _split_phase_has_real_tool_calls(chunk_calls):
                 logger_internal.info(
@@ -1505,6 +1535,8 @@ async def _collect_split_phase_tool_calls(
         try:
             for completed in asyncio.as_completed(tasks):
                 chunk_index, chunk_calls = await completed
+                if chunk_yield_collector is not None:
+                    chunk_yield_collector(chunk_index, len(tool_chunks[chunk_index - 1]), len(chunk_calls))
                 chunk_results[chunk_index - 1] = chunk_calls
                 if stop_on_first_real_tool and _split_phase_has_real_tool_calls(chunk_calls):
                     pending_tasks = [task for task in tasks if not task.done()]
@@ -1540,6 +1572,7 @@ async def _stream_split_phase_tool_calls(
     request_mode: str,
     request_mode_details: Dict[str, Any],
     extract_tool_calls_from_content: Callable[[str, int], List[Dict[str, Any]]],
+    chunk_yield_collector: Optional[Callable[[int, int, int], None]] = None,
 ):
     """Async generator variant of _collect_split_phase_tool_calls.
 
@@ -1626,6 +1659,8 @@ async def _stream_split_phase_tool_calls(
         for seq_idx, seq_chunk in enumerate(tool_chunks, 1):
             chunk_index, chunk_calls = await query_chunk(seq_idx, seq_chunk)
             new_calls, skipped = _filter_new_calls(chunk_calls)
+            if chunk_yield_collector is not None:
+                chunk_yield_collector(chunk_index, len(seq_chunk), len(new_calls))
             yield chunk_index, new_calls, skipped
             if stop_on_first_real_tool and _split_phase_has_real_tool_calls(new_calls):
                 logger_internal.info(
@@ -1646,6 +1681,8 @@ async def _stream_split_phase_tool_calls(
             for completed in asyncio.as_completed(tasks):
                 chunk_index, chunk_calls = await completed
                 new_calls, skipped = _filter_new_calls(chunk_calls)
+                if chunk_yield_collector is not None:
+                    chunk_yield_collector(chunk_index, len(tool_chunks[chunk_index - 1]), len(new_calls))
                 yield chunk_index, new_calls, skipped
                 if stop_on_first_real_tool and _split_phase_has_real_tool_calls(new_calls):
                     pending_tasks = [t for t in tasks if not t.done()]
@@ -3715,6 +3752,65 @@ async def send_message(
         retrieval_context_section: Optional[str] = None
         retrieval_sources: Optional[List[Dict[str, Any]]] = None
         has_real_tools = any(tool_name != "mcp_repeated_exec" for tool_name in tool_names)
+        aql_tools_bypassed: set[str] = set()
+        aql_chunk_yields: List[Dict[str, int]] = []
+        aql_llm_turn_count = 0
+        aql_synthesis_tokens = 0
+
+        def _record_chunk_yield(chunk_index: int, offered: int, selected: int) -> None:
+            aql_chunk_yields.append(
+                {
+                    "chunk": max(int(chunk_index), 0),
+                    "offered": max(int(offered), 0),
+                    "selected": max(int(selected), 0),
+                }
+            )
+
+        def _current_routing_mode() -> str:
+            if direct_tool_route is not None:
+                if direct_tool_route.get("route_name") == "memory_retrieval":
+                    return "memory"
+                return "direct"
+            return "llm_fallback"
+
+        def _build_execution_quality_payload() -> Dict[str, Any]:
+            selected_tools = [
+                str(tool_exec.get("tool", ""))
+                for tool_exec in tool_executions
+                if tool_exec.get("tool")
+            ]
+            succeeded_tools = [
+                str(tool_exec.get("tool", ""))
+                for tool_exec in tool_executions
+                if tool_exec.get("tool") and tool_exec.get("success")
+            ]
+            failed_tools = [
+                str(tool_exec.get("tool", ""))
+                for tool_exec in tool_executions
+                if tool_exec.get("tool") and not tool_exec.get("success")
+            ]
+            cache_hit_tools = [
+                str(tool_exec.get("tool", ""))
+                for tool_exec in tool_executions
+                if tool_exec.get("tool") and tool_exec.get("cache_hit")
+            ]
+            return {
+                "user_message": message.content,
+                "session_id": session_id,
+                "domain_tags": list(request_mode_details.get("domains", [])),
+                "issue_type": issue_classification or request_mode.replace("_", " "),
+                "tools_selected": selected_tools,
+                "tools_succeeded": succeeded_tools,
+                "tools_failed": failed_tools,
+                "tools_bypassed": sorted(aql_tools_bypassed),
+                "tools_cache_hit": cache_hit_tools,
+                "chunk_yields": list(aql_chunk_yields),
+                "llm_turn_count": aql_llm_turn_count,
+                "synthesis_tokens": aql_synthesis_tokens,
+                "routing_mode": _current_routing_mode(),
+                "user_corrected": False,
+                "follow_up_gap_s": -1,
+            }
 
         def build_runtime_system_message() -> dict:
             tool_result_contents = [str(tool_exec.get("result", "")) for tool_exec in tool_executions]
@@ -3924,6 +4020,7 @@ async def send_message(
                 messages=classification_messages,
                 tools=[],
             )
+            aql_llm_turn_count += 1
             classification_msg = classification_response["choices"][0]["message"]
             classification_content = (classification_msg.get("content") or "").strip()
             latest_assistant_tool_guidance = classification_content or None
@@ -4067,6 +4164,8 @@ async def send_message(
                     arguments=_args if isinstance(_args, dict) else {},
                     user_id=user_id or "",
                 )
+                if getattr(_cache_result, "freshness_bypassed", False):
+                    aql_tools_bypassed.add(_name)
                 if _cache_result.hit and _cache_result.approved:
                     _dur = int((_time_mod.time() - _start) * 1000)
                     logger_internal.info(
@@ -4174,7 +4273,9 @@ async def send_message(
                     request_mode=request_mode,
                     request_mode_details=request_mode_details,
                     extract_tool_calls_from_content=extract_tool_calls_from_content,
+                    chunk_yield_collector=_record_chunk_yield,
                 )
+                aql_llm_turn_count += len(tool_chunks)
                 _pipeline_parsed, _pipeline_results = await _run_pipeline_execution(
                     stream=_stream,
                     run_mcp_tool=_run_one_mcp_tool,
@@ -4208,7 +4309,9 @@ async def send_message(
                     request_mode=request_mode,
                     request_mode_details=request_mode_details,
                     extract_tool_calls_from_content=extract_tool_calls_from_content,
+                    chunk_yield_collector=_record_chunk_yield,
                 )
+                aql_llm_turn_count += len(tool_chunks)
             _sp_tool_names = [tc.get("function", {}).get("name", "") for tc in split_phase_tool_calls]
             logger_external.info(
                 "MCP CLIENT → MCP SERVER TOOLS LIST: [%s] (%s tool(s) across %s chunk(s))",
@@ -4260,6 +4363,7 @@ async def send_message(
                         messages=messages_for_llm,
                         tools=[],
                     )
+                    aql_llm_turn_count += 1
             elif turn == 0 and _direct_route_tool_calls is not None:
                 # Direct-route bypass: skip LLM, inject the single known tool call
                 logger_internal.info(
@@ -4297,6 +4401,7 @@ async def send_message(
                     messages=messages_for_llm,
                     tools=tools_for_request,
                 )
+                aql_llm_turn_count += 1
             
             # Extract assistant message
             assistant_msg = llm_response["choices"][0]["message"]
@@ -4741,6 +4846,7 @@ async def send_message(
                             "result_text": result_content,
                             "success": summary.success_count > 0,
                             "duration_ms": rep_duration_ms,
+                            "cache_hit": False,
                         })
                         session_manager.add_tool_trace(
                             session_id=session_id,
@@ -4798,6 +4904,7 @@ async def send_message(
                         "result_text": result_content,
                         "success": tool_success,
                         "duration_ms": duration_ms,
+                        "cache_hit": bool(_pr.get("cache_hit", False)),
                     })
                     executed_tool_results[dedupe_key] = {
                         "result_content": labeled_result_content,
@@ -4913,6 +5020,13 @@ async def send_message(
 
                 logger_internal.info(f"LLM gave final response (no tool calls). Response length: {len(assistant_msg.get('content', ''))}")
                 logger_internal.info(f"=== FINAL LLM MESSAGE ===\n{assistant_msg.get('content', '')}\n========================")
+                response_usage = llm_response.get("usage") if isinstance(llm_response, dict) else {}
+                if isinstance(response_usage, dict):
+                    aql_synthesis_tokens = int(
+                        response_usage.get("total_tokens")
+                        or response_usage.get("completion_tokens")
+                        or 0
+                    )
                 
                 if tool_executions:
                     tools_summary = ', '.join([f"{te['tool']} ({'success' if te['success'] else 'failed'})" for te in tool_executions])
@@ -4940,6 +5054,10 @@ async def send_message(
                         user_id=user_id or "",
                         tool_names=_tool_names,
                         turn_number=existing_message_count,
+                    )
+                    _schedule_execution_quality_record(
+                        memory_service=_memory_service,
+                        payload=_build_execution_quality_payload(),
                     )
                 return ChatResponse(
                     session_id=session_id,
@@ -4974,6 +5092,10 @@ async def send_message(
                 user_id=user_id or "",
                 tool_names=_tool_names,
                 turn_number=existing_message_count,
+            )
+            _schedule_execution_quality_record(
+                memory_service=_memory_service,
+                payload=_build_execution_quality_payload(),
             )
         return ChatResponse(
             session_id=session_id,

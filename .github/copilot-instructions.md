@@ -57,6 +57,42 @@ Results to LLM → Next turn (max 8 tool calls/turn)
 - **Ollama format**: Uses `tool_name` instead (adapt messaging)
 - **Truncation**: Results >12K chars truncated before sending to LLM
 
+### Adaptive Query Learning (AQL)
+**Canonical docs**:
+- `docs/AQL-ADAPTIVE-QUERY-LEARNING-REQUIREMENTS.md`
+- `docs/AQL-ADAPTIVE-QUERY-LEARNING-HLD.md`
+- `docs/AQL-ADAPTIVE-QUERY-LEARNING-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-REQUIREMENTS.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-HLD.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-REQUIREMENTS.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-HLD.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-IMPLEMENTATION-SPEC.md`
+
+**AQL requirement summary**:
+- Additive only: never break current chat, routing, cache, or admin behavior.
+- Disabled by default behind `enable_adaptive_learning` / `AQL_ENABLE`.
+- Reuse existing Milvus infrastructure only; no new DB, queue, or service.
+- Write quality history asynchronously after response return; never add visible latency.
+- Treat learned tool affinity as a soft prior that narrows the tool list; do not bypass the LLM.
+- Surface freshness recommendations for operators; never auto-edit `tool_cache_freshness_keywords`.
+
+**AQL HLD summary**:
+- Persist execution feedback in Milvus collection `mcp_client_tool_execution_quality_v1` (logical key `tool_execution_quality`).
+- Feed quality history into four later decision points: affinity routing, freshness-candidate reporting, split-phase chunk reorder, and admin quality reporting.
+- Exclude corrected turns from future affinity routing.
+- Degrade silently to existing routing when Milvus is unavailable, AQL is disabled, or confidence/record thresholds are not met.
+
+**AQL development approach**:
+1. Land passive plumbing before behavior changes.
+2. Implement phases in order: Phase 1 schema/config/store → Phase 2 passive quality recording → Phase 3 correction patching → Phase 4 admin reporting → Phase 5 affinity lookup → Phase 6 routing integration → Phase 7 chunk reordering.
+3. Before implementing any phase, create or update that phase's own requirements doc, HLD doc, and implementation spec doc. Do not start Phase 2+ code from only the parent AQL docs when the repo is following a per-phase documentation workflow.
+4. Follow the established naming pattern for per-phase docs, e.g. `docs/AQL-P1-SCHEMA-CONFIG-STORE-*.md`, and create the matching Phase 2/3/etc. triplet before code changes.
+5. Keep Phase 1 non-behavioral: config, models, collection schema, row counts, snapshot visibility, and cleanup readiness only.
+6. Extend existing files instead of adding parallel AQL subsystems: `backend/models.py`, `backend/milvus_store.py`, `backend/memory_service.py`, `backend/main.py`.
+7. Validate each phase with focused unit tests first, then full regression.
+8. Preserve degraded-mode behavior: log warnings on AQL failures and suppress them from end users.
+
 ## Project-Specific Conventions
 
 ### OpenAPI Spec-Driven Development
@@ -122,6 +158,19 @@ timeout = httpx.Timeout(
 ```
 **Never use simple integer timeouts** - always use httpx.Timeout object
 
+### AQL Schema and Config Conventions
+- Add AQL config fields to `MilvusConfig` first, then pass them through `_initialize_memory_service()` into `MemoryServiceConfig`.
+- Keep AQL defaults normalized in model helpers so runtime code does not branch on missing weights or blank correction patterns.
+- Extend existing row-count, snapshot, and expiry-cleanup helpers when adding new Milvus collections.
+- For Phase 1-style plumbing work, do not add route-selection logic, post-response writers, or new endpoint behavior in the same patch unless the phase explicitly requires it.
+- New AQL admin response shapes must remain OpenAPI-friendly and additive.
+
+### AQL Phase Documentation Discipline
+- Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → code → tests.
+- For Phase 2 and later, do not skip the phase-specific docs even if the parent AQL docs already describe the behavior at a high level.
+- When a phase is already partially implemented without its own docs, reconcile by backfilling the missing phase docs before continuing to the next phase.
+- Keep the phase docs aligned with the actual file-level plan so implementation and GitHub issue updates reference the same scope boundaries.
+
 ### Frontend Emoji Logging
 Browser console uses emoji prefixes for categorization:
 - `⚙️` Settings operations
@@ -158,6 +207,15 @@ OpenAI and Ollama have different message formats for tool results:
 {"role": "tool", "content": "result"}  # No tool_call_id
 ```
 **Always check provider type** when formatting tool result messages
+
+### AQL Routing Order
+When later AQL phases are implemented, keep this decision order intact:
+1. Direct single-tool route (existing bypass path)
+2. Existing memory/tool-cache-assisted route
+3. AQL affinity route when enabled and sufficiently confident
+4. Existing LLM fallback / split-phase selection
+
+Affinity routing may reduce the offered tool set, but it must not replace direct-route behavior or bypass the LLM selection call.
 
 ### Security Constraints
 - **HTTPS enforcement**: Reject `http://` MCP server URLs unless `MCP_ALLOW_HTTP_INSECURE=true`
@@ -205,6 +263,10 @@ backend/
 | `MCP_MAX_TOOL_CALLS_PER_TURN` | `8` | Max tool executions per LLM turn |
 | `MCP_MAX_RESULT_PREVIEW_CHARS` | `4000` | Result preview truncation |
 | `MCP_MAX_TOOL_OUTPUT_CHARS_TO_LLM` | `12000` | Max tool output sent to LLM |
+| `AQL_ENABLE` | `false` | Enable Adaptive Query Learning plumbing and later routing features |
+| `AQL_QUALITY_RETENTION_DAYS` | `30` | Retention window for AQL quality-history records |
+| `AQL_MIN_RECORDS` | `20` | Minimum quality-history records before affinity routing can activate |
+| `AQL_AFFINITY_THRESHOLD` | `0.65` | Minimum confidence required to apply affinity routing |
 | `OPENAI_API_KEY` | - | OpenAI authentication |
 | `OPENAI_BASE_URL` | `https://api.openai.com` | OpenAI endpoint |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama endpoint |
@@ -244,6 +306,14 @@ backend/
 - Update result truncation logic if changing size limits
 - Test with slow/failing tools (timeout handling)
 - Handle JSON-RPC error responses with proper error codes
+
+### Implementing Adaptive Query Learning
+1. Start from the AQL requirements/HLD/spec docs and honor phase boundaries.
+2. Use `tool_execution_quality` as the sole Milvus collection for learned execution feedback.
+3. Record correction signals with regex heuristics only; do not add an LLM call for correction detection.
+4. Keep affinity routing confidence-gated and domain-aware.
+5. Surface freshness candidates through admin APIs for human review instead of auto-mutating config.
+6. Test additive behavior carefully so existing direct-route, split-phase, and memory-route flows stay green.
 
 ## Deployment Patterns
 

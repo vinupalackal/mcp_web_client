@@ -8,6 +8,14 @@
 **Requirements**: `docs/AQL-ADAPTIVE-QUERY-LEARNING-REQUIREMENTS.md`  
 **Baseline Tag**: `v0.9.0-adaptive-cache-routing`
 
+**Per-phase companion docs**:
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-REQUIREMENTS.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-HLD.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-REQUIREMENTS.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-HLD.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-IMPLEMENTATION-SPEC.md`
+
 ---
 
 ## 1. Files Changed
@@ -180,6 +188,11 @@ class QualityReport:
 
 ## Phase 1 — Schema + Config + Store Plumbing
 
+Companion docs:
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-REQUIREMENTS.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-HLD.md`
+- `docs/AQL-P1-SCHEMA-CONFIG-STORE-IMPLEMENTATION-SPEC.md`
+
 ### Objective
 Introduce all AQL configuration and persistence primitives with **no runtime behavior change**.
 
@@ -233,6 +246,11 @@ Introduce all AQL configuration and persistence primitives with **no runtime beh
 ---
 
 ## Phase 2 — Passive Quality Recording
+
+Companion docs:
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-REQUIREMENTS.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-HLD.md`
+- `docs/AQL-P2-PASSIVE-QUALITY-RECORDING-IMPLEMENTATION-SPEC.md`
 
 ### Objective
 Capture execution-quality signals after every completed turn, asynchronously and without affecting the response path.

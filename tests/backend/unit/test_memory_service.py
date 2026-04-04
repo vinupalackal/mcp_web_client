@@ -905,6 +905,128 @@ class TestConversationMemoryPhase2:
         assert conv_blocks[0].payload_ref == "turn-abc"
         assert "conversation:" in conv_blocks[0].source_path
 
+
+class TestAdaptiveQueryLearningPhase2:
+
+    @pytest.mark.asyncio
+    async def test_record_execution_quality_skips_when_disabled(self):
+        """TC-AQL-P2-00: quality recording should no-op when AQL is disabled."""
+        store = _FakeUpsertMilvusStore()
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_adaptive_learning=False,
+            ),
+        )
+
+        await service.record_execution_quality(
+            user_message="check disk",
+            session_id="sess-disabled",
+            tools_selected=["svc__disk"],
+        )
+
+        assert store.upsert_calls == []
+
+    @pytest.mark.asyncio
+    async def test_record_execution_quality_upserts_quality_record_when_enabled(self):
+        """TC-AQL-P2-01: Phase 2 should persist a passive quality record when enabled."""
+        store = _FakeUpsertMilvusStore(record_counts={"tool_execution_quality": [0, 1]})
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(vectors=[[0.4, 0.5, 0.6]]),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_adaptive_learning=True,
+                aql_quality_retention_days=14,
+            ),
+        )
+
+        await service.record_execution_quality(
+            user_message="check kernel logs",
+            session_id="sess-aql",
+            domain_tags=["logs"],
+            issue_type="Kernel / Logs",
+            tools_selected=["svc__get_dmesg"],
+            tools_succeeded=["svc__get_dmesg"],
+            tools_failed=[],
+            tools_bypassed=["svc__get_syslog"],
+            tools_cache_hit=["svc__get_dmesg"],
+            chunk_yields=[{"chunk": 1, "offered": 4, "selected": 1}],
+            llm_turn_count=2,
+            synthesis_tokens=37,
+            routing_mode="llm_fallback",
+        )
+
+        assert len(store.upsert_calls) == 1
+        call = store.upsert_calls[0]
+        assert call["collection_key"] == "tool_execution_quality"
+        assert call["dimension"] == 3
+        record = call["records"][0]
+        assert record["session_id"] == "sess-aql"
+        assert record["query_hash"]
+        assert record["routing_mode"] == "llm_fallback"
+        assert record["llm_turn_count"] == 2
+        assert record["synthesis_tokens"] == 37
+        assert record["user_corrected"] is False
+        assert record["follow_up_gap_s"] == -1
+        assert record["domain_tags"] == '["logs"]'
+        assert record["tools_selected"] == '["svc__get_dmesg"]'
+        assert record["tools_bypassed"] == '["svc__get_syslog"]'
+        assert record["tools_cache_hit"] == '["svc__get_dmesg"]'
+
+    @pytest.mark.asyncio
+    async def test_record_execution_quality_swallows_embedding_errors(self):
+        """TC-AQL-P2-02: quality recording must fail open when embedding generation fails."""
+        store = _FakeUpsertMilvusStore()
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(error=RuntimeError("embed failed")),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_adaptive_learning=True,
+            ),
+        )
+
+        await service.record_execution_quality(
+            user_message="check cpu",
+            session_id="sess-aql",
+            tools_selected=["svc__cpu"],
+        )
+
+        assert store.upsert_calls == []
+
+    @pytest.mark.asyncio
+    async def test_record_execution_quality_swallows_milvus_failures(self):
+        """TC-AQL-P2-03: quality recording must fail open when Milvus upsert fails."""
+
+        class _FailingUpsertStore(_FakeUpsertMilvusStore):
+            def upsert(self, **kwargs):
+                raise RuntimeError("milvus unavailable")
+
+        store = _FailingUpsertStore()
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_adaptive_learning=True,
+            ),
+        )
+
+        await service.record_execution_quality(
+            user_message="check cpu",
+            session_id="sess-aql",
+            tools_selected=["svc__cpu"],
+        )
+
+        assert store.upsert_calls == []
+
     @pytest.mark.asyncio
     async def test_enrich_for_turn_searches_conversation_memory_for_anonymous_user(self):
         """TC-CONV-06: anonymous user now searches conversation_memory under __anonymous__ scope.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 import uuid
@@ -114,6 +115,9 @@ class ToolCacheResult:
     # True when caching policy (freshness check + optional restriction list) passed
     # AND a valid, non-expired entry was found.
     approved: bool = False
+    # True when a cacheable tool was intentionally bypassed because the tool name
+    # matched freshness-sensitive keywords and should not be cached.
+    freshness_bypassed: bool = False
 
 
 class MemoryService:
@@ -430,6 +434,133 @@ class MemoryService:
                 error,
             )
 
+    async def record_execution_quality(
+        self,
+        *,
+        user_message: str,
+        session_id: str,
+        domain_tags: Optional[list[str]] = None,
+        issue_type: str = "",
+        tools_selected: Optional[list[str]] = None,
+        tools_succeeded: Optional[list[str]] = None,
+        tools_failed: Optional[list[str]] = None,
+        tools_bypassed: Optional[list[str]] = None,
+        tools_cache_hit: Optional[list[str]] = None,
+        chunk_yields: Optional[list[dict[str, int]]] = None,
+        llm_turn_count: int = 0,
+        synthesis_tokens: int = 0,
+        routing_mode: str = "llm_fallback",
+        user_corrected: bool = False,
+        follow_up_gap_s: int = -1,
+    ) -> None:
+        """Persist a passive AQL quality record for a completed chat turn.
+
+        This method is Phase 2 plumbing: it records execution-quality history
+        behind `enable_adaptive_learning` and suppresses all errors so the chat
+        response path is never impacted.
+        """
+        if not self.config.enabled or not self.config.enable_adaptive_learning:
+            return
+
+        normalized_query = self._build_query(user_message)
+        query_hash = self._query_hash(normalized_query)
+        record_id = f"quality-{query_hash}-{uuid.uuid4().hex[:12]}"
+        safe_domain_tags = self._clean_string_list(domain_tags)
+        safe_tools_selected = self._clean_string_list(tools_selected)
+        safe_tools_succeeded = self._clean_string_list(tools_succeeded)
+        safe_tools_failed = self._clean_string_list(tools_failed)
+        safe_tools_bypassed = self._clean_string_list(tools_bypassed)
+        safe_tools_cache_hit = self._clean_string_list(tools_cache_hit)
+        safe_chunk_yields = self._clean_chunk_yields(chunk_yields)
+
+        try:
+            embedding_result = await self.embedding_service.embed_texts([normalized_query])
+            vector = embedding_result.vectors[0]
+
+            now_ts = int(time.time())
+            expires_ts = now_ts + self.config.aql_quality_retention_days * 86400
+
+            logger_internal.info(
+                "AQL quality transaction started: record_id=%s session=%s routing_mode=%s tools_selected=%s corrected=%s",
+                record_id,
+                session_id,
+                routing_mode,
+                len(safe_tools_selected),
+                user_corrected,
+            )
+
+            self.milvus_store.upsert(
+                collection_key="tool_execution_quality",
+                generation=self.config.collection_generation,
+                dimension=len(vector),
+                records=[{
+                    "id": record_id,
+                    "embedding": vector,
+                    "query_hash": query_hash,
+                    "domain_tags": json.dumps(safe_domain_tags),
+                    "issue_type": (issue_type or "")[:128],
+                    "tools_selected": json.dumps(safe_tools_selected),
+                    "tools_succeeded": json.dumps(safe_tools_succeeded),
+                    "tools_failed": json.dumps(safe_tools_failed),
+                    "tools_bypassed": json.dumps(safe_tools_bypassed),
+                    "tools_cache_hit": json.dumps(safe_tools_cache_hit),
+                    "chunk_yields": json.dumps(safe_chunk_yields),
+                    "llm_turn_count": max(int(llm_turn_count), 0),
+                    "synthesis_tokens": max(int(synthesis_tokens), 0),
+                    "routing_mode": (routing_mode or "llm_fallback")[:64],
+                    "user_corrected": bool(user_corrected),
+                    "follow_up_gap_s": int(follow_up_gap_s),
+                    "session_id": session_id[:64],
+                    "timestamp": now_ts,
+                    "expires_at": expires_ts,
+                }],
+            )
+
+            try:
+                total_rows = await self._get_record_count_with_retry(
+                    collection_key="tool_execution_quality",
+                    minimum_expected=1,
+                )
+                logger_external.info(
+                    "\n"
+                    "┌─── AQL QUALITY STORE ─── NEW RECORD ADDED ───────────────────────────\n"
+                    "│  record_id   : %s\n"
+                    "│  session     : %s\n"
+                    "│  query_hash  : %s\n"
+                    "│  routing     : %s\n"
+                    "│  domains     : %s\n"
+                    "│  selected    : %s\n"
+                    "│  cache_hits  : %s\n"
+                    "│  bypassed    : %s\n"
+                    "│  total rows  : %s  (tool_execution_quality)\n"
+                    "└───────────────────────────────────────────────────────────────────────",
+                    record_id,
+                    session_id,
+                    query_hash,
+                    routing_mode,
+                    ", ".join(safe_domain_tags) or "(none)",
+                    len(safe_tools_selected),
+                    len(safe_tools_cache_hit),
+                    len(safe_tools_bypassed),
+                    str(total_rows) if total_rows >= 0 else "unknown",
+                )
+            except Exception:
+                pass
+
+            logger_internal.info(
+                "AQL quality transaction completed: record_id=%s session=%s expires_at=%s",
+                record_id,
+                session_id,
+                expires_ts,
+            )
+        except Exception as error:
+            logger_internal.warning(
+                "AQL quality transaction failed: record_id=%s session=%s reason=%s",
+                record_id,
+                session_id,
+                error,
+            )
+
     # ------------------------------------------------------------------ #
     # Phase 3: Safe tool cache                                             #
     # ------------------------------------------------------------------ #
@@ -463,7 +594,7 @@ class MemoryService:
             return ToolCacheResult()
         if not self._is_tool_cache_eligible(tool_name):
             logger_internal.info("Tool cache BYPASS: %s (freshness-sensitive tool)", tool_name)
-            return ToolCacheResult()
+            return ToolCacheResult(freshness_bypassed=True)
 
         try:
             params_hash = self._build_params_hash(tool_name, arguments)
@@ -1171,6 +1302,34 @@ class MemoryService:
         import json as _json
         normalized_args = _json.dumps(arguments or {}, sort_keys=True, separators=(",", ":"))
         return f"{tool_name} {normalized_args}"[:512]
+
+    def _clean_string_list(self, values: Optional[Sequence[Any]]) -> list[str]:
+        cleaned: list[str] = []
+        for value in values or []:
+            text = str(value or "").strip()
+            if text:
+                cleaned.append(text)
+        return cleaned
+
+    def _clean_chunk_yields(self, values: Optional[Sequence[dict[str, Any]]]) -> list[dict[str, int]]:
+        cleaned: list[dict[str, int]] = []
+        for value in values or []:
+            if not isinstance(value, dict):
+                continue
+            try:
+                chunk = int(value.get("chunk", 0))
+                offered = int(value.get("offered", 0))
+                selected = int(value.get("selected", 0))
+            except (TypeError, ValueError):
+                continue
+            cleaned.append(
+                {
+                    "chunk": max(chunk, 0),
+                    "offered": max(offered, 0),
+                    "selected": max(selected, 0),
+                }
+            )
+        return cleaned
 
     def _split_namespaced_tool_name(self, tool_name: str) -> tuple[str, str]:
         """Split `server__tool` into `(server, tool)`; bare names become `("", name)`.
