@@ -4,8 +4,10 @@ Unit tests for backend.main runtime compatibility.
 
 import asyncio
 import importlib
+import logging
 
 from backend.models import ChatMessage
+from backend.models import LLMConfig, MilvusConfig
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +504,283 @@ def test_backend_main_imports_without_runtime_annotation_errors():
 
     assert hasattr(main_module, "app")
     assert main_module.llm_config_storage is None
+
+
+def test_milvus_startup_diagnostic_classifies_unreachable_network():
+    """Startup diagnostics should explicitly call out network-unreachable Milvus failures."""
+    main_module = importlib.import_module("backend.main")
+
+    lines = main_module._milvus_startup_diagnostic(
+        RuntimeError("No route to host"),
+        "http://10.0.0.48:19530",
+    )
+
+    assert any("network unreachable / no route to host" in line for line in lines)
+    assert any("port 19530" in line for line in lines)
+
+
+# ---------------------------------------------------------------------------
+# admin_trigger_ingestion
+# ---------------------------------------------------------------------------
+
+def test_ingest_endpoint_dispatches_to_ingestion_service(monkeypatch, tmp_path):
+    """POST /api/admin/memory/ingest should build IngestionService and return job result."""
+    import asyncio
+    from fastapi.testclient import TestClient
+
+    main_module = importlib.import_module("backend.main")
+    ingestion_module = importlib.import_module("backend.ingestion_service")
+
+    captured: dict = {}
+
+    class _FakeIngestionService:
+        def __init__(self, *, embedding_service, milvus_store, memory_persistence,
+                     repo_roots, doc_roots, collection_generation, collection_prefix, **kw):
+            captured["repo_roots"] = repo_roots
+            captured["doc_roots"] = doc_roots
+            captured["collection_generation"] = collection_generation
+
+        async def ingest_workspace_async(self, *, repo_id):
+            captured["repo_id"] = repo_id
+            return {
+                "job_id": "test-job-id",
+                "status": "completed",
+                "source_count": 3,
+                "chunk_count": 12,
+                "deleted_count": 0,
+                "error_count": 0,
+                "errors": [],
+            }
+
+    monkeypatch.setattr(ingestion_module, "IngestionService", _FakeIngestionService)
+
+    # Build a minimal fake memory service with the attributes the endpoint reads
+    class _FakeConfig:
+        collection_generation = "v1"
+
+    class _FakeMemoryService:
+        embedding_service = object()
+        milvus_store = object()
+        memory_persistence = object()
+        config = _FakeConfig()
+
+    monkeypatch.setattr(main_module, "_memory_service", _FakeMemoryService())
+
+    # Patch effective config so repo_roots / doc_roots come from the config path
+    from backend.models import MilvusConfig
+    fake_config = MilvusConfig(
+        enabled=True,
+        milvus_uri="http://127.0.0.1:19530",
+        repo_roots=["/workspace/src"],
+        doc_roots=["/workspace/docs"],
+        repo_id="workspace-main",
+    )
+    monkeypatch.setattr(main_module, "_get_effective_milvus_config", lambda: fake_config)
+
+    # Bypass admin auth
+    monkeypatch.setattr(main_module, "_require_admin", lambda request: None)
+
+    client = TestClient(main_module.app, raise_server_exceptions=True)
+    resp = client.post("/api/admin/memory/ingest", json={"repo_id": "", "repo_roots": [], "doc_roots": []})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["job_id"] == "test-job-id"
+    assert body["status"] == "completed"
+    assert body["chunk_count"] == 12
+    # Confirm IngestionService received roots from config fallback
+    assert captured["repo_roots"] == ["/workspace/src"]
+    assert captured["doc_roots"] == ["/workspace/docs"]
+    assert captured["repo_id"] == "workspace-main"
+    assert captured["collection_generation"] == "v1"
+
+
+def test_row_counts_endpoint_returns_active_collection_counts(monkeypatch):
+    """GET /api/admin/memory/row-counts should expose active collection row counts."""
+    from fastapi.testclient import TestClient
+
+    main_module = importlib.import_module("backend.main")
+
+    class _FakeConfig:
+        collection_keys = ("code_memory", "doc_memory")
+        collection_generation = "v1"
+        enable_conversation_memory = True
+        enable_tool_cache = True
+
+    class _FakeMilvusStore:
+        def build_collection_name(self, collection_key, generation):
+            return f"mcp_client_{collection_key}_{generation}"
+
+        def get_record_count(self, *, collection_key, generation):
+            mapping = {
+                "code_memory": 10,
+                "doc_memory": 4,
+                "conversation_memory": 2,
+                "tool_cache": -1,
+            }
+            return mapping[collection_key]
+
+    class _FakeMemoryService:
+        config = _FakeConfig()
+        milvus_store = _FakeMilvusStore()
+
+    monkeypatch.setattr(main_module, "_memory_service", _FakeMemoryService())
+    monkeypatch.setattr(main_module, "_require_admin", lambda request: None)
+
+    client = TestClient(main_module.app, raise_server_exceptions=True)
+    resp = client.get("/api/admin/memory/row-counts")
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["success"] is True
+    assert body["generation"] == "v1"
+    counts = {item["collection_key"]: item for item in body["counts"]}
+    assert counts["code_memory"]["row_count"] == 10
+    assert counts["doc_memory"]["row_count"] == 4
+    assert counts["conversation_memory"]["row_count"] == 2
+    assert counts["tool_cache"]["row_count"] == -1
+    assert counts["tool_cache"]["available"] is False
+
+
+def test_direct_route_single_tool_bypasses_first_llm_call(monkeypatch):
+    """When direct_tool_route resolves to a single tool, Turn 0 must skip the LLM.
+
+    TC-DIRECT-01: The send_message pipeline should inject a synthetic tool_calls
+    response for Turn 0 and NOT call llm_client.chat_completion on that turn.
+    """
+    import asyncio
+    from fastapi.testclient import TestClient
+
+    main_module = importlib.import_module("backend.main")
+
+    llm_calls: list[dict] = []
+
+    class _FakeLLMClient:
+        async def chat_completion(self, *, messages, tools):
+            # Record whether tools were included (Turn 0 would have 1 tool,
+            # Turn 1 synthesis has 0 tools).
+            llm_calls.append({"n_tools": len(tools), "n_messages": len(messages)})
+            if len(tools) > 0:
+                pytest.fail("LLM should NOT be called with tools on Turn 0 (direct-route bypass active)")
+            # Synthesis turn — return a plain text answer
+            return {
+                "choices": [{"message": {"role": "assistant", "content": "16 days"}, "finish_reason": "stop"}],
+                "usage": {},
+            }
+
+        def format_tool_result(self, tool_call_id, content):
+            return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
+
+    class _FakeLLMClientFactory:
+        @staticmethod
+        def create(config, *, enterprise_access_token=None):
+            return _FakeLLMClient()
+
+    import pytest  # noqa: PLC0415
+
+    monkeypatch.setattr(main_module, "LLMClientFactory", _FakeLLMClientFactory)
+    monkeypatch.setattr(main_module, "_memory_service", None)
+
+    # Patch the direct-route selector to always return a single-tool route
+    monkeypatch.setattr(
+        main_module,
+        "_select_direct_tool_route",
+        lambda content, tool_names: {
+            "route_name": "uptime",
+            "allowed_tool_names": ["home_mcp_server__get_system_uptime"],
+            "include_virtual_repeated": False,
+        },
+    )
+
+    # Patch MCP manager so the one tool exists in the catalog
+    class _FakeMCPManager:
+        tools = {"home_mcp_server__get_system_uptime": None}
+
+        def get_tools_for_llm(self, *, allowed_tool_names=None, include_virtual_repeated=True):
+            return [{
+                "type": "function",
+                "function": {"name": "home_mcp_server__get_system_uptime", "parameters": {}},
+            }]
+
+        def get_tools_for_llm_chunks(self, limit, *, allowed_tool_names=None, include_virtual_repeated=True):
+            return [self.get_tools_for_llm()]
+
+        async def execute_tool(self, *, server, tool_name, arguments, execution_hints=None):
+            return {"content": [{"type": "text", "text": "up 16 days"}], "isError": False}
+
+    monkeypatch.setattr(main_module, "mcp_manager", _FakeMCPManager())
+
+    # Minimal server entry so tool name resolves
+    from backend.models import ServerConfig
+    monkeypatch.setattr(
+        main_module,
+        "servers_storage",
+        {"fake-id": ServerConfig(server_id="fake-id", alias="home_mcp_server", base_url="http://127.0.0.1:8087")},
+    )
+
+    monkeypatch.setattr(main_module, "_require_user", lambda req: None)
+    monkeypatch.setattr(main_module, "_sso_enabled", lambda: False)
+
+    client = TestClient(main_module.app, raise_server_exceptions=True)
+    from backend.models import LLMConfig
+    monkeypatch.setattr(
+        main_module,
+        "llm_config_storage",
+        LLMConfig(provider="ollama", model="llama3.1", base_url="http://127.0.0.1:11434"),
+    )
+
+    # Create a session first
+    sess_resp = client.post("/api/sessions")
+    assert sess_resp.status_code in (200, 201)
+    session_id = sess_resp.json()["session_id"]
+
+    resp = client.post(
+        f"/api/sessions/{session_id}/messages",
+        json={"role": "user", "content": "How long has this device been running without a reboot?"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["message"]["content"] == "16 days"
+
+    # The LLM must have been called exactly once — for synthesis only (0 tools)
+    assert len(llm_calls) == 1, f"Expected 1 LLM call (synthesis), got {len(llm_calls)}: {llm_calls}"
+    assert llm_calls[0]["n_tools"] == 0, "Synthesis turn must send 0 tools to LLM"
+
+
+def test_initialize_memory_service_logs_unreachable_network_guidance(monkeypatch, caplog):
+    """Memory init failures should log actionable guidance for unreachable Milvus hosts."""
+    main_module = importlib.import_module("backend.main")
+    milvus_store_module = importlib.import_module("backend.milvus_store")
+
+    caplog.set_level(logging.WARNING, logger="mcp_client.internal")
+
+    monkeypatch.setattr(
+        main_module,
+        "llm_config_storage",
+        LLMConfig(provider="ollama", model="llama3.1", base_url="http://127.0.0.1:11434"),
+    )
+
+    class _FailingMilvusStore:
+        def __init__(self, *, milvus_uri=None, collection_prefix="mcp_client", client=None, client_factory=None):
+            raise RuntimeError("No route to host")
+
+    monkeypatch.setattr(milvus_store_module, "MilvusStore", _FailingMilvusStore)
+
+    config = MilvusConfig(
+        enabled=True,
+        milvus_uri="http://10.0.0.48:19530",
+        collection_prefix="mcp_client",
+        retrieval_timeout_s=15.0,
+        enable_conversation_memory=True,
+        enable_tool_cache=True,
+    )
+
+    result = main_module._initialize_memory_service(config)
+
+    assert result is None
+    assert "network unreachable / no route to host" in caplog.text
+    assert "verify the host/IP is correct" in caplog.text
 
 
 def test_request_mode_classifier_prefers_direct_fact_for_single_metric_lookup():

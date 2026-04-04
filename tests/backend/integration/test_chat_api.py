@@ -628,25 +628,8 @@ class TestToolCallingFlow:
         def capture(request):
             import json
             captured_payloads.append(json.loads(request.content))
-            if len(captured_payloads) == 1:
-                return httpx.Response(200, json={
-                    "choices": [{
-                        "message": {
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": "call_mem_free",
-                                "type": "function",
-                                "function": {
-                                    "name": "svc__system_memory_free",
-                                    "arguments": "{}",
-                                },
-                            }],
-                        },
-                        "finish_reason": "tool_calls",
-                    }],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                })
+            # With direct-route bypass, Turn 0 LLM is skipped entirely.
+            # The first (and only) LLM call is the synthesis call.
             return httpx.Response(200, json={
                 "choices": [{
                     "message": {"role": "assistant", "content": "Free memory is 60 MB."},
@@ -675,15 +658,25 @@ class TestToolCallingFlow:
         )
 
         assert response.status_code == 200
-        assert len(captured_payloads) == 2
-        first_payload = captured_payloads[0]
-        assert [message["role"] for message in first_payload["messages"]] == ["system", "user"]
-        assert first_payload["messages"][1]["content"] == "How much free memory does the device have?"
-        first_tool_names = [tool["function"]["name"] for tool in first_payload["tools"]]
-        assert "svc__system_memory_free" in first_tool_names
-        assert "svc__get_memory_info" not in first_tool_names
-        assert "svc__device_version" not in first_tool_names
-        assert "mcp_repeated_exec" not in first_tool_names
+        # Direct-route bypass: Turn-0 LLM tool-selection is skipped entirely.
+        # Only 1 LLM call is made — the synthesis call after tool execution.
+        assert len(captured_payloads) == 1, "Only synthesis LLM call expected"
+        synthesis_payload = captured_payloads[0]
+        # History-exclusion invariant still holds: the old "old question" user message
+        # must never appear in any LLM payload for a direct-route request.
+        message_contents = [msg.get("content", "") for msg in synthesis_payload["messages"]]
+        assert "old question" not in message_contents, (
+            "Prior conversation history must be excluded from direct-route calls"
+        )
+        # With bypass the synthesis call receives: system, user, assistant (injected
+        # tool_call), tool (result) — still only the current turn, no old history.
+        message_roles = [msg["role"] for msg in synthesis_payload["messages"]]
+        assert message_roles == ["system", "user", "assistant", "tool"]
+        assert synthesis_payload["messages"][1]["content"] == "How much free memory does the device have?"
+        # Synthesis call carries no tool catalog (tool was already executed via bypass)
+        assert not synthesis_payload.get("tools"), (
+            "Synthesis call must carry no tools — svc__system_memory_free was already executed"
+        )
 
     @respx.mock
     def test_direct_disk_usage_query_prefers_one_disk_tool(self, client, llm_openai, monkeypatch):
@@ -706,25 +699,8 @@ class TestToolCallingFlow:
         def capture(request):
             import json
             captured_payloads.append(json.loads(request.content))
-            if len(captured_payloads) == 1:
-                return httpx.Response(200, json={
-                    "choices": [{
-                        "message": {
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": "call_disk",
-                                "type": "function",
-                                "function": {
-                                    "name": "svc__get_disk_usage",
-                                    "arguments": "{}",
-                                },
-                            }],
-                        },
-                        "finish_reason": "tool_calls",
-                    }],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                })
+            # With direct-route bypass, Turn 0 LLM is skipped entirely.
+            # The first (and only) LLM call is the synthesis call.
             return httpx.Response(200, json={
                 "choices": [{
                     "message": {"role": "assistant", "content": "Disk usage is 61%."},
@@ -753,8 +729,16 @@ class TestToolCallingFlow:
         )
 
         assert response.status_code == 200
-        first_tool_names = [tool["function"]["name"] for tool in captured_payloads[0]["tools"]]
-        assert first_tool_names == ["svc__get_disk_usage"]
+        # Direct-route bypass: the route resolved to exactly one tool (svc__get_disk_usage),
+        # so Turn-0 LLM tool-selection is skipped and the tool is injected directly.
+        # Only the synthesis LLM call should have been made.
+        assert len(captured_payloads) == 1, (
+            "Expected only 1 LLM call (synthesis); Turn-0 tool-selection is bypassed "
+            "for single-tool direct routes"
+        )
+        assert not captured_payloads[0].get("tools"), (
+            "Synthesis call must carry no tools — the tool was already executed via bypass"
+        )
 
     @respx.mock
     def test_direct_uptime_query_prefers_one_uptime_tool_per_candidate_group(self, client, llm_openai, monkeypatch):
@@ -798,25 +782,8 @@ class TestToolCallingFlow:
         def capture(request):
             import json
             captured_payloads.append(json.loads(request.content))
-            if len(captured_payloads) == 1:
-                return httpx.Response(200, json={
-                    "choices": [{
-                        "message": {
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": "call_uptime",
-                                "type": "function",
-                                "function": {
-                                    "name": "home_mcp_server__get_system_uptime",
-                                    "arguments": "{}",
-                                },
-                            }],
-                        },
-                        "finish_reason": "tool_calls",
-                    }],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                })
+            # With direct-route bypass, Turn 0 LLM is skipped entirely.
+            # The first (and only) LLM call is the synthesis call.
             return httpx.Response(200, json={
                 "choices": [{
                     "message": {"role": "assistant", "content": "The system has been up for 6 days."},
@@ -845,13 +812,27 @@ class TestToolCallingFlow:
         )
 
         assert response.status_code == 200
-        first_tool_names = [tool["function"]["name"] for tool in captured_payloads[0]["tools"]]
-        assert "home_mcp_server__get_system_uptime" in first_tool_names
-        assert "home_mcp_server__server_info" not in first_tool_names, (
-            "server_info must not be sent for uptime queries — it was removed from the "
+        # Direct-route bypass: the uptime route resolves to exactly one tool
+        # (get_system_uptime wins over get_uptime in the candidate group), so Turn-0
+        # LLM tool-selection is bypassed and the tool is injected directly.
+        assert len(captured_payloads) == 1, (
+            "Expected only 1 LLM call (synthesis); Turn-0 tool-selection is bypassed "
+            "for single-tool direct routes"
+        )
+        assert not captured_payloads[0].get("tools"), (
+            "Synthesis call must carry no tools — tool was already executed via bypass"
+        )
+        # Verify that catalog noise (server_info, get_uptime) was never forwarded to the LLM
+        all_tool_names_seen = [
+            t["function"]["name"]
+            for payload in captured_payloads
+            for t in payload.get("tools") or []
+        ]
+        assert "home_mcp_server__server_info" not in all_tool_names_seen, (
+            "server_info must never be sent for uptime queries — it was removed from the "
             "uptime route's tool_candidates as unused catalog noise"
         )
-        assert "home_mcp_server__get_uptime" not in first_tool_names
+        assert "home_mcp_server__get_uptime" not in all_tool_names_seen
 
     @respx.mock
     def test_direct_metric_query_dedupes_duplicate_tools_before_llm_request(self, client, llm_openai, monkeypatch):
@@ -898,25 +879,8 @@ class TestToolCallingFlow:
         def capture(request):
             import json
             captured_payloads.append(json.loads(request.content))
-            if len(captured_payloads) == 1:
-                return httpx.Response(200, json={
-                    "choices": [{
-                        "message": {
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": "call_mem_free",
-                                "type": "function",
-                                "function": {
-                                    "name": "svc__system_memory_free",
-                                    "arguments": "{}",
-                                },
-                            }],
-                        },
-                        "finish_reason": "tool_calls",
-                    }],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                })
+            # With direct-route bypass, Turn 0 LLM is skipped entirely.
+            # The first (and only) LLM call is the synthesis call.
             return httpx.Response(200, json={
                 "choices": [{
                     "message": {"role": "assistant", "content": "Free memory is 60 MB."},
@@ -945,12 +909,16 @@ class TestToolCallingFlow:
         )
 
         assert response.status_code == 200
-        assert len(captured_payloads) == 2
-        first_payload = captured_payloads[0]
-        first_tool_names = [tool["function"]["name"] for tool in first_payload["tools"]]
-        assert first_tool_names.count("svc__system_memory_free") == 1
-        assert "svc__get_memory_info" not in first_tool_names
-        assert len(first_tool_names) == len(set(first_tool_names))
+        # Direct-route bypass: the free_memory route resolves to exactly one tool
+        # (svc__system_memory_free wins from its candidate group), so Turn-0
+        # LLM tool-selection is bypassed entirely.
+        # Dedup is not exercised via the LLM payload when bypass is active.
+        assert len(captured_payloads) == 1, (
+            "Expected only 1 LLM call (synthesis); Turn-0 is bypassed for single-tool routes"
+        )
+        assert not captured_payloads[0].get("tools"), (
+            "Synthesis call must carry no tools — tool was already executed via bypass"
+        )
 
     @respx.mock
     def test_memory_route_dedupes_duplicate_tools_before_llm_request(self, client, llm_openai, monkeypatch):
@@ -1096,25 +1064,8 @@ class TestToolCallingFlow:
         def capture(request):
             import json
             captured_payloads.append(json.loads(request.content))
-            if len(captured_payloads) == 1:
-                return httpx.Response(200, json={
-                    "choices": [{
-                        "message": {
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": "call_logs",
-                                "type": "function",
-                                "function": {
-                                    "name": "svc__kernel_logs",
-                                    "arguments": "{}",
-                                },
-                            }],
-                        },
-                        "finish_reason": "tool_calls",
-                    }],
-                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                })
+            # With direct-route bypass, Turn 0 LLM is skipped entirely.
+            # The first (and only) LLM call is the synthesis call.
             return httpx.Response(200, json={
                 "choices": [{
                     "message": {"role": "assistant", "content": "Kernel logs collected."},
@@ -1143,11 +1094,24 @@ class TestToolCallingFlow:
         )
 
         assert response.status_code == 200
-        first_tool_names = [tool["function"]["name"] for tool in captured_payloads[0]["tools"]]
-        assert first_tool_names.count("svc__kernel_logs") == 1
-        assert "svc__get_memory_info" not in first_tool_names
-        assert len(first_tool_names) == len(set(first_tool_names))
-    
+        # Direct-route bypass: the kernel_logs route resolves to exactly one tool
+        # (svc__kernel_logs wins from the first candidate group), so Turn-0
+        # LLM tool-selection is bypassed entirely.
+        # Dedup is not exercised via the LLM payload when bypass is active.
+        assert len(captured_payloads) == 1, (
+            "Expected only 1 LLM call (synthesis); Turn-0 is bypassed for single-tool routes"
+        )
+        assert not captured_payloads[0].get("tools"), (
+            "Synthesis call must carry no tools — tool was already executed via bypass"
+        )
+        # Cross-domain pollution guard still holds: memory tool must never appear in any LLM call
+        all_tool_names_seen = [
+            t["function"]["name"]
+            for payload in captured_payloads
+            for t in payload.get("tools") or []
+        ]
+        assert "svc__get_memory_info" not in all_tool_names_seen
+
     @respx.mock
     def test_feature_flagged_tiny_llm_mode_classifier_runs_before_tool_flow(self, client, llm_openai, monkeypatch):
         """Ambiguous requests can trigger the tiny LLM classifier before the normal tool workflow."""

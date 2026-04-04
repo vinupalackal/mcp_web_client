@@ -447,6 +447,15 @@ class MilvusConfig(BaseModel):
         default_factory=list,
         description="Explicit tool names that are eligible for safe caching",
     )
+    tool_cache_freshness_keywords: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Substring keywords matched against the bare tool name (lower-cased). "
+            "Any tool whose name contains one of these strings is excluded from caching. "
+            "When empty the built-in defaults are used "
+            "(uptime, heartbeat, health, status, loadavg, telemetry, realtime, live_)."
+        ),
+    )
     enable_expiry_cleanup: bool = Field(
         default=True,
         description="Run expiry cleanup for conversation memory and tool cache records",
@@ -456,6 +465,14 @@ class MilvusConfig(BaseModel):
         ge=1.0,
         le=86400.0,
         description="Minimum interval in seconds between background expiry-cleanup passes",
+    )
+    repo_roots: List[str] = Field(
+        default_factory=list,
+        description="Filesystem paths scanned for code files during workspace ingestion",
+    )
+    doc_roots: List[str] = Field(
+        default_factory=list,
+        description="Filesystem paths scanned for documentation files during workspace ingestion",
     )
 
     @model_validator(mode="after")
@@ -469,6 +486,11 @@ class MilvusConfig(BaseModel):
             tool.strip()
             for tool in self.tool_cache_allowlist
             if isinstance(tool, str) and tool.strip()
+        ]
+        self.tool_cache_freshness_keywords = [
+            kw.strip().lower()
+            for kw in self.tool_cache_freshness_keywords
+            if isinstance(kw, str) and kw.strip()
         ]
 
         if self.enabled and not self.milvus_uri:
@@ -1776,6 +1798,134 @@ class MemoryMaintenanceResponse(BaseModel):
                         "finished_at": "2026-03-30T09:01:12Z",
                         "updated_at": "2026-03-30T09:01:12Z",
                     }
+                ],
+            }
+        }
+    )
+
+
+class MemoryIngestTriggerRequest(BaseModel):
+    """Request body for the manual workspace ingestion trigger endpoint."""
+
+    repo_id: str = Field(
+        default="",
+        max_length=256,
+        description="Repository identifier stored with indexed chunks; falls back to the value in MilvusConfig",
+    )
+    repo_roots: List[str] = Field(
+        default_factory=list,
+        description="Override the repo roots from MilvusConfig for this ingestion run",
+    )
+    doc_roots: List[str] = Field(
+        default_factory=list,
+        description="Override the doc roots from MilvusConfig for this ingestion run",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "repo_id": "workspace-main",
+                "repo_roots": ["/workspace/src"],
+                "doc_roots": ["/workspace/docs"],
+            }
+        }
+    )
+
+
+class MemoryIngestTriggerResponse(BaseModel):
+    """Result returned after triggering a workspace ingestion job."""
+
+    success: bool = Field(..., description="Whether the ingestion job completed without endpoint-level errors")
+    job_id: str = Field(..., description="Unique identifier for the completed ingestion job")
+    status: str = Field(..., description="Final job status: completed | completed_with_errors | failed")
+    source_count: int = Field(default=0, description="Total source files scanned")
+    chunk_count: int = Field(default=0, description="Total chunks written to Milvus")
+    deleted_count: int = Field(default=0, description="Stale chunks removed from Milvus")
+    error_count: int = Field(default=0, description="Number of per-file errors encountered")
+    errors: List[str] = Field(default_factory=list, description="Per-file error messages (truncated to first 10)")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "job_id": "550e8400-e29b-41d4-a716-446655440099",
+                "status": "completed",
+                "source_count": 24,
+                "chunk_count": 96,
+                "deleted_count": 4,
+                "error_count": 0,
+                "errors": [],
+            }
+        }
+    )
+
+
+class MemoryCollectionRowCount(BaseModel):
+    """Current row-count view for a single active Milvus memory collection."""
+
+    collection_key: str = Field(
+        ...,
+        description="Logical collection key, such as code_memory or doc_memory",
+    )
+    collection_name: str = Field(
+        ...,
+        description="Concrete active Milvus collection name",
+    )
+    row_count: int = Field(
+        ...,
+        description="Current Milvus row count, or -1 when stats are unavailable",
+    )
+    available: bool = Field(
+        ...,
+        description="Whether the row count was readable from Milvus",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "collection_key": "code_memory",
+                "collection_name": "mcp_client_code_memory_v1",
+                "row_count": 128,
+                "available": True,
+            }
+        }
+    )
+
+
+class MemoryRowCountsResponse(BaseModel):
+    """Summary returned by the admin row-count diagnostics endpoint."""
+
+    success: bool = Field(
+        ...,
+        description="Whether the endpoint completed without request-level errors",
+    )
+    generation: str = Field(
+        ...,
+        description="Active Milvus collection generation used for the reported counts",
+    )
+    counts: List[MemoryCollectionRowCount] = Field(
+        default_factory=list,
+        description="Per-collection row counts for the active memory collections",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "success": True,
+                "generation": "v1",
+                "counts": [
+                    {
+                        "collection_key": "code_memory",
+                        "collection_name": "mcp_client_code_memory_v1",
+                        "row_count": 128,
+                        "available": True,
+                    },
+                    {
+                        "collection_key": "doc_memory",
+                        "collection_name": "mcp_client_doc_memory_v1",
+                        "row_count": 42,
+                        "available": True,
+                    },
                 ],
             }
         }

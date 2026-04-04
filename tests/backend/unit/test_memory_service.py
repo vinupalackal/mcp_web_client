@@ -35,11 +35,12 @@ class _FakeEmbeddingService:
 
 
 class _FakeMilvusStore:
-    def __init__(self, *, search_results=None, search_error=None, collections=None, list_error=None):
+    def __init__(self, *, search_results=None, search_error=None, collections=None, list_error=None, record_counts=None):
         self.search_results = search_results or {}
         self.search_error = search_error
         self.collections = collections or ["mcp_client_code_memory_v1", "mcp_client_doc_memory_v1"]
         self.list_error = list_error
+        self.record_counts = record_counts or {}
         self.search_calls = []
         self.delete_calls = []
 
@@ -63,6 +64,17 @@ class _FakeMilvusStore:
         if self.list_error is not None:
             raise self.list_error
         return list(self.collections)
+
+    def get_record_count(self, *, collection_key, generation):
+        value = self.record_counts.get(collection_key, 0)
+        if isinstance(value, list):
+            if len(value) > 1:
+                return value.pop(0)
+            return value[0]
+        return value
+
+    def build_collection_name(self, collection_key, generation):
+        return f"mcp_client_{collection_key}_{generation}"
 
     def delete_by_filter(self, *, collection_key, generation, filter_expression):
         self.delete_calls.append(
@@ -646,9 +658,14 @@ class _FakeUpsertMilvusStore(_FakeMilvusStore):
         super().__init__(**kwargs)
         self.upsert_calls = []
 
-    def upsert(self, *, collection_key, generation, records):
+    def upsert(self, *, collection_key, generation, dimension, records):
         self.upsert_calls.append(
-            {"collection_key": collection_key, "generation": generation, "records": records}
+            {
+                "collection_key": collection_key,
+                "generation": generation,
+                "dimension": dimension,
+                "records": records,
+            }
         )
 
 
@@ -767,6 +784,7 @@ class TestConversationMemoryPhase2:
         assert len(store.upsert_calls) == 1
         call = store.upsert_calls[0]
         assert call["collection_key"] == "conversation_memory"
+        assert call["dimension"] == 2
         record = call["records"][0]
         assert record["user_id"] == "user-xyz"
         assert record["session_id"] == "sess-42"
@@ -928,6 +946,25 @@ class TestConversationMemoryPhase2:
         assert '__anonymous__' in expr
         assert '__none__' not in expr
 
+    @pytest.mark.asyncio
+    async def test_record_count_retry_waits_for_post_upsert_stats_to_catch_up(self):
+        """TC-CONV-09b: post-upsert count checks retry briefly instead of reporting stale zero rows."""
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(),
+            milvus_store=_FakeMilvusStore(record_counts={"conversation_memory": [0, 0, 1]}),
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(enabled=True, enable_conversation_memory=True),
+        )
+
+        count = await service._get_record_count_with_retry(
+            collection_key="conversation_memory",
+            minimum_expected=1,
+            attempts=3,
+            delay_s=0.0,
+        )
+
+        assert count == 1
+
 
 # ---------------------------------------------------------------------------
 # Phase 3: safe tool cache tests (TC-CACHE-*)
@@ -1002,17 +1039,20 @@ class _FakePersistenceWithCache(_FakePersistenceWithTurns):
 
 class TestSafeToolCachePhase3:
 
-    def _make_service(self, *, allowlist=("get_weather",), ttl_s=3600.0, enabled=True):
+    def _make_service(self, *, allowlist=(""), ttl_s=3600.0, enabled=True, freshness_keywords=None):
+        config_kwargs = dict(
+            enabled=True,
+            enable_tool_cache=enabled,
+            tool_cache_ttl_s=ttl_s,
+            tool_cache_allowlist=tuple(t for t in allowlist if t),
+        )
+        if freshness_keywords is not None:
+            config_kwargs["tool_cache_freshness_keywords"] = tuple(freshness_keywords)
         return MemoryService(
             embedding_service=_FakeEmbeddingService(),
-            milvus_store=_FakeMilvusStore(),
+            milvus_store=_FakeUpsertMilvusStore(),
             memory_persistence=_FakePersistenceWithCache(),
-            config=MemoryServiceConfig(
-                enabled=True,
-                enable_tool_cache=enabled,
-                tool_cache_ttl_s=ttl_s,
-                tool_cache_allowlist=tuple(allowlist),
-            ),
+            config=MemoryServiceConfig(**config_kwargs),
         )
 
     def test_lookup_returns_no_hit_when_cache_disabled(self):
@@ -1024,20 +1064,24 @@ class TestSafeToolCachePhase3:
         assert result.hit is False
         assert result.approved is False
 
-    def test_lookup_returns_no_hit_when_allowlist_empty(self):
-        """TC-CACHE-02: lookup_tool_cache returns no hit when allowlist is empty."""
+    def test_lookup_is_eligible_when_allowlist_empty(self):
+        """TC-CACHE-02: empty allowlist means all freshness-safe tools are eligible.
+
+        The lookup returns a MISS (not a BYPASS) because no entry has been stored yet.
+        """
         service = self._make_service(allowlist=())
         result = service.lookup_tool_cache(
             tool_name="get_weather", arguments={"city": "London"}, user_id="u1"
         )
+        # Not a hit (nothing stored yet), but also not bypassed — the cache was consulted
         assert result.hit is False
         assert result.approved is False
 
-    def test_lookup_returns_no_hit_for_tool_not_in_allowlist(self):
-        """TC-CACHE-03: similarity alone cannot authorize a cache hit — non-allowlisted tool returns miss."""
+    def test_lookup_returns_no_hit_for_tool_not_in_restriction_list(self):
+        """TC-CACHE-03: when a non-empty restriction list is set, unlisted tools are bypassed."""
         service = self._make_service(allowlist=("safe_tool_only",))
         result = service.lookup_tool_cache(
-            tool_name="dangerous_tool", arguments={}, user_id="u1"
+            tool_name="other_tool", arguments={}, user_id="u1"
         )
         assert result.hit is False
         assert result.approved is False
@@ -1045,16 +1089,21 @@ class TestSafeToolCachePhase3:
     def test_record_and_lookup_roundtrip(self):
         """TC-CACHE-04: record_tool_cache stores entry; lookup_tool_cache returns it."""
         service = self._make_service(allowlist=("get_weather",))
-        service.record_tool_cache(
+        asyncio.run(service.record_tool_cache(
             tool_name="get_weather",
             arguments={"city": "London"},
             result_text='{"temp": 15}',
             user_id="u1",
-        )
+        ))
         # Inject is_cacheable so fake returns it
         pers = service.memory_persistence
         key = list(pers.cache_entries.keys())[0]
         pers.cache_entries[key]["is_cacheable"] = True
+        assert len(service.milvus_store.upsert_calls) == 1
+        milvus_call = service.milvus_store.upsert_calls[0]
+        assert milvus_call["collection_key"] == "tool_cache"
+        assert milvus_call["dimension"] == 3
+        assert milvus_call["records"][0]["tool_name"] == "get_weather"
 
         result = service.lookup_tool_cache(
             tool_name="get_weather", arguments={"city": "London"}, user_id="u1"
@@ -1068,12 +1117,12 @@ class TestSafeToolCachePhase3:
         service = self._make_service(allowlist=("get_weather",))
 
         # Store for user-A
-        service.record_tool_cache(
+        asyncio.run(service.record_tool_cache(
             tool_name="get_weather",
             arguments={"city": "London"},
             result_text="result-for-A",
             user_id="user-A",
-        )
+        ))
         pers = service.memory_persistence
         # Mark stored entry cacheable
         for key in pers.cache_entries:
@@ -1089,12 +1138,12 @@ class TestSafeToolCachePhase3:
         """TC-CACHE-06: anonymous scope_hash never matches a user scope_hash."""
         service = self._make_service(allowlist=("get_weather",))
 
-        service.record_tool_cache(
+        asyncio.run(service.record_tool_cache(
             tool_name="get_weather",
             arguments={"city": "London"},
             result_text="result",
             user_id="",  # anonymous
-        )
+        ))
         pers = service.memory_persistence
         for key in pers.cache_entries:
             pers.cache_entries[key]["is_cacheable"] = True
@@ -1104,16 +1153,101 @@ class TestSafeToolCachePhase3:
         )
         assert result.hit is False
 
-    def test_record_cache_no_op_for_non_allowlisted_tool(self):
-        """TC-CACHE-07: record_tool_cache does nothing for tools not on the allowlist."""
+    def test_record_cache_no_op_for_tool_blocked_by_restriction_list(self):
+        """TC-CACHE-07: record_tool_cache skips tools excluded by a non-empty restriction list."""
         service = self._make_service(allowlist=("safe_tool",))
-        service.record_tool_cache(
-            tool_name="dangerous_tool",
+        asyncio.run(service.record_tool_cache(
+            tool_name="other_tool",
             arguments={},
-            result_text="secret output",
+            result_text="some output",
+            user_id="u1",
+        ))
+        assert service.memory_persistence.cache_record_calls == []
+        assert service.milvus_store.upsert_calls == []
+
+    def test_record_cache_stores_when_allowlist_empty(self):
+        """TC-CACHE-07d: with empty restriction list any freshness-safe tool is cached."""
+        service = self._make_service(allowlist=())
+        asyncio.run(service.record_tool_cache(
+            tool_name="get_weather",
+            arguments={"city": "London"},
+            result_text='{"temp": 15}',
+            user_id="u1",
+        ))
+        assert len(service.memory_persistence.cache_record_calls) == 1
+        assert service.memory_persistence.cache_record_calls[0]["tool_name"] == "get_weather"
+
+    def test_custom_freshness_keyword_excludes_tool_from_cache(self, caplog):
+        """TC-CACHE-07e: a custom freshness keyword added via config blocks a matching tool."""
+        service = self._make_service(
+            allowlist=(),
+            freshness_keywords=("snapshot", "live_"),  # custom set
+        )
+        caplog.set_level(logging.INFO, logger="mcp_client.internal")
+
+        # "get_snapshot" contains "snapshot" — should be bypassed
+        asyncio.run(service.record_tool_cache(
+            tool_name="svc__get_snapshot",
+            arguments={},
+            result_text="some data",
+            user_id="u1",
+        ))
+        assert service.memory_persistence.cache_record_calls == []
+        assert "freshness-sensitive tool" in caplog.text
+
+        # "get_config" does not match any custom keyword — should be cached
+        asyncio.run(service.record_tool_cache(
+            tool_name="svc__get_config",
+            arguments={},
+            result_text="config data",
+            user_id="u1",
+        ))
+        assert len(service.memory_persistence.cache_record_calls) == 1
+        assert service.memory_persistence.cache_record_calls[0]["tool_name"] == "svc__get_config"
+
+    def test_empty_freshness_keywords_falls_back_to_defaults(self):
+        """TC-CACHE-07f: when no custom keywords are set, built-in defaults still apply."""
+        # freshness_keywords=None → MemoryServiceConfig default tuple is used
+        service = self._make_service(allowlist=(), freshness_keywords=None)
+        # "get_system_uptime" contains built-in keyword "uptime" — must be blocked
+        result = service.lookup_tool_cache(
+            tool_name="svc__get_system_uptime", arguments={}, user_id="u1"
+        )
+        assert result.hit is False
+        # "get_config" does NOT contain any built-in keyword — must proceed to MISS (not BYPASS)
+        eligible = service._is_tool_cache_eligible("svc__get_config")
+        assert eligible is True
+
+    def test_lookup_bypasses_freshness_sensitive_tools_regardless_of_restriction_list(self, caplog):
+        """TC-CACHE-07b: freshness-sensitive tools are excluded even with an empty restriction list."""
+        service = self._make_service(allowlist=())  # no restriction — freshness check is sole gate
+        caplog.set_level(logging.INFO, logger="mcp_client.internal")
+
+        result = service.lookup_tool_cache(
+            tool_name="home_mcp_server__get_system_uptime",
+            arguments={},
             user_id="u1",
         )
+
+        assert result.hit is False
+        assert result.approved is False
+        assert "Tool cache BYPASS: home_mcp_server__get_system_uptime (freshness-sensitive tool)" in caplog.text
+
+    def test_record_cache_bypasses_freshness_sensitive_tools_regardless_of_restriction_list(self, caplog):
+        """TC-CACHE-07c: freshness-sensitive tools are never written to cache regardless of restriction list."""
+        service = self._make_service(allowlist=())  # no restriction — freshness check is sole gate
+        caplog.set_level(logging.INFO, logger="mcp_client.internal")
+
+        asyncio.run(service.record_tool_cache(
+            tool_name="home_mcp_server__get_system_uptime",
+            arguments={},
+            result_text="live uptime",
+            user_id="u1",
+        ))
+
         assert service.memory_persistence.cache_record_calls == []
+        assert service.milvus_store.upsert_calls == []
+        assert "Tool cache BYPASS STORE: home_mcp_server__get_system_uptime (freshness-sensitive tool)" in caplog.text
 
     def test_params_hash_is_deterministic(self):
         """TC-CACHE-08: _build_params_hash produces same hash for same args regardless of key order."""
@@ -1140,7 +1274,7 @@ class TestSafeToolCachePhase3:
         """TC-CACHE-11: record_tool_cache does not raise on persistence errors."""
         service = MemoryService(
             embedding_service=_FakeEmbeddingService(),
-            milvus_store=_FakeMilvusStore(),
+            milvus_store=_FakeUpsertMilvusStore(),
             memory_persistence=_FakeMemoryPersistence(error=RuntimeError("db down")),
             config=MemoryServiceConfig(
                 enabled=True,
@@ -1153,7 +1287,7 @@ class TestSafeToolCachePhase3:
             raise RuntimeError("db down")
         service.memory_persistence.record_tool_cache_entry = _fail
         # Must not raise
-        service.record_tool_cache(tool_name="my_tool", arguments={}, result_text="r", user_id="u")
+        asyncio.run(service.record_tool_cache(tool_name="my_tool", arguments={}, result_text="r", user_id="u"))
 
     def test_lookup_cache_fails_silently_on_persistence_error(self):
         """TC-CACHE-12: lookup_tool_cache returns no hit on persistence errors."""

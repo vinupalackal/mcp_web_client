@@ -1,5 +1,7 @@
 """Unit tests for ingestion pipeline service (TR-ING-*)."""
 
+import logging
+
 import pytest
 
 from backend.ingestion_service import IngestionService
@@ -96,6 +98,31 @@ class _FakeMemoryPersistence:
 
 
 class TestIngestionService:
+
+    @pytest.mark.asyncio
+    async def test_logs_code_memory_ingestion_start_and_complete(self, tmp_path, caplog):
+        """TR-ING-00: code_memory ingestion emits visible start and completion diagnostics."""
+        src_root = tmp_path / "src"
+        src_root.mkdir()
+        (src_root / "main.c").write_text("int main() { return 0; }\n", encoding="utf-8")
+
+        embedding = _FakeEmbeddingService()
+        store = _FakeMilvusStore()
+        persistence = _FakeMemoryPersistence()
+        service = IngestionService(
+            embedding_service=embedding,
+            milvus_store=store,
+            memory_persistence=persistence,
+            repo_roots=[str(src_root)],
+        )
+
+        caplog.set_level(logging.INFO, logger="mcp_client.external")
+
+        await service.ingest_workspace_async(repo_id="workspace-main")
+
+        assert "MILVUS INGESTION ─── code_memory START" in caplog.text
+        assert "MILVUS INGESTION ─── code_memory COMPLETE" in caplog.text
+        assert "workspace-main" in caplog.text
 
     @pytest.mark.asyncio
     async def test_ingests_code_and_doc_roots_and_writes_chunks(self, tmp_path):

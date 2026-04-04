@@ -15,6 +15,7 @@ import tree_sitter_c as ts_c
 import tree_sitter_cpp as ts_cpp
 
 logger_internal = logging.getLogger("mcp_client.internal")
+logger_external = logging.getLogger("mcp_client.external")
 
 _C_LANGUAGE = Language(ts_c.language())
 _CPP_LANGUAGE = Language(ts_cpp.language())
@@ -227,6 +228,20 @@ class IngestionService:
         }
 
     async def _store_chunks_async(self, chunks: list[IngestionChunk]) -> None:
+        collection_key = chunks[0].collection_key
+        repo_ids = sorted({str(chunk.store_record.get("repo_id") or "<none>") for chunk in chunks})
+        logger_external.info(
+            "\n"
+            "┌─── MILVUS INGESTION ─── %s START ───────────────────────────────────\n"
+            "│  chunks     : %s\n"
+            "│  repo_ids   : %s\n"
+            "│  generation : %s\n"
+            "└───────────────────────────────────────────────────────────────────────",
+            collection_key,
+            len(chunks),
+            ", ".join(repo_ids),
+            self.collection_generation,
+        )
         embeddings = await self.embedding_service.embed_texts([chunk.summary for chunk in chunks])
         records = []
         for chunk, vector in zip(chunks, embeddings.vectors):
@@ -257,10 +272,22 @@ class IngestionService:
             )
 
         self.milvus_store.upsert(
-            collection_key=chunks[0].collection_key,
+            collection_key=collection_key,
             generation=self.collection_generation,
             dimension=embeddings.dimensions,
             records=records,
+        )
+        logger_external.info(
+            "\n"
+            "┌─── MILVUS INGESTION ─── %s COMPLETE ────────────────────────────────\n"
+            "│  chunks     : %s\n"
+            "│  dimension  : %s\n"
+            "│  repo_ids   : %s\n"
+            "└───────────────────────────────────────────────────────────────────────",
+            collection_key,
+            len(records),
+            embeddings.dimensions,
+            ", ".join(repo_ids),
         )
 
     def _remove_stale_chunks(self, *, repo_id: str, collection_key: str, current_payload_refs: set[str]) -> int:

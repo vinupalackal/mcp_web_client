@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 logger_internal = logging.getLogger("mcp_client.internal")
+logger_external = logging.getLogger("mcp_client.external")
 
 
 @dataclass(frozen=True)
@@ -31,9 +32,26 @@ class MemoryServiceConfig:
     # Phase 3: safe tool cache
     enable_tool_cache: bool = False
     tool_cache_ttl_s: float = 3600.0
-    # Explicit allowlist of tool names eligible for caching.
-    # Empty tuple = no tools cached (feature disabled regardless of enable_tool_cache).
+    # Optional restriction list.  When empty (default) every tool that passes
+    # the freshness-sensitive keyword check is eligible for caching.
+    # When non-empty, only the listed tool names are cached (AND still subject
+    # to the freshness check).  Use this to *restrict* caching, not to enable it.
     tool_cache_allowlist: tuple[str, ...] = ()
+    # Keywords matched against the bare tool name (lower-cased, substring match).
+    # Any tool whose name contains one of these strings is excluded from caching.
+    # Configurable so operators can extend or replace the default set.
+    tool_cache_freshness_keywords: tuple[str, ...] = (
+        "uptime",
+        "heartbeat",
+        "health",
+        "status",
+        "loadavg",
+        "load_average",
+        "telemetry",
+        "realtime",
+        "real_time",
+        "live_",
+    )
     # Phase 4: operations hardening / expiry maintenance
     enable_expiry_cleanup: bool = True
     expiry_cleanup_interval_s: float = 300.0
@@ -69,7 +87,8 @@ class ToolCacheResult:
     hit: bool = False
     result_text: str = ""
     cache_id: str = ""
-    # True only when the tool is on the explicit allowlist AND a valid entry was found.
+    # True when caching policy (freshness check + optional restriction list) passed
+    # AND a valid, non-expired entry was found.
     approved: bool = False
 
 
@@ -191,6 +210,9 @@ class MemoryService:
                 latency_ms,
                 False,
             )
+            self._print_milvus_db_snapshot(
+                f"AFTER QUERY  request_id={effective_request_id}"
+            )
             return RetrievalResult(
                 blocks=blocks,
                 degraded=False,
@@ -212,6 +234,9 @@ class MemoryService:
                 latency_ms,
                 reason,
             )
+            self._print_milvus_db_snapshot(
+                f"AFTER QUERY (TIMEOUT)  request_id={effective_request_id}"
+            )
             return RetrievalResult(
                 degraded=True,
                 degraded_reason=reason,
@@ -229,6 +254,9 @@ class MemoryService:
                 query_hash,
                 latency_ms,
                 reason,
+            )
+            self._print_milvus_db_snapshot(
+                f"AFTER QUERY (ERROR)  request_id={effective_request_id}"
             )
             return RetrievalResult(
                 degraded=True,
@@ -303,6 +331,7 @@ class MemoryService:
             self.milvus_store.upsert(
                 collection_key="conversation_memory",
                 generation=self.config.collection_generation,
+                dimension=len(vector),
                 records=[record],
             )
 
@@ -325,9 +354,9 @@ class MemoryService:
             # Console summary — printed to server stdout after every query.
             try:
                 from datetime import datetime, timezone as _tz
-                total_rows = self.milvus_store.get_record_count(
+                total_rows = await self._get_record_count_with_retry(
                     collection_key="conversation_memory",
-                    generation=self.config.collection_generation,
+                    minimum_expected=1,
                 )
                 count_str = str(total_rows) if total_rows >= 0 else "unknown"
                 tools_display = ", ".join(tool_names or []) or "(none)"
@@ -398,14 +427,16 @@ class MemoryService:
         in all other cases, including errors.
         """
         if not self.config.enable_tool_cache:
+            logger_internal.info("Tool cache BYPASS: %s (disabled)", tool_name)
             return ToolCacheResult()
-        if not self.config.tool_cache_allowlist:
+        # Optional restriction: when the allowlist is non-empty, only listed tools
+        # are eligible.  An empty allowlist means "all tools are eligible" — the
+        # freshness-sensitive keyword check below is the primary safety gate.
+        if self.config.tool_cache_allowlist and tool_name not in self.config.tool_cache_allowlist:
+            logger_internal.info("Tool cache BYPASS: %s (not in restriction list)", tool_name)
             return ToolCacheResult()
-        if tool_name not in self.config.tool_cache_allowlist:
-            # Explicit policy: only allowlisted tools may be cached.
-            logger_internal.debug(
-                "Tool cache: %s not in allowlist — skipping lookup", tool_name
-            )
+        if not self._is_tool_cache_eligible(tool_name):
+            logger_internal.info("Tool cache BYPASS: %s (freshness-sensitive tool)", tool_name)
             return ToolCacheResult()
 
         try:
@@ -419,8 +450,8 @@ class MemoryService:
                 not_expired_as_of=datetime.now(_tz.utc),
             )
             if row is not None and row.is_cacheable:
-                logger_internal.debug(
-                    "Tool cache HIT: tool=%s cache_id=%s", tool_name, row.cache_id
+                logger_internal.info(
+                    "Tool cache HIT: %s (cache_id=%s)", tool_name, row.cache_id
                 )
                 return ToolCacheResult(
                     hit=True,
@@ -428,11 +459,12 @@ class MemoryService:
                     cache_id=row.cache_id,
                     approved=True,
                 )
+            logger_internal.info("Tool cache MISS: %s", tool_name)
         except Exception as error:
             logger_internal.warning("Tool cache lookup failed: %s", error)
         return ToolCacheResult()
 
-    def record_tool_cache(
+    async def record_tool_cache(
         self,
         *,
         tool_name: str,
@@ -447,19 +479,22 @@ class MemoryService:
         Fails silently — caching errors must never interrupt the response path.
         """
         if not self.config.enable_tool_cache:
+            logger_internal.info("Tool cache BYPASS STORE: %s (disabled)", tool_name)
             return
-        if not self.config.tool_cache_allowlist:
+        if self.config.tool_cache_allowlist and tool_name not in self.config.tool_cache_allowlist:
+            logger_internal.info("Tool cache BYPASS STORE: %s (not in restriction list)", tool_name)
             return
-        if tool_name not in self.config.tool_cache_allowlist:
+        if not self._is_tool_cache_eligible(tool_name):
+            logger_internal.info("Tool cache BYPASS STORE: %s (freshness-sensitive tool)", tool_name)
             return
+
+        params_hash = self._build_params_hash(tool_name, arguments)
+        scope_hash = self._build_cache_scope_hash(user_id, workspace_scope)
+        import time as _t
+        from datetime import datetime, timezone as _tz, timedelta as _td
+        expires_at = datetime.now(_tz.utc) + _td(seconds=max(self.config.tool_cache_ttl_s, 1.0))
 
         try:
-            params_hash = self._build_params_hash(tool_name, arguments)
-            scope_hash = self._build_cache_scope_hash(user_id, workspace_scope)
-            import time as _t
-            from datetime import datetime, timezone as _tz, timedelta as _td
-            expires_at = datetime.now(_tz.utc) + _td(seconds=max(self.config.tool_cache_ttl_s, 1.0))
-
             self.memory_persistence.record_tool_cache_entry(
                 tool_name=tool_name,
                 normalized_params_hash=params_hash,
@@ -477,6 +512,43 @@ class MemoryService:
             )
         except Exception as error:
             logger_internal.warning("Failed to store tool cache entry: %s", error)
+
+        try:
+            cache_query = self._build_tool_cache_query(tool_name, arguments)
+            embedding_result = await self.embedding_service.embed_texts([cache_query])
+            vector = embedding_result.vectors[0]
+            created_at = int(_t.time())
+            expires_ts = int(expires_at.timestamp())
+            server_alias, bare_tool_name = self._split_namespaced_tool_name(tool_name)
+            cache_id = f"tool-cache-{params_hash[:16]}-{scope_hash[:16]}"
+
+            self.milvus_store.upsert(
+                collection_key="tool_cache",
+                generation=self.config.collection_generation,
+                dimension=len(vector),
+                records=[{
+                    "id": cache_id,
+                    "embedding": vector,
+                    "tool_name": bare_tool_name,
+                    "server_alias": server_alias,
+                    "normalized_params_hash": params_hash,
+                    "scope_hash": scope_hash,
+                    "payload_ref": cache_id,
+                    "created_at": created_at,
+                    "expires_at": expires_ts,
+                    "source_version": source_version or "",
+                    "is_cacheable": True,
+                }],
+            )
+            logger_internal.debug(
+                "Tool cache vector stored: tool=%s params_hash=%.8s scope_hash=%.8s dimension=%s",
+                tool_name,
+                params_hash,
+                scope_hash,
+                len(vector),
+            )
+        except Exception as error:
+            logger_internal.warning("Failed to store tool cache vector: %s", error)
 
     async def resolve_tools_from_memory(
         self,
@@ -1016,3 +1088,109 @@ class MemoryService:
         effective_uid = user_id or "__anonymous__"
         raw = f"{effective_uid}|{workspace_scope}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+    def _is_tool_cache_eligible(self, tool_name: str) -> bool:
+        """Return False for freshness-sensitive tools that should never be cached.
+
+        The keyword set is driven by ``config.tool_cache_freshness_keywords``
+        (configurable via ``MilvusConfig`` or environment variable) so operators
+        can extend or replace the defaults without touching source code.
+        """
+        _, bare_tool_name = self._split_namespaced_tool_name(tool_name)
+        normalized = bare_tool_name.lower()
+        return not any(
+            keyword in normalized
+            for keyword in self.config.tool_cache_freshness_keywords
+        )
+
+    async def _get_record_count_with_retry(
+        self,
+        *,
+        collection_key: str,
+        minimum_expected: int = 0,
+        attempts: int = 3,
+        delay_s: float = 0.05,
+    ) -> int:
+        """Retry row-count reads briefly to smooth over post-upsert stats lag."""
+        last_count = -1
+        total_attempts = max(attempts, 1)
+        for attempt_index in range(total_attempts):
+            last_count = self.milvus_store.get_record_count(
+                collection_key=collection_key,
+                generation=self.config.collection_generation,
+            )
+            if last_count < 0 or last_count >= minimum_expected:
+                return last_count
+            if attempt_index + 1 < total_attempts:
+                await asyncio.sleep(max(delay_s, 0.0))
+        return last_count
+
+    def _build_tool_cache_query(self, tool_name: str, arguments: dict) -> str:
+        """Build a stable text query used for semantic tool-cache embeddings."""
+        import json as _json
+        normalized_args = _json.dumps(arguments or {}, sort_keys=True, separators=(",", ":"))
+        return f"{tool_name} {normalized_args}"[:512]
+
+    def _split_namespaced_tool_name(self, tool_name: str) -> tuple[str, str]:
+        """Split `server__tool` into `(server, tool)`; bare names become `("", name)`.
+
+        Tool cache Milvus rows store both pieces separately so semantic tool recall
+        can reconstruct namespaced IDs when the server alias is available.
+        """
+        if "__" not in tool_name:
+            return "", tool_name
+        server_alias, bare_tool_name = tool_name.split("__", 1)
+        return server_alias, bare_tool_name
+
+    def _print_milvus_db_snapshot(self, label: str = "") -> None:
+        """Print a box-drawing table of all known collection row counts to the console.
+
+        Called at startup and after every retrieval query so operators can see
+        live Milvus state without querying the database directly.  Wrapped in a
+        broad try/except so it can never disrupt the response path.
+        """
+        try:
+            # Build the list of collection keys we care about
+            known_keys: list[str] = list(self.config.collection_keys)
+            if (
+                self.config.enable_conversation_memory
+                and "conversation_memory" not in known_keys
+            ):
+                known_keys.append("conversation_memory")
+            if self.config.enable_tool_cache and "tool_cache" not in known_keys:
+                known_keys.append("tool_cache")
+
+            rows: list[tuple[str, str]] = []
+            for key in known_keys:
+                count = self.milvus_store.get_record_count(
+                    collection_key=key,
+                    generation=self.config.collection_generation,
+                )
+                count_str = str(count) if count >= 0 else "unavailable"
+                rows.append((key, count_str))
+
+            # List any extra collections present in Milvus that are not in our config
+            known_names = {
+                self.milvus_store.build_collection_name(k, self.config.collection_generation)
+                for k in known_keys
+            }
+            all_collections = self.milvus_store.list_collections()
+            for cname in sorted(all_collections):
+                if cname not in known_names:
+                    rows.append((cname, "?"))
+
+            if rows:
+                lines = "\n".join(f"│  {k:<34} {v:>8} rows" for k, v in rows)
+            else:
+                lines = "│  (no collections found)"
+
+            logger_external.info(
+                "\n"
+                "┌─── MILVUS DATABASE SNAPSHOT ─── %s\n"
+                "%s\n"
+                "└────────────────────────────────────────────────────────────────",
+                label,
+                lines,
+            )
+        except Exception:  # noqa: BLE001
+            pass  # never disrupt the response path

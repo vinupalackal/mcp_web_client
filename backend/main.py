@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import json
+import inspect
 import re
 import sys
 import asyncio
@@ -60,6 +61,10 @@ from backend.models import (
     UserListResponse,
     MemoryMaintenanceRequest,
     MemoryMaintenanceResponse,
+    MemoryIngestTriggerRequest,
+    MemoryIngestTriggerResponse,
+    MemoryCollectionRowCount,
+    MemoryRowCountsResponse,
 )
 
 # SSO imports (v0.4.0-sso-user-settings)
@@ -683,6 +688,11 @@ def _default_milvus_config_from_env() -> MilvusConfig:
                 for t in os.getenv("MEMORY_TOOL_CACHE_ALLOWLIST", "").split(",")
                 if t.strip()
             ],
+            tool_cache_freshness_keywords=[
+                kw.strip().lower()
+                for kw in os.getenv("MEMORY_TOOL_CACHE_FRESHNESS_KEYWORDS", "").split(",")
+                if kw.strip()
+            ],
             enable_expiry_cleanup=_get_bool_env("MEMORY_EXPIRY_CLEANUP_ENABLED", True),
             expiry_cleanup_interval_s=_get_float_env("MEMORY_EXPIRY_CLEANUP_INTERVAL_S", 300.0),
         )
@@ -747,6 +757,29 @@ def _get_effective_milvus_config() -> MilvusConfig:
     return milvus_config_storage or _default_milvus_config_from_env()
 
 
+def _milvus_startup_diagnostic(exc: Exception, milvus_uri: str) -> list[str]:
+    """Return operator-facing guidance for common Milvus startup failures."""
+    reason = str(exc).lower()
+    redacted_uri = _redacted_milvus_uri(milvus_uri)
+
+    if "no route to host" in reason or "network is unreachable" in reason:
+        return [
+            f"  Startup diagnostic: network unreachable / no route to host for {redacted_uri}",
+            "  Suggested fix: verify the host/IP is correct, ensure this machine is on the right network/VPN, and confirm port 19530 is exposed/reachable from the app host",
+        ]
+    if "connection refused" in reason:
+        return [
+            f"  Startup diagnostic: connection refused for {redacted_uri}",
+            "  Suggested fix: verify Milvus is running and listening on port 19530, and confirm Docker/Kubernetes port publishing if applicable",
+        ]
+    if "timed out" in reason or "timeout" in reason:
+        return [
+            f"  Startup diagnostic: connection timed out for {redacted_uri}",
+            "  Suggested fix: verify routing/firewall rules to the Milvus host and check whether the server is overloaded or slow to accept connections",
+        ]
+    return []
+
+
 def _initialize_memory_service(config: Optional[MilvusConfig] = None) -> Optional[Any]:
     """Create or tear down the in-process memory service using the active Milvus config."""
     global milvus_config_storage, _memory_service
@@ -800,6 +833,9 @@ def _initialize_memory_service(config: Optional[MilvusConfig] = None) -> Optiona
                 enable_tool_cache=effective_config.enable_tool_cache,
                 tool_cache_ttl_s=effective_config.tool_cache_ttl_s,
                 tool_cache_allowlist=tuple(effective_config.tool_cache_allowlist),
+                tool_cache_freshness_keywords=tuple(
+                    effective_config.tool_cache_freshness_keywords
+                ) or MemoryServiceConfig().tool_cache_freshness_keywords,
                 enable_expiry_cleanup=effective_config.enable_expiry_cleanup,
                 expiry_cleanup_interval_s=effective_config.expiry_cleanup_interval_s,
             ),
@@ -818,6 +854,8 @@ def _initialize_memory_service(config: Optional[MilvusConfig] = None) -> Optiona
             "  Milvus connection failed for %s",
             _redacted_milvus_uri(effective_config.milvus_uri),
         )
+        for diagnostic_line in _milvus_startup_diagnostic(exc, effective_config.milvus_uri):
+            logger_internal.warning(diagnostic_line)
         logger_internal.warning(
             "  Continuing startup without memory features; chat stays available but retrieval, conversation memory, and tool cache are inactive"
         )
@@ -888,6 +926,8 @@ async def lifespan(app: FastAPI):
 
     milvus_config_storage = _load_milvus_config_from_disk() or _default_milvus_config_from_env()
     _initialize_memory_service()
+    if _memory_service is not None:
+        _memory_service._print_milvus_db_snapshot("STARTUP")
 
     yield
     logger_internal.info("👋 MCP Client Web shutting down")
@@ -2544,6 +2584,115 @@ async def admin_run_memory_maintenance(
     )
 
 
+@app.post(
+    "/api/admin/memory/ingest",
+    response_model=MemoryIngestTriggerResponse,
+    tags=["Admin"],
+    summary="Trigger workspace ingestion (admin only)",
+    responses={
+        200: {"description": "Ingestion job completed"},
+        403: {"description": "Admin role required"},
+        503: {"description": "Memory subsystem not available"},
+    },
+)
+async def admin_trigger_ingestion(
+    request: Request,
+    payload: MemoryIngestTriggerRequest = Body(...),
+) -> MemoryIngestTriggerResponse:
+    """Scan configured code/doc roots and write vector chunks into Milvus.
+
+    ``repo_roots`` and ``doc_roots`` in the request body override the values
+    stored in ``MilvusConfig``; if both are omitted the persisted config values
+    are used.  The ``repo_id`` field tags every chunk; it falls back to the
+    value in ``MilvusConfig`` when left blank.
+    """
+    _require_admin(request)
+    if _memory_service is None:
+        raise HTTPException(status_code=503, detail="Memory subsystem is not available")
+
+    from backend.ingestion_service import IngestionService
+
+    effective_config = _get_effective_milvus_config()
+    repo_roots = payload.repo_roots or effective_config.repo_roots
+    doc_roots = payload.doc_roots or effective_config.doc_roots
+    repo_id = payload.repo_id.strip() or effective_config.repo_id or "workspace"
+
+    svc = IngestionService(
+        embedding_service=_memory_service.embedding_service,
+        milvus_store=_memory_service.milvus_store,
+        memory_persistence=_memory_service.memory_persistence,
+        repo_roots=repo_roots,
+        doc_roots=doc_roots,
+        collection_generation=_memory_service.config.collection_generation,
+        collection_prefix=effective_config.collection_prefix,
+    )
+
+    result = await svc.ingest_workspace_async(repo_id=repo_id)
+
+    return MemoryIngestTriggerResponse(
+        success=True,
+        job_id=result["job_id"],
+        status=result["status"],
+        source_count=result.get("source_count", 0),
+        chunk_count=result.get("chunk_count", 0),
+        deleted_count=result.get("deleted_count", 0),
+        error_count=result.get("error_count", 0),
+        errors=result.get("errors", []),
+    )
+
+
+@app.get(
+    "/api/admin/memory/row-counts",
+    response_model=MemoryRowCountsResponse,
+    tags=["Admin"],
+    summary="Read active Milvus row counts (admin only)",
+    responses={
+        200: {"description": "Active Milvus row counts returned"},
+        403: {"description": "Admin role required"},
+        503: {"description": "Memory subsystem not available"},
+    },
+)
+async def admin_memory_row_counts(request: Request) -> MemoryRowCountsResponse:
+    """Return the current Milvus row counts for active memory collections."""
+    _require_admin(request)
+    if _memory_service is None:
+        raise HTTPException(status_code=503, detail="Memory subsystem is not available")
+
+    known_keys: list[str] = list(_memory_service.config.collection_keys)
+    if (
+        _memory_service.config.enable_conversation_memory
+        and "conversation_memory" not in known_keys
+    ):
+        known_keys.append("conversation_memory")
+    if _memory_service.config.enable_tool_cache and "tool_cache" not in known_keys:
+        known_keys.append("tool_cache")
+
+    counts = [
+        MemoryCollectionRowCount(
+            collection_key=key,
+            collection_name=_memory_service.milvus_store.build_collection_name(
+                key,
+                _memory_service.config.collection_generation,
+            ),
+            row_count=row_count,
+            available=row_count >= 0,
+        )
+        for key in known_keys
+        for row_count in [
+            _memory_service.milvus_store.get_record_count(
+                collection_key=key,
+                generation=_memory_service.config.collection_generation,
+            )
+        ]
+    ]
+
+    return MemoryRowCountsResponse(
+        success=True,
+        generation=_memory_service.config.collection_generation,
+        counts=counts,
+    )
+
+
 # ============================================================================
 # Health Check
 # ============================================================================
@@ -3925,12 +4074,14 @@ async def send_message(
                 _success = not bool(_result.get("isError")) if isinstance(_result, dict) else True
                 # ---- store in cache if allowlisted and successful ---- #
                 if _success and _memory_service is not None:
-                    _memory_service.record_tool_cache(
+                    _cache_store_result = _memory_service.record_tool_cache(
                         tool_name=_name,
                         arguments=_args if isinstance(_args, dict) else {},
                         result_text=_res_str,
                         user_id=user_id or "",
                     )
+                    if inspect.isawaitable(_cache_store_result):
+                        await _cache_store_result
                 return {**pc, "result_content": _res_str, "tool_result": _result,
                         "success": _success, "duration_ms": _dur}
             except Exception as _exc:
@@ -3953,6 +4104,41 @@ async def send_message(
         # all chunks first, overlapping LLM wait time with MCP execution time. #
         # ------------------------------------------------------------------ #
         split_phase_tool_calls: Optional[List[Dict[str, Any]]] = None
+
+        # ------------------------------------------------------------------ #
+        # Direct-route Turn-0 bypass                                           #
+        # When a direct_tool_route resolves to exactly one tool (e.g. the      #
+        # heuristic uptime / memory / cpu routes) and no split-phase was       #
+        # needed, skip the first LLM call entirely: synthesise a tool_calls    #
+        # response directly and inject it in Turn 0, exactly like split-phase  #
+        # does.  The LLM is still called for synthesis after the tool returns. #
+        # ------------------------------------------------------------------ #
+        _direct_route_tool_calls: Optional[List[Dict[str, Any]]] = None
+        if (
+            direct_tool_route is not None
+            and direct_tool_route.get("route_name") != "memory_retrieval"
+            and split_phase_tool_calls is None
+            and allowed_tool_names
+            and len(allowed_tool_names) == 1
+        ):
+            _only_tool_name = allowed_tool_names[0]
+            _only_tool_in_catalog = next(
+                (t for t in tools_for_llm if t.get("function", {}).get("name") == _only_tool_name),
+                None,
+            )
+            if _only_tool_in_catalog is not None:
+                _direct_route_tool_calls = [{
+                    "id": f"direct_route_{uuid.uuid4().hex[:8]}",
+                    "type": "function",
+                    "function": {
+                        "name": _only_tool_name,
+                        "arguments": "{}",
+                    },
+                }]
+                logger_internal.info(
+                    "Direct-route Turn-0 bypass: skipping LLM call, injecting tool_call for %s",
+                    _only_tool_name,
+                )
         if _split_phase_needed and has_real_tools:
             _messages_snapshot = list(messages_for_llm)  # read-only snapshot
             _split_mode = active_llm_config.tools_split_mode  # "sequential" | "concurrent"
@@ -4058,6 +4244,27 @@ async def send_message(
                         messages=messages_for_llm,
                         tools=[],
                     )
+            elif turn == 0 and _direct_route_tool_calls is not None:
+                # Direct-route bypass: skip LLM, inject the single known tool call
+                logger_internal.info(
+                    "Direct-route Turn 0: injecting 1 pre-determined tool call for %s, skipping LLM call",
+                    _direct_route_tool_calls[0]["function"]["name"],
+                )
+                logger_external.info(
+                    "MCP CLIENT → MCP SERVER TOOLS LIST: [%s] (direct-route bypass, no LLM call)",
+                    _direct_route_tool_calls[0]["function"]["name"],
+                )
+                llm_response = {
+                    "choices": [{
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": _direct_route_tool_calls,
+                        },
+                        "finish_reason": "tool_calls",
+                    }],
+                    "usage": {},
+                }
             else:
                 # Normal path: log and call LLM
                 logger_external.info(
