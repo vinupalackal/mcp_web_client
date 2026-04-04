@@ -2529,8 +2529,74 @@ class TestAdaptiveQueryLearningPhase5:
         assert 0.0 < result.confidence <= 1.0
 
     @pytest.mark.asyncio
+    async def test_resolve_tools_from_quality_history_filters_non_overlapping_domains(self):
+        """TC-AQL-P5-04: only records with overlapping domain tags should be eligible."""
+        service, _ = self._svc(
+            min_records=2,
+            search_results=[[
+                _p5_hit(
+                    distance=0.02,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__cpu_top"],
+                    tools_succeeded=["svc__cpu_top"],
+                ),
+                _p5_hit(
+                    distance=0.03,
+                    domain_tags=["memory"],
+                    tools_selected=["svc__mem_top"],
+                    tools_succeeded=["svc__mem_top"],
+                ),
+                _p5_hit(
+                    distance=0.05,
+                    domain_tags=["cpu", "status"],
+                    tools_selected=["svc__cpu_top"],
+                    tools_succeeded=["svc__cpu_top"],
+                ),
+            ]],
+        )
+
+        result = await service.resolve_tools_from_quality_history(
+            query="show cpu status",
+            domain_tags=["cpu"],
+        )
+
+        assert result.record_count == 2
+        assert result.tool_names == ["svc__cpu_top"]
+        assert result.confidence > 0.0
+
+    @pytest.mark.asyncio
+    async def test_resolve_tools_from_quality_history_falls_back_to_selected_tools(self):
+        """TC-AQL-P5-05: when succeeded tools are empty, aggregation should fall back to selected tools."""
+        service, _ = self._svc(
+            min_records=2,
+            search_results=[[
+                _p5_hit(
+                    distance=0.02,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__cpu_selected"],
+                    tools_succeeded=[],
+                ),
+                _p5_hit(
+                    distance=0.04,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__cpu_selected"],
+                    tools_succeeded=[],
+                ),
+            ]],
+        )
+
+        result = await service.resolve_tools_from_quality_history(
+            query="show cpu status",
+            domain_tags=["cpu"],
+        )
+
+        assert result.record_count == 2
+        assert result.tool_names == ["svc__cpu_selected"]
+        assert result.confidence > 0.0
+
+    @pytest.mark.asyncio
     async def test_resolve_tools_from_quality_history_returns_zero_confidence_on_embedding_failure(self):
-        """TC-AQL-P5-04: embedding failure should degrade to an empty affinity result."""
+        """TC-AQL-P5-06: embedding failure should degrade to an empty affinity result."""
         service, store = self._svc(
             min_records=1,
             search_results=[[_p5_hit(domain_tags=["cpu"], tools_selected=["svc__cpu"]) ]],
@@ -2549,7 +2615,7 @@ class TestAdaptiveQueryLearningPhase5:
 
     @pytest.mark.asyncio
     async def test_resolve_tools_from_quality_history_returns_zero_confidence_on_search_failure(self):
-        """TC-AQL-P5-05: Milvus search failure should degrade to an empty affinity result."""
+        """TC-AQL-P5-07: Milvus search failure should degrade to an empty affinity result."""
         service, store = self._svc(
             min_records=1,
             search_error=RuntimeError("milvus unavailable"),

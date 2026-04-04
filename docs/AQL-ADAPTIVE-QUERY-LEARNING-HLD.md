@@ -26,6 +26,9 @@
 - `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-REQUIREMENTS.md`
 - `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-HLD.md`
 - `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P6-ROUTING-INTEGRATION-REQUIREMENTS.md`
+- `docs/AQL-P6-ROUTING-INTEGRATION-HLD.md`
+- `docs/AQL-P6-ROUTING-INTEGRATION-IMPLEMENTATION-SPEC.md`
 
 **Per-phase execution workflow**:
 - Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → implementation → test development → focused validation → full test execution.

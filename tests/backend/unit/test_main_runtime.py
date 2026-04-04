@@ -1999,3 +1999,199 @@ def test_freshness_candidates_endpoint_503_when_aql_disabled(monkeypatch):
     assert resp.status_code == 503
     assert "not available" in resp.json().get("detail", "").lower()
 
+
+def _run_affinity_route_request(
+    monkeypatch,
+    *,
+    direct_route=None,
+    memory_tool_names=None,
+    affinity_tool_names=None,
+    affinity_confidence=0.0,
+):
+    from fastapi.testclient import TestClient
+    from backend.models import LLMConfig
+    from backend.memory_service import RetrievalResult, ToolCacheResult, AffinityRouteResult
+
+    main_module = importlib.import_module("backend.main")
+    llm_calls: list[dict] = []
+    tracking: dict[str, object] = {"affinity_called": False, "memory_called": False}
+
+    class _FakeLLMClient:
+        async def chat_completion(self, *, messages, tools):
+            llm_calls.append(
+                {
+                    "tool_names": [tool.get("function", {}).get("name", "") for tool in tools],
+                    "message_count": len(messages),
+                }
+            )
+            return {
+                "choices": [{
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }],
+                "usage": {},
+            }
+
+        def format_tool_result(self, tool_call_id, content):
+            return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
+
+    class _FakeLLMClientFactory:
+        @staticmethod
+        def create(config, *, enterprise_access_token=None):
+            return _FakeLLMClient()
+
+    monkeypatch.setattr(main_module, "LLMClientFactory", _FakeLLMClientFactory)
+    monkeypatch.setattr(main_module, "_select_direct_tool_route", lambda content, tool_names: direct_route)
+
+    class _FakeConfig:
+        enable_adaptive_learning = True
+        aql_affinity_confidence_threshold = 0.65
+
+    class _FakeMemoryService:
+        config = _FakeConfig()
+
+        async def resolve_tools_from_memory(self, **kwargs):
+            tracking["memory_called"] = True
+            return list(memory_tool_names or [])
+
+        async def resolve_tools_from_quality_history(self, **kwargs):
+            tracking["affinity_called"] = True
+            return AffinityRouteResult(
+                tool_names=list(affinity_tool_names or []),
+                confidence=float(affinity_confidence),
+                record_count=5,
+            )
+
+        async def enrich_for_turn(self, **kwargs):
+            return RetrievalResult(collection_keys=())
+
+        def run_expiry_cleanup_if_due(self, *args, **kwargs):
+            return {"ran": False}
+
+        def lookup_tool_cache(self, *args, **kwargs):
+            return ToolCacheResult()
+
+        def record_tool_cache(self, *args, **kwargs):
+            return None
+
+        async def record_turn(self, **kwargs):
+            return None
+
+        async def record_execution_quality(self, **kwargs):
+            return None
+
+        def build_quality_query_hash(self, user_message):
+            return "abc123"
+
+        def is_correction_message(self, text):
+            return False
+
+        async def patch_correction_signal(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(main_module, "_memory_service", _FakeMemoryService())
+
+    available_tools = [
+        "svc__tool_a",
+        "svc__tool_b",
+        "svc__tool_c",
+    ]
+
+    class _FakeMCPManager:
+        tools = {tool_name: None for tool_name in available_tools}
+
+        def get_tools_for_llm(self, *, allowed_tool_names=None, include_virtual_repeated=True):
+            names = list(allowed_tool_names or available_tools)
+            return [
+                {
+                    "type": "function",
+                    "function": {"name": name, "parameters": {}},
+                }
+                for name in names
+            ]
+
+        def get_tools_for_llm_chunks(self, limit, *, allowed_tool_names=None, include_virtual_repeated=True):
+            return [self.get_tools_for_llm(allowed_tool_names=allowed_tool_names, include_virtual_repeated=include_virtual_repeated)]
+
+    monkeypatch.setattr(main_module, "mcp_manager", _FakeMCPManager())
+    monkeypatch.setattr(
+        main_module,
+        "llm_config_storage",
+        LLMConfig(provider="mock", model="mock-model", base_url="http://localhost"),
+    )
+    monkeypatch.setattr(main_module, "_sso_enabled", lambda: False)
+
+    client = TestClient(main_module.app, raise_server_exceptions=True)
+    session_id = client.post("/api/sessions").json()["session_id"]
+    response = client.post(
+        f"/api/sessions/{session_id}/messages",
+        json={"role": "user", "content": "show cpu status"},
+    )
+    assert response.status_code == 200
+    return llm_calls, tracking
+
+
+def test_affinity_route_applies_when_enabled_and_confident(monkeypatch):
+    """TC-AQL-P6-RT-01: confident affinity lookup narrows the tool catalog sent to the LLM."""
+    llm_calls, tracking = _run_affinity_route_request(
+        monkeypatch,
+        direct_route=None,
+        memory_tool_names=[],
+        affinity_tool_names=["svc__tool_a", "svc__tool_c"],
+        affinity_confidence=0.91,
+    )
+
+    assert tracking["affinity_called"] is True
+    first_tool_call = next(call for call in llm_calls if call["tool_names"])
+    assert first_tool_call["tool_names"] == ["svc__tool_a", "svc__tool_c"]
+
+
+def test_affinity_route_skips_when_confidence_below_threshold(monkeypatch):
+    """TC-AQL-P6-RT-02: low-confidence affinity results must leave the broader catalog intact."""
+    llm_calls, tracking = _run_affinity_route_request(
+        monkeypatch,
+        direct_route=None,
+        memory_tool_names=[],
+        affinity_tool_names=["svc__tool_a"],
+        affinity_confidence=0.20,
+    )
+
+    assert tracking["affinity_called"] is True
+    first_tool_call = next(call for call in llm_calls if call["tool_names"])
+    assert first_tool_call["tool_names"] == ["svc__tool_a", "svc__tool_b", "svc__tool_c"]
+
+
+def test_affinity_route_skips_when_direct_route_exists(monkeypatch):
+    """TC-AQL-P6-RT-03: existing direct routes must bypass affinity lookup entirely."""
+    llm_calls, tracking = _run_affinity_route_request(
+        monkeypatch,
+        direct_route={
+            "route_name": "custom_direct",
+            "allowed_tool_names": ["svc__tool_b", "svc__tool_c"],
+            "include_virtual_repeated": False,
+        },
+        memory_tool_names=[],
+        affinity_tool_names=["svc__tool_a"],
+        affinity_confidence=0.99,
+    )
+
+    assert tracking["affinity_called"] is False
+    first_tool_call = next(call for call in llm_calls if call["tool_names"])
+    assert first_tool_call["tool_names"] == ["svc__tool_b", "svc__tool_c"]
+
+
+def test_affinity_route_skips_when_memory_route_already_confident(monkeypatch):
+    """TC-AQL-P6-RT-04: existing memory routes keep priority over affinity routing."""
+    llm_calls, tracking = _run_affinity_route_request(
+        monkeypatch,
+        direct_route=None,
+        memory_tool_names=["svc__tool_b"],
+        affinity_tool_names=["svc__tool_a"],
+        affinity_confidence=0.99,
+    )
+
+    assert tracking["memory_called"] is True
+    assert tracking["affinity_called"] is False
+    first_tool_call = next(call for call in llm_calls if call["tool_names"])
+    assert first_tool_call["tool_names"] == ["svc__tool_b"]
+

@@ -3684,6 +3684,19 @@ async def send_message(
         direct_tool_route = _select_direct_tool_route(message.content, all_available_tool_names)
         allowed_tool_names = direct_tool_route["allowed_tool_names"] if direct_tool_route else None
         include_virtual_repeated = direct_tool_route["include_virtual_repeated"] if direct_tool_route else True
+        session = session_manager.get_session(session_id)
+        session_config = session.config if session and isinstance(session.config, dict) else {}
+        mode_classification_summary = session_manager.build_history_summary(
+            session_id,
+            upto_index=existing_message_count,
+        )
+        request_mode_details = _classify_request_mode_details(
+            message.content,
+            existing_messages=existing_messages,
+            direct_tool_route=direct_tool_route,
+            conversation_summary=mode_classification_summary,
+        )
+        affinity_route_applied = False
 
         if direct_tool_route:
             logger_internal.info(
@@ -3692,6 +3705,7 @@ async def send_message(
                 ", ".join(allowed_tool_names),
             )
         elif _memory_service is not None:
+            memory_service_config = getattr(_memory_service, "config", None)
             # Memory-based tool routing: search conversation_memory + tool_cache
             # (never code_memory) for similar past turns and extract which tools
             # were called.  If confident matches exist, use them to narrow the
@@ -3718,6 +3732,35 @@ async def send_message(
                 logger_internal.info(
                     "Memory tool route: no confident match — falling back to LLM tool selection"
                 )
+                if getattr(memory_service_config, "enable_adaptive_learning", False):
+                    affinity_route_result = await _memory_service.resolve_tools_from_quality_history(
+                        query=message.content,
+                        domain_tags=list(request_mode_details.get("domains", [])),
+                    )
+                    if (
+                        affinity_route_result.tool_names
+                        and affinity_route_result.confidence >= getattr(
+                            memory_service_config,
+                            "aql_affinity_confidence_threshold",
+                            0.65,
+                        )
+                    ):
+                        allowed_tool_names = list(affinity_route_result.tool_names)
+                        include_virtual_repeated = False
+                        affinity_route_applied = True
+                        logger_internal.info(
+                            "AQL affinity route applied: tools=%s confidence=%.3f records=%s",
+                            ", ".join(allowed_tool_names),
+                            affinity_route_result.confidence,
+                            affinity_route_result.record_count,
+                        )
+                    else:
+                        logger_internal.info(
+                            "AQL affinity route skipped: confidence=%.3f threshold=%.3f records=%s",
+                            affinity_route_result.confidence,
+                            getattr(memory_service_config, "aql_affinity_confidence_threshold", 0.65),
+                            affinity_route_result.record_count,
+                        )
 
         def _prepare_initial_tool_catalog(
             *,
@@ -3786,19 +3829,6 @@ async def send_message(
         else:
             logger_internal.warning("No tools available! LLM will not be able to call any tools.")
         
-        session = session_manager.get_session(session_id)
-        session_config = session.config if session and isinstance(session.config, dict) else {}
-        mode_classification_summary = session_manager.build_history_summary(
-            session_id,
-            upto_index=existing_message_count,
-        )
-        request_mode_details = _classify_request_mode_details(
-            message.content,
-            existing_messages=existing_messages,
-            direct_tool_route=direct_tool_route,
-            conversation_summary=mode_classification_summary,
-        )
-
         if _should_consult_llm_mode_classifier(
             request_mode_details,
             direct_tool_route=direct_tool_route,
@@ -3922,6 +3952,8 @@ async def send_message(
             )
 
         def _current_routing_mode() -> str:
+            if affinity_route_applied:
+                return "affinity"
             if direct_tool_route is not None:
                 if direct_tool_route.get("route_name") == "memory_retrieval":
                     return "memory"
