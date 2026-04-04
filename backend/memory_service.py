@@ -121,6 +121,15 @@ class ToolCacheResult:
     freshness_bypassed: bool = False
 
 
+@dataclass(frozen=True)
+class AffinityRouteResult:
+    """Confidence-scored tool recommendation derived from AQL quality history."""
+
+    tool_names: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    record_count: int = 0
+
+
 class MemoryService:
     """Coordinate embedding, vector search, and provenance recording for retrieval."""
 
@@ -854,6 +863,114 @@ class MemoryService:
             top_failed_tools=top_failed,
             freshness_keyword_candidates=freshness_candidates,
             routing_distribution=routing_distribution,
+        )
+
+    async def resolve_tools_from_quality_history(
+        self,
+        *,
+        query: str,
+        domain_tags: list[str],
+    ) -> AffinityRouteResult:
+        """Return affinity-ranked tool recommendations from stored quality history."""
+        if not self.config.enabled or not self.config.enable_adaptive_learning:
+            return AffinityRouteResult()
+
+        normalized_query = self._build_query(query)
+        if not normalized_query:
+            return AffinityRouteResult()
+
+        safe_domain_tags = self._clean_string_list(domain_tags)
+
+        try:
+            embedding_result = await self.embedding_service.embed_texts([normalized_query])
+            query_vector = embedding_result.vectors[0]
+        except Exception as error:
+            logger_internal.warning(
+                "AQL affinity lookup skipped: embedding failed for query=%s reason=%s",
+                self._preview_text(normalized_query),
+                error,
+            )
+            return AffinityRouteResult()
+
+        try:
+            raw_hits = self.milvus_store.search(
+                collection_key="tool_execution_quality",
+                generation=self.config.collection_generation,
+                query_vectors=[query_vector],
+                limit=max(int(self.config.aql_min_records_for_routing) * 3, 30),
+                filter_expression="user_corrected == false",
+                output_fields=[
+                    "domain_tags",
+                    "tools_selected",
+                    "tools_succeeded",
+                    "tools_bypassed",
+                    "user_corrected",
+                ],
+            )
+        except Exception as error:
+            logger_internal.warning(
+                "AQL affinity lookup skipped: Milvus search failed for query=%s reason=%s",
+                self._preview_text(normalized_query),
+                error,
+            )
+            return AffinityRouteResult()
+
+        eligible_records: list[tuple[dict[str, Any], float]] = []
+        for hit in self._flatten_hits(raw_hits):
+            entity = hit.get("entity") if isinstance(hit, dict) else None
+            record = entity if isinstance(entity, dict) else hit
+            if not isinstance(record, dict):
+                continue
+            if bool(record.get("user_corrected")):
+                continue
+
+            record_domains = self._parse_json_string_list(record.get("domain_tags"))
+            if not self._has_domain_overlap(record_domains, safe_domain_tags):
+                continue
+
+            similarity = self._normalized_similarity(hit)
+            affinity_score = self._score_quality_record(record, similarity)
+            eligible_records.append((record, affinity_score))
+
+        record_count = len(eligible_records)
+        if record_count < int(self.config.aql_min_records_for_routing):
+            logger_internal.warning(
+                "AQL affinity lookup below minimum records: eligible=%s required=%s domains=%s",
+                record_count,
+                self.config.aql_min_records_for_routing,
+                safe_domain_tags or ["(all)"],
+            )
+            return AffinityRouteResult(record_count=record_count)
+
+        scored_records = [
+            (record, score)
+            for record, score in eligible_records
+            if score > 0.0
+        ]
+        scored_records.sort(key=lambda item: item[1], reverse=True)
+
+        tool_names = self._aggregate_affinity_tools(scored_records)
+        if not tool_names:
+            return AffinityRouteResult(record_count=record_count)
+
+        positive_scores = [score for _, score in scored_records if score > 0.0]
+        confidence = 0.0
+        if positive_scores:
+            confidence = sum(positive_scores) / len(positive_scores)
+        confidence = max(0.0, min(confidence, 1.0))
+
+        logger_internal.info(
+            "AQL affinity lookup completed: query=%s domains=%s eligible=%s confidence=%.3f tools=%s",
+            self._preview_text(normalized_query),
+            safe_domain_tags or ["(all)"],
+            record_count,
+            confidence,
+            tool_names,
+        )
+        return AffinityRouteResult(
+            tool_names=tool_names,
+            confidence=round(confidence, 4),
+            record_count=record_count,
         )
 
     # ------------------------------------------------------------------ #
@@ -1606,6 +1723,17 @@ class MemoryService:
                 cleaned.append(text)
         return cleaned
 
+    def _parse_json_string_list(self, value: Any) -> list[str]:
+        if isinstance(value, list):
+            return self._clean_string_list(value)
+        if not value:
+            return []
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return []
+        return self._clean_string_list(parsed if isinstance(parsed, list) else [])
+
     def _clean_chunk_yields(self, values: Optional[Sequence[dict[str, Any]]]) -> list[dict[str, int]]:
         cleaned: list[dict[str, int]] = []
         for value in values or []:
@@ -1675,6 +1803,55 @@ class MemoryService:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    def _normalized_similarity(self, hit: dict[str, Any]) -> float:
+        distance = self._score_for_hit(hit)
+        if distance <= 0.0:
+            return 1.0
+        return max(0.0, min(1.0 - distance, 1.0))
+
+    def _has_domain_overlap(self, record_domains: list[str], query_domains: list[str]) -> bool:
+        if not query_domains:
+            return True
+        if not record_domains:
+            return False
+        record_set = {domain.strip().lower() for domain in record_domains if domain.strip()}
+        query_set = {domain.strip().lower() for domain in query_domains if domain.strip()}
+        return bool(record_set & query_set)
+
+    def _score_quality_record(self, record: dict[str, Any], similarity: float) -> float:
+        weights = self.config.aql_affinity_weights or {}
+        tools_selected = self._parse_json_string_list(record.get("tools_selected"))
+        tools_succeeded = self._parse_json_string_list(record.get("tools_succeeded"))
+        tools_bypassed = self._parse_json_string_list(record.get("tools_bypassed"))
+        selected_count = max(len(tools_selected), 1)
+        success_rate = len(tools_succeeded) / selected_count
+        bypass_rate = len(tools_bypassed) / selected_count
+        corrected_flag = 1.0 if bool(record.get("user_corrected")) else 0.0
+        return (
+            float(weights.get("similarity", 0.5)) * max(0.0, min(similarity, 1.0))
+            + float(weights.get("success_rate", 0.3)) * success_rate
+            + float(weights.get("bypass_rate", -0.1)) * bypass_rate
+            + float(weights.get("corrected_penalty", -0.3)) * corrected_flag
+        )
+
+    def _aggregate_affinity_tools(self, records: list[tuple[dict[str, Any], float]]) -> list[str]:
+        tool_votes: dict[str, float] = {}
+        for record, score in records:
+            if score <= 0.0:
+                continue
+            tool_candidates = self._parse_json_string_list(record.get("tools_succeeded"))
+            if not tool_candidates:
+                tool_candidates = self._parse_json_string_list(record.get("tools_selected"))
+            for tool_name in tool_candidates:
+                tool_votes[tool_name] = tool_votes.get(tool_name, 0.0) + score
+        return [
+            tool_name
+            for tool_name, _ in sorted(
+                tool_votes.items(),
+                key=lambda item: (-item[1], item[0]),
+            )[:10]
+        ]
 
     def _split_namespaced_tool_name(self, tool_name: str) -> tuple[str, str]:
         """Split `server__tool` into `(server, tool)`; bare names become `("", name)`.

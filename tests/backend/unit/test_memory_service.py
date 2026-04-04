@@ -2388,3 +2388,180 @@ class TestAdaptiveQueryLearningPhase4:
         assert report.total_turns == 0
         assert store.query_calls == []
 
+
+def _p5_hit(
+    *,
+    distance=0.05,
+    domain_tags=None,
+    tools_selected=None,
+    tools_succeeded=None,
+    tools_bypassed=None,
+    user_corrected=False,
+):
+    import json
+
+    return {
+        "distance": distance,
+        "entity": {
+            "domain_tags": json.dumps(domain_tags or []),
+            "tools_selected": json.dumps(tools_selected or []),
+            "tools_succeeded": json.dumps(tools_succeeded or []),
+            "tools_bypassed": json.dumps(tools_bypassed or []),
+            "user_corrected": user_corrected,
+        },
+    }
+
+
+class TestAdaptiveQueryLearningPhase5:
+
+    def _svc(self, *, search_results=None, search_error=None, min_records=2, embedding_error=None):
+        store = _FakeUpsertMilvusStore(
+            search_results={"tool_execution_quality": search_results or [[]]},
+            search_error=search_error,
+        )
+        service = MemoryService(
+            embedding_service=_FakeEmbeddingService(error=embedding_error),
+            milvus_store=store,
+            memory_persistence=_FakeMemoryPersistence(),
+            config=MemoryServiceConfig(
+                enabled=True,
+                enable_adaptive_learning=True,
+                aql_min_records_for_routing=min_records,
+            ),
+        )
+        return service, store
+
+    @pytest.mark.asyncio
+    async def test_resolve_tools_from_quality_history_returns_empty_below_min_record_threshold(self):
+        """TC-AQL-P5-01: below-threshold eligible records should return zero-confidence empty results."""
+        service, store = self._svc(
+            min_records=3,
+            search_results=[[
+                _p5_hit(domain_tags=["cpu"], tools_selected=["svc__cpu_a"], tools_succeeded=["svc__cpu_a"]),
+                _p5_hit(domain_tags=["cpu"], tools_selected=["svc__cpu_b"], tools_succeeded=["svc__cpu_b"]),
+            ]],
+        )
+
+        result = await service.resolve_tools_from_quality_history(
+            query="show cpu status",
+            domain_tags=["cpu"],
+        )
+
+        assert result.tool_names == []
+        assert result.confidence == 0.0
+        assert result.record_count == 2
+        assert len(store.search_calls) == 1
+        assert store.search_calls[0]["collection_key"] == "tool_execution_quality"
+
+    @pytest.mark.asyncio
+    async def test_resolve_tools_from_quality_history_excludes_corrected_records(self):
+        """TC-AQL-P5-02: corrected quality records must not influence affinity output."""
+        service, _ = self._svc(
+            min_records=2,
+            search_results=[[
+                _p5_hit(
+                    distance=0.01,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__bad_tool"],
+                    tools_succeeded=["svc__bad_tool"],
+                    user_corrected=True,
+                ),
+                _p5_hit(
+                    distance=0.05,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__good_tool"],
+                    tools_succeeded=["svc__good_tool"],
+                ),
+                _p5_hit(
+                    distance=0.08,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__good_tool"],
+                    tools_succeeded=["svc__good_tool"],
+                ),
+            ]],
+        )
+
+        result = await service.resolve_tools_from_quality_history(
+            query="show cpu status",
+            domain_tags=["cpu"],
+        )
+
+        assert result.record_count == 2
+        assert result.tool_names == ["svc__good_tool"]
+        assert result.confidence > 0.0
+
+    @pytest.mark.asyncio
+    async def test_resolve_tools_from_quality_history_scores_and_ranks_tools(self):
+        """TC-AQL-P5-03: weighted affinity votes should rank tools by aggregate score."""
+        service, _ = self._svc(
+            min_records=2,
+            search_results=[[
+                _p5_hit(
+                    distance=0.02,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__cpu_top"],
+                    tools_succeeded=["svc__cpu_top"],
+                ),
+                _p5_hit(
+                    distance=0.05,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__cpu_top"],
+                    tools_succeeded=["svc__cpu_top"],
+                ),
+                _p5_hit(
+                    distance=0.15,
+                    domain_tags=["cpu"],
+                    tools_selected=["svc__cpu_secondary", "svc__cpu_top"],
+                    tools_succeeded=["svc__cpu_secondary"],
+                    tools_bypassed=["svc__cpu_secondary"],
+                ),
+            ]],
+        )
+
+        result = await service.resolve_tools_from_quality_history(
+            query="show cpu diagnostics",
+            domain_tags=["cpu"],
+        )
+
+        assert result.record_count == 3
+        assert result.tool_names[0] == "svc__cpu_top"
+        assert "svc__cpu_secondary" in result.tool_names
+        assert 0.0 < result.confidence <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_resolve_tools_from_quality_history_returns_zero_confidence_on_embedding_failure(self):
+        """TC-AQL-P5-04: embedding failure should degrade to an empty affinity result."""
+        service, store = self._svc(
+            min_records=1,
+            search_results=[[_p5_hit(domain_tags=["cpu"], tools_selected=["svc__cpu"]) ]],
+            embedding_error=RuntimeError("embed unavailable"),
+        )
+
+        result = await service.resolve_tools_from_quality_history(
+            query="show cpu status",
+            domain_tags=["cpu"],
+        )
+
+        assert result.tool_names == []
+        assert result.confidence == 0.0
+        assert result.record_count == 0
+        assert store.search_calls == []
+
+    @pytest.mark.asyncio
+    async def test_resolve_tools_from_quality_history_returns_zero_confidence_on_search_failure(self):
+        """TC-AQL-P5-05: Milvus search failure should degrade to an empty affinity result."""
+        service, store = self._svc(
+            min_records=1,
+            search_error=RuntimeError("milvus unavailable"),
+        )
+
+        result = await service.resolve_tools_from_quality_history(
+            query="show cpu status",
+            domain_tags=["cpu"],
+        )
+
+        assert result.tool_names == []
+        assert result.confidence == 0.0
+        assert result.record_count == 0
+        assert len(store.search_calls) == 1
+

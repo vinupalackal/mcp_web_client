@@ -23,6 +23,9 @@
 - `docs/AQL-P4-QUALITY-REPORT-API-REQUIREMENTS.md`
 - `docs/AQL-P4-QUALITY-REPORT-API-HLD.md`
 - `docs/AQL-P4-QUALITY-REPORT-API-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-REQUIREMENTS.md`
+- `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-HLD.md`
+- `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-IMPLEMENTATION-SPEC.md`
 
 **Per-phase execution workflow**:
 - Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → implementation → test development → focused validation → full test execution.
@@ -416,9 +419,9 @@ All failure paths produce internal log lines only — no error is returned to th
 | **P1 — Collection + Schema** | Add `tool_execution_quality_v1` collection init to `MilvusStore`; add `MilvusConfig` fields | None | — |
 | **P2 — Quality Recorder** | `record_execution_quality()` + async post-response write in `send_message` | Low | P1 |
 | **P3 — Correction Detection** | `patch_correction_signal()` + pre-routing check in `send_message` | Low | P2 |
-| **P4 — Quality Report API** | `get_quality_report()` + `GET /api/admin/memory/quality-report` | None | P2 |
-| **P5 — Freshness Candidates API** | Freshness logic + `GET /api/admin/memory/freshness-candidates` | None | P2 |
-| **P6 — Affinity Routing** | `resolve_tools_from_quality_history()` + routing integration | Medium | P2, P3 |
+| **P4 — Quality Reporting APIs** | `get_quality_report()` + `GET /api/admin/memory/quality-report` + `GET /api/admin/memory/freshness-candidates` | None | P2 |
+| **P5 — Affinity Lookup Engine** | `resolve_tools_from_quality_history()` in isolation | Low | P2, P3 |
+| **P6 — Routing Integration** | Apply affinity results as a guarded soft prior in live requests | Medium | P5 |
 | **P7 — Chunk Reordering** | Reorder split-phase tool list using affinity result | Low | P6 |
 
 P1–P5 are pure data collection and read-only tooling — zero routing risk.  

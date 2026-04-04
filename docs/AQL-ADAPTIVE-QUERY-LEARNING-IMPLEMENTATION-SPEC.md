@@ -21,6 +21,9 @@
 - `docs/AQL-P4-QUALITY-REPORT-API-REQUIREMENTS.md`
 - `docs/AQL-P4-QUALITY-REPORT-API-HLD.md`
 - `docs/AQL-P4-QUALITY-REPORT-API-IMPLEMENTATION-SPEC.md`
+- `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-REQUIREMENTS.md`
+- `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-HLD.md`
+- `docs/AQL-P5-AFFINITY-LOOKUP-ENGINE-IMPLEMENTATION-SPEC.md`
 
 **Per-phase execution workflow**:
 - Treat each AQL phase as a doc-backed mini-project: requirements → HLD → implementation spec → implementation → test development → focused validation → full test execution.
