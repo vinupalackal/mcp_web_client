@@ -12,6 +12,16 @@ Browser-based chat interface for Model Context Protocol (MCP) servers. Inspired 
 - 💾 **Dual Storage** - In-memory sessions + localStorage persistence
 - 📚 **OpenAPI 3.0** - Auto-generated interactive documentation
 
+## What's New
+
+### April 4, 2026 — Adaptive Query Learning complete
+
+- Adaptive Query Learning is now implemented end-to-end across Phases 1–7.
+- The completed program adds quality-history capture, passive quality recording, correction patching, admin quality reporting, affinity lookup, guarded live routing, and split-phase chunk reordering.
+- The rollout remains additive: existing direct-route, memory-route, degraded-mode, and chat behavior stay intact while AQL improves tool selection and split-phase efficiency.
+- Documentation now includes the parent AQL design set plus per-phase companion docs through Phase 7 in `docs/`.
+- Final validation after the Phase 7 completion sweep: `make test` passed with 154 frontend tests and 921 backend tests green.
+
 ## Quick Start
 
 ### Prerequisites
