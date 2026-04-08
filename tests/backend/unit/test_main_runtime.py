@@ -1219,7 +1219,7 @@ class TestBuildSynthesisPrompt:
             is_direct_fact=True,
         )
         assert "Do NOT add health assessments" in prompt or "Do NOT" in prompt
-        assert "speculation" in prompt.lower() or "not requested" in prompt.lower()
+        assert "speculate" in prompt.lower() or "not requested" in prompt.lower()
 
     def test_direct_fact_still_converts_units(self):
         """direct_fact synthesis must still ask for unit conversion (seconds → days)."""
@@ -1259,9 +1259,9 @@ class TestBuildSynthesisPrompt:
             tool_executions=self._make_executions(),
             is_direct_fact=False,
         )
-        assert "assess whether" in prompt
+        assert "assessing whether" in prompt
         assert "healthy / degraded / critical" in prompt
-        assert "needs attention" in prompt
+        assert "warrant attention" in prompt
 
     def test_default_mode_is_default_when_flag_omitted(self):
         """is_direct_fact defaults to False — omitting it must give the
@@ -1271,7 +1271,7 @@ class TestBuildSynthesisPrompt:
             tool_names_executed=["svc__get_system_uptime"],
             tool_executions=self._make_executions(),
         )
-        assert "assess whether" in prompt
+        assert "assessing whether" in prompt
         assert "healthy / degraded / critical" in prompt
 
     def test_status_table_appears_in_both_variants(self):
